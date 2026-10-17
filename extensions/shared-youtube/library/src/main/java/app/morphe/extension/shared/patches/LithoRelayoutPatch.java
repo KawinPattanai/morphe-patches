@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.Utils;
@@ -57,6 +58,21 @@ public final class LithoRelayoutPatch {
          * Unmounts all content of the Litho view, which is mounted again by the next layout.
          */
         void patch_forceRemount();
+    }
+
+    @Nullable
+    private static Function<View, LithoViewInterface> lithoViewAdapter;
+
+    public static void setLithoViewAdapter(Function<View, LithoViewInterface> adapter) {
+        lithoViewAdapter = adapter;
+    }
+
+    @Nullable
+    private static LithoViewInterface asLithoView(View view) {
+        if (view instanceof LithoViewInterface lithoView) {
+            return lithoView;
+        }
+        return lithoViewAdapter == null ? null : lithoViewAdapter.apply(view);
     }
 
     /**
@@ -233,10 +249,11 @@ public final class LithoRelayoutPatch {
                 } else if (showsOutdatedText) {
                     // The closest Litho view calculates the layout of the host.
                     View view = host;
-                    while (!(view instanceof LithoViewInterface) && view.getParent() instanceof View parent) {
+                    LithoViewInterface lithoView;
+                    while ((lithoView = asLithoView(view)) == null && view.getParent() instanceof View parent) {
                         view = parent;
                     }
-                    if (view instanceof LithoViewInterface lithoView) {
+                    if (lithoView != null) {
                         // The drawable is kept, as Litho can update the text of the mounted drawable
                         // without mounting it again, such as with a text that is loading again.
                         // It's removed by a later relayout once it no longer shows a loading text.
@@ -250,7 +267,8 @@ public final class LithoRelayoutPatch {
                 // so the views are found before any is unmounted.
                 List<LithoViewInterface> remountViews = new ArrayList<>(lithoViews.size());
                 for (View view : new ArrayList<>(lithoViews)) {
-                    if (view.isShown() && view instanceof LithoViewInterface lithoView) {
+                    LithoViewInterface lithoView = view.isShown() ? asLithoView(view) : null;
+                    if (lithoView != null) {
                         remountViews.add(lithoView);
                     }
                 }
