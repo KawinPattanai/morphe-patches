@@ -12,6 +12,7 @@ import com.google.protobuf.MessageLite;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.Utils;
@@ -146,10 +147,15 @@ public class RestoreOldVideoActionBarPatch {
      * Called when the body of an InnerTube request is built.
      */
     public static void onBuildRequestBody(MessageLite body, RequestInterface request) {
+        Supplier<byte[]> bytes = body == null ? null : body::toByteArray;
+        onBuildRequestBody(bytes, request);
+    }
+
+    public static void onBuildRequestBody(Supplier<byte[]> body, RequestInterface request) {
         try {
             if (FIX_VIDEO_ACTION_BAR && body != null && request != null
                     && "next".equals(request.patch_getEndpoint())
-                    && !hasTopLevelField(body.toByteArray(), NEXT_REQUEST_CONTINUATION_FIELD)) {
+                    && !hasTopLevelField(body.get(), NEXT_REQUEST_CONTINUATION_FIELD)) {
                 watchNextRequestTime = System.currentTimeMillis();
             }
         } catch (Exception ex) {
