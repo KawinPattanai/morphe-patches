@@ -460,6 +460,13 @@ Reports are public and are reviewed before a channel is added to a list. Removal
     <string name="morphe_copy_comments_summary">Tap and hold a comment to copy it</string>
     <string name="morphe_copy_comments_success">Comment copied to clipboard</string>
 
+    <!-- interaction.feedactions.feedVideoActionsPatch -->
+    <string name="morphe_feed_long_press_menu_title">Tap and hold to open video menu</string>
+    <string name="morphe_feed_long_press_menu_summary">Tapping and holding anywhere on a feed video opens its menu</string>
+    <string name="morphe_feed_watch_later_button_title">Show Watch later button on thumbnails</string>
+    <string name="morphe_feed_watch_later_button_summary">A Watch later button is shown on the thumbnails of feed videos. Tapping and holding it opens Save to playlist</string>
+
+
     <!-- layout.hide.signintotv.disableSignInToTVPopupPatch -->
     <string name="morphe_disable_sign_in_to_tv_popup_title">Disable \'Sign in to TV\' popup</string>
     <string name="morphe_disable_connect_your_devices_popup_title">Disable \'Connect your devices\' popup</string>
@@ -1260,6 +1267,8 @@ Limitation: If \'Restore old video action bar\' is turned off, \'More videos\' o
     <!-- layout.statusbar.hideStatusBarPatch -->
     <string name="morphe_hide_status_bar_title">Hide status bar</string>
     <string name="morphe_hide_status_bar_summary">Hides the system status bar. Swipe down from the top edge to show it for a moment</string>
+    <string name="morphe_fix_status_bar_layout_title">Fix status bar covering the top bars</string>
+    <string name="morphe_fix_status_bar_layout_summary">Keeps the layout of the status bar consistent, so it does not cover the top bars and leaves no empty space above the player. Turn this off if the app crashes or the top bars look wrong</string>
 
     <!-- layout.theme.themePatch -->
     <string name="morphe_theme_color_light_title">Light theme background</string>

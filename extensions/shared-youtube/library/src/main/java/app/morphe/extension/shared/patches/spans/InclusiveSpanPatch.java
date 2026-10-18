@@ -35,6 +35,12 @@ final class DummySpanFilter extends SpanFilter {
 @SuppressWarnings("unused")
 public final class InclusiveSpanPatch {
 
+    private static Class<?> customCharacterStyle = CharacterStyle.class;
+
+    public static void setCustomCharacterStyle(Class<?> styleClass) {
+        customCharacterStyle = styleClass;
+    }
+
     private record IdentifierPath(String identifier, CharSequence path) {
 
     }
@@ -109,7 +115,7 @@ public final class InclusiveSpanPatch {
             return SpanType.IMAGE;
         } else if (span instanceof LineHeightSpan) {
             return SpanType.LINE_HEIGHT;
-        } else if (span instanceof CharacterStyle) { // Replaced by patch.
+        } else if (customCharacterStyle.isInstance(span)) {
             return SpanType.CUSTOM_CHARACTER_STYLE;
         } else {
             return SpanType.UNKNOWN;
@@ -176,6 +182,10 @@ public final class InclusiveSpanPatch {
         }
     }
 
+    public static void addFilter(SpanFilter filter) {
+        filterUsingCallbacks(filter, filter.callbacks);
+    }
+
     /**
      * Injection point.
      *
@@ -186,7 +196,7 @@ public final class InclusiveSpanPatch {
                 conversionContext.patch_getIdentifier(), conversionContext.patch_getPathBuilder()));
     }
 
-    private static boolean returnEarly(SpannableString spannableString, Object span, int start, int end, int flags) {
+    public static boolean shouldSkipSpan(SpannableString spannableString, Object span, int start, int end, int flags) {
         try {
             IdentifierPath identifierPath = conversionContextThreadLocal.get();
             if (identifierPath == null) {
@@ -219,7 +229,7 @@ public final class InclusiveSpanPatch {
      * @param flags           Flags of {@link Spannable#setSpan(Object, int, int, int)}.
      */
     public static void setSpan(SpannableString spannableString, Object span, int start, int end, int flags) {
-        if (returnEarly(spannableString, span, start, end, flags)) {
+        if (shouldSkipSpan(spannableString, span, start, end, flags)) {
             return;
         }
         spannableString.setSpan(span, start, end, flags);
