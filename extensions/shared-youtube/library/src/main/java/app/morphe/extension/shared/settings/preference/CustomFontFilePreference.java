@@ -127,7 +127,7 @@ public class CustomFontFilePreference extends Preference {
                 preference.updateSummary();
             }
 
-            AbstractPreferenceFragment.showRestartDialog(context);
+            AbstractPreferenceFragment.setRestartNeeded();
         } catch (Exception ex) {
             Logger.printException(() -> "handleActivityResult failure", ex);
         }
@@ -139,7 +139,7 @@ public class CustomFontFilePreference extends Preference {
     }
 
     @Nullable
-    private static String getFileName(Context context, Uri uri) {
+    public static String getFileName(Context context, Uri uri) {
         try (Cursor cursor = context.getContentResolver().query(
                 uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
