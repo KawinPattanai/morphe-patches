@@ -12,7 +12,6 @@ package app.morphe.extension.youtube.swipecontrols.controller.gesture
 
 import android.view.MotionEvent
 import app.morphe.extension.youtube.shared.PlayerControlsVisibilityObserver
-import app.morphe.extension.youtube.shared.PlayerControlsVisibilityObserverImpl
 import app.morphe.extension.youtube.swipecontrols.SwipeControlsConfigurationProvider.SwipeZoneAction
 import app.morphe.extension.youtube.swipecontrols.SwipeControlsHostActivity
 import app.morphe.extension.youtube.swipecontrols.controller.gesture.core.BaseGestureController
@@ -25,8 +24,11 @@ import app.morphe.extension.youtube.swipecontrols.misc.toPoint
  */
 class ClassicSwipeController(
     private val controller: SwipeControlsHostActivity,
-) : BaseGestureController(controller),
-    PlayerControlsVisibilityObserver by PlayerControlsVisibilityObserverImpl(controller.activity) {
+) : BaseGestureController(controller) {
+
+    private val playerControlsVisibilityObserver =
+        PlayerControlsVisibilityObserver(controller.activity)
+
     /**
      * The last event captured in [onDown].
      */
@@ -51,7 +53,7 @@ class ClassicSwipeController(
         }
 
         // ignore gestures when player controls are visible
-        return arePlayerControlsVisible
+        return playerControlsVisibilityObserver.arePlayerControlsVisible()
     }
 
     override fun onUp(motionEvent: MotionEvent) {

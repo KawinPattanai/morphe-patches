@@ -156,7 +156,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
         gesture = createGestureController()
 
         // listen for changes in the player type
-        PlayerType.onChange += this::onPlayerTypeChanged
+        PlayerType.getOnChange().addObserver(this::onPlayerTypeChanged)
 
         // set current instance reference
         currentHost = WeakReference(this)
@@ -308,7 +308,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
         @JvmStatic
         fun allowSwipeChangeVideo(original: Boolean): Boolean =
             // Feature can cause crashing if forced in newer targets.
-            !VersionCheckPatch.IS_20_22_OR_GREATER && Settings.SWIPE_CHANGE_VIDEO.get()
+            !VersionCheckPatch.IS_20_27_OR_GREATER && Settings.SWIPE_CHANGE_VIDEO.get()
 
         private val MethodHookParam.swipeControlsHost
             get() = XposedHelpers.getAdditionalInstanceField(
@@ -346,7 +346,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
             XposedHelpers.findAndHookMethod(
                 activityClass, "onDestroy", object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        PlayerType.onChange -= param.swipeControlsHost::onPlayerTypeChanged
+                        PlayerType.getOnChange().removeObserver(param.swipeControlsHost::onPlayerTypeChanged)
                     }
                 })
             XposedHelpers.findAndHookMethod(

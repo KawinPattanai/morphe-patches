@@ -128,14 +128,14 @@ class SwipeControlsConfigurationProvider {
      * Checks if the video player is currently in fullscreen mode.
      */
     val isFullscreenVideo: Boolean
-        get() = PlayerType.current == PlayerType.WATCH_WHILE_FULLSCREEN
+        get() = PlayerType.getCurrent() == PlayerType.WATCH_WHILE_FULLSCREEN
 
     /**
      * Checks if the video player is currently in split screen / multi-window mode.
      */
     val isMultiWindowVideo: Boolean
         get() = (SwipeControlsHostActivity.currentHost.get()?.isInSplitScreenMode == true) &&
-                (PlayerType.current == PlayerType.WATCH_WHILE_FULLSCREEN || PlayerType.current == PlayerType.WATCH_WHILE_MAXIMIZED)
+                (PlayerType.getCurrent() == PlayerType.WATCH_WHILE_FULLSCREEN || PlayerType.getCurrent() == PlayerType.WATCH_WHILE_MAXIMIZED)
 
     /**
      * Checks if the video player is in fullscreen or multi-window mode.
@@ -158,7 +158,7 @@ class SwipeControlsConfigurationProvider {
      * and finally validate the swipe gesture in [ClassicSwipeController.onSwipe] and [PressToSwipeController.onSwipe].
      */
     val isVideoSliding: Boolean
-        get() = PlayerType.current == PlayerType.WATCH_WHILE_SLIDING_MAXIMIZED_FULLSCREEN
+        get() = PlayerType.getCurrent() == PlayerType.WATCH_WHILE_SLIDING_MAXIMIZED_FULLSCREEN
     //endregion
 
     //region keys enable
