@@ -300,7 +300,7 @@ Second \"item\" text"</string>
   <string name="morphe_hide_comments_live_chat_tooltips_summary">Приховує спливні підказки біля панелі вводу чату, наприклад повідомлення про чат лише для підписників</string>
   <string name="morphe_hide_comments_menu_button_title">Приховати кнопку \"Меню\"</string>
   <string name="morphe_hide_comments_menu_button_summary">Приховує кнопку меню з трьома крапками для кожного коментаря</string>
-  <string name="morphe_hide_comments_preview_comment_title">Приховати прев\'ю коментар</string>
+  <string name="morphe_hide_comments_preview_comment_title">Приховати попередній коментар</string>
   <string name="morphe_hide_comments_preview_comment_summary">Приховує попередній перегляд коментаря під відео до повного відкриття секції коментарів</string>
   <string name="morphe_hide_comments_preview_comment_hidden">Коментар приховано Morphe</string>
   <string name="morphe_minimal_comments_button_title">Увімкнути мінімалістичну кнопку коментарів</string>
@@ -624,11 +624,13 @@ Second \"item\" text"</string>
   <string name="morphe_vot_mymemory_quota_message_no_email">Ви використали сьогоднішню безплатну квоту перекладу MyMemory (5 000 символів). Додайте електронну пошту MyMemory в налаштуваннях, щоб збільшити денний ліміт до 50 000 символів, або виберіть інший сервіс перекладу</string>
   <string name="morphe_vot_mymemory_quota_message_with_email">Ви використали сьогоднішню квоту перекладу MyMemory (50 000 символів). Виберіть інший сервіс перекладу або спробуйте знову завтра</string>
   <string name="morphe_vot_mymemory_error">Переклад через MyMemory не вдався (статус %s)</string>
-  <!-- interaction.watchlater.watchLaterPatch -->
-  <string name="morphe_watch_later_wide_drag_handles_title">Розширити маркери перетягування в \"Дивитися пізніше\"</string>
-  <string name="morphe_watch_later_wide_drag_handles_summary">За маркери перетягування відео в \"Дивитися пізніше\" легше вхопитися</string>
-  <string name="morphe_watch_later_hide_removal_snackbar_title">Приховати повідомлення про видалення з \"Дивитися пізніше\"</string>
-  <string name="morphe_watch_later_hide_removal_snackbar_summary">Підтвердження не показується після видалення відео з \"Дивитися пізніше\"</string>
+  <!-- interaction.playlist.playlistPatch -->
+  <string name="morphe_playlist_wide_drag_handles_title">Розширити маркери перетягування в плейлистах</string>
+  <string name="morphe_playlist_wide_drag_handles_summary">Маркери перетягування в плейлистах стало легше захвачувати</string>
+  <string name="morphe_playlist_hide_removal_snackbar_title">Приховати повідомлення про видалення з плейлиста</string>
+  <string name="morphe_playlist_hide_removal_snackbar_summary">Підтвердження не показується після видалення відео з плейлиста</string>
+  <string name="morphe_playlist_long_press_drag_title">Довго натискайте, щоб змінити порядок відео у плейлисті</string>
+  <string name="morphe_playlist_long_press_drag_summary">Натисніть і утримуйте відео у вашому плейлисті, щоб перетягнути його на нову позицію</string>
   <!-- interaction.loop.loopVideoPatch -->
   <string name="morphe_loop_video_title">Увімкнути повторення відео</string>
   <string name="morphe_do_not_remember_loop_video_title">Не запам\'ятовувати повтор відео</string>
@@ -646,6 +648,24 @@ Second \"item\" text"</string>
   <string name="morphe_loop_video_range_clear">Очистити</string>
   <string name="morphe_loop_video_range_toast_on">Повтор %1$s - %2$s</string>
   <string name="morphe_loop_video_range_invalid_time">Недійсний діапазон часу</string>
+  <!-- interaction.loop.loopCountPatch -->
+  <string name="morphe_loop_count_screen_title">Кількість повторів</string>
+  <string name="morphe_loop_count_screen_summary">Виберіть, скільки разів відео має повторитися перед наступним відео</string>
+  <string name="morphe_loop_count_title">Увімкнути кількість повторів</string>
+  <string name="morphe_loop_count_summary">У меню «Більше» плеєра поруч із пунктом «Повтор відео» відображається Кількість повторів, щоб вибрати, скільки разів відео відтворюватиметься перед наступним відео</string>
+  <string name="morphe_loop_count_playlists_title">Зберігати кількість повторів у плейлистах</string>
+  <string name="morphe_loop_count_playlists_summary">Кожне відео в плейлисті зберігає обрану вами кількість повторів, і функція «Повторити відео» вмикається, коли плейлист відтворює його знову. Якщо цю функцію вимкнути, кількість повторів діятиме лише для відео, що відтворюється зараз</string>
+  <string name="morphe_loop_count_clear_title">Очистити збережені значення повторів</string>
+  <string name="morphe_loop_count_clear_summary">Забудьте про кількість повторів, збережену у ваших плейлистах. Збережено відео: %s</string>
+  <string name="morphe_loop_count_clear_summary_none">Збережених значень повторів немає</string>
+  <string name="morphe_loop_count_clear_dialog_title">Очистити збережені значення повторів?</string>
+  <string name="morphe_loop_count_clear_dialog_message">Відео у ваших плейлистах «забудуть» кількість повторів, і функція «Повторити відео» більше не вмикатиметься під час їхнього відтворення в плейлисті</string>
+  <string name="morphe_loop_count_clear_done">Збережені значення повторів очищено</string>
+  <string name="morphe_loop_count_flyout_name">Кількість повторів</string>
+  <string name="morphe_loop_count_dialog_message">Скільки разів відео відтворюється перед наступним відео, від %1$s до %2$s. Залиште поле порожнім, щоб зациклити відео без обмежень.</string>
+  <string name="morphe_loop_count_no_limit">Без обмежень</string>
+  <string name="morphe_loop_count_decrease">Менше разів</string>
+  <string name="morphe_loop_count_increase">Більше разів</string>
   <!-- interaction.pictureinpicture.pictureinPictureButtonPatch -->
   <string name="morphe_pip_button_overlay_title">Показувати кнопку «Картинка в картинці»</string>
   <string name="morphe_pip_button_flyout_title">Показувати меню «Картинка в картинці»</string>
@@ -1111,6 +1131,10 @@ Second \"item\" text"</string>
   <string name="morphe_enhanced_ambient_mode_summary">Підсвічує всю сторінку перегляду та чорні смуги кольорами відео замість кінематографічного освітлення</string>
   <string name="morphe_enhanced_ambient_mode_readable_text_title">Зберігати читабельність тексту</string>
   <string name="morphe_enhanced_ambient_mode_readable_text_summary">Приглушує підсвічування на яскравих відео, щоб текст на сторінці залишався читабельним</string>
+  <string name="morphe_enhanced_ambient_mode_dim_while_scrolling_title">Приглушувати під час прокручування</string>
+  <string name="morphe_enhanced_ambient_mode_dim_while_scrolling_summary">Приглушує світло, коли сторінка прокручується або торкається</string>
+  <string name="morphe_enhanced_ambient_mode_dim_duration_title">Тривалість приглушення</string>
+  <string name="morphe_enhanced_ambient_mode_dim_duration_summary">Як довго світло залишатиметься приглушеним після припинення прокручування. Якщо встановити 0, світло приглушуватиметься лише під час прокручування й повертатиметься одразу після його припинення</string>
   <!-- layout.hide.infocards.hideInfocardsPatch -->
   <string name="morphe_hide_info_cards_title">Приховати підказки</string>
   <!-- layout.hide.rollingnumber.disableRollingNumberAnimationPatch -->
@@ -1131,6 +1155,7 @@ Second \"item\" text"</string>
   <string name="morphe_hide_shorts_subscriptions_title">Приховати у стрічці підписок</string>
   <string name="morphe_hide_shorts_video_description_title">Приховати в описі відео</string>
   <string name="morphe_hide_shorts_history_title">Приховати в історії переглядів</string>
+  <string name="morphe_hide_shorts_notifications_title">Приховати в push-сповіщеннях</string>
   <string name="morphe_shorts_player_screen_title">Плеєр Shorts</string>
   <string name="morphe_shorts_player_screen_summary">Виберіть, які компоненти будуть показуватися у плеєрі Shorts</string>
   <string name="morphe_disable_shorts_double_tap_to_like_title">Вимкнути подвійне натискання для вподобання</string>
@@ -1192,7 +1217,10 @@ Second \"item\" text"</string>
   <string name="morphe_disable_playlist_autoplay_title">Вимкнути автовідтворення списку відтворення</string>
   <string name="morphe_disable_playlist_autoplay_summary">Запобігає автоматичному переходу списку відтворення до наступного відео</string>
   <!-- interaction.continuewatching.disableContinueWatchingPromptPatch -->
-  <string name="morphe_disable_continue_watching_prompt_title">Вимкнути запит \"Продовжити перегляд?\"</string>
+  <string name="morphe_continue_watching_prompt_title">Запит \"Продовжити перегляд\"</string>
+  <string name="morphe_continue_watching_prompt_entry_1">Типові</string>
+  <string name="morphe_continue_watching_prompt_entry_2">Вимкнена</string>
+  <string name="morphe_continue_watching_prompt_entry_3">Вимкнено, завжди показувати відлік автовідтворення</string>
   <!-- layout.player.fullscreen.exitFullscreenPatch -->
   <string name="morphe_exit_fullscreen_title">Вийти з повноекранного режиму в кінці відео</string>
   <string name="morphe_exit_fullscreen_entry_1">Вимкнено</string>
@@ -1534,7 +1562,7 @@ Second \"item\" text"</string>
   <string name="morphe_speed_tap_and_hold_title">Швидкість відтворення при натисненні та утримувані</string>
   <string name="morphe_speed_tap_and_hold_summary">Встановлює множник швидкості при натисканні та утриманні екрана, встановіть 0 для вимкнення</string>
   <!-- video.speed.remember.rememberPlaybackSpeedPatch -->
-  <string name="morphe_remember_playback_speed_last_selected_title">Запам’ятати швидкість відтворення</string>
+  <string name="morphe_remember_playback_speed_last_selected_title">Запам’ятовувати швидкість відтворення</string>
   <string name="morphe_remember_playback_speed_last_selected_summary">Застосовує вибраний рівень якості до всіх наступних Shorts</string>
   <string name="morphe_remember_playback_speed_last_selected_toast_title">Сповіщення про зміну швидкості</string>
   <string name="morphe_remember_playback_speed_last_selected_toast_summary">Показує сповіщення при збереженні нової типової швидкості відтворення</string>
@@ -1610,7 +1638,7 @@ AVC (H.264)
   <string name="morphe_spoof_video_streams_about_end_early">• Відтворення може завершитися на 1 секунду раніше</string>
   <string name="morphe_spoof_video_streams_about_js">• Якщо деобфускація не вдається, відтворення може завершитися невдачею</string>
   <!-- "Force original audio" should match the language used in 'morphe_force_original_audio_title'. -->
-  <string name="morphe_spoof_video_streams_about_no_force_original_audio">• Примусово оригінальна мова звукової доріжки\" недоступна</string>
+  <string name="morphe_spoof_video_streams_about_no_force_original_audio">• Функція \"Примусово оригінальна мова звукової доріжки\" недоступна</string>
   <string name="morphe_spoof_video_streams_about_sign_in_to_vr_required">• Потрібен вхід в Android VR</string>
   <!-- Quality refers to video quality -->
   <string name="morphe_spoof_video_streams_about_720p_max">• Якість може бути обмежена до 720p</string>
