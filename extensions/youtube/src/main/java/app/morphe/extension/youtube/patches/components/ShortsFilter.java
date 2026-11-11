@@ -13,14 +13,19 @@ package app.morphe.extension.youtube.patches.components;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
+import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.facebook.litho.ComponentHost;
+import com.facebook.litho.TextContent;
 import com.google.android.libraries.youtube.rendering.ui.pivotbar.PivotBar;
 import com.google.protobuf.MessageLite;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -46,21 +51,20 @@ import app.morphe.extension.youtube.shared.NavigationBar;
 import app.morphe.extension.youtube.shared.PlayerType;
 import app.morphe.extension.youtube.shared.ShortsPlayerState;
 
-@SuppressWarnings({"unused", "FieldCanBeLocal"})
+@SuppressWarnings("unused")
 public final class ShortsFilter extends Filter {
-    private static final String COMPONENT_TYPE = "ComponentType";
     private static final boolean HIDE_SHORTS_NAVIGATION_BAR = Settings.HIDE_SHORTS_NAVIGATION_BAR.get();
-    private final String REEL_CHANNEL_BAR_PATH = "reel_channel_bar.e";
+    private static final String REEL_CHANNEL_BAR_PATH = "reel_channel_bar.e";
 
     /**
      * For paid promotion label and subscribe button that appears in the channel bar.
      */
-    private final String REEL_METAPANEL_PATH = "reel_metapanel.e";
+    private static final String REEL_METAPANEL_PATH = "reel_metapanel.e";
 
     /**
      * For paid promotion label and subscribe button that appears in the channel bar.
      */
-    private final String REEL_PLAYER_OVERLAY_PATH = "reel_player_overlay.e";
+    private static final String REEL_PLAYER_OVERLAY_PATH = "reel_player_overlay.e";
 
     /**
      * Tags that appears when opening the Shorts player.
@@ -464,6 +468,73 @@ public final class ShortsFilter extends Filter {
         return true;
     }
 
+    /**
+     * Injection point.
+     * <p>
+     * The container of the bar below a Short keeps its height when the bar is hidden,
+     * such as the comment bar hidden by "Hide preview comment", so the Short is shown above an empty bar.
+     * The container is hidden while it shows nothing.
+     */
+    public static void hideEmptyBottomActionBar(View container) {
+        try {
+            if (!Settings.HIDE_SHORTS_PREVIEW_COMMENT.get() || container == null) {
+                return;
+            }
+            ViewTreeObserver.OnPreDrawListener listener = () -> {
+                try {
+                    if (container.getVisibility() != View.VISIBLE) {
+                        return true;
+                    }
+                    // A text or a view other than an empty Litho host, such as the bar of another feature.
+                    // A Litho host without children or texts is what is left of a hidden bar.
+                    ArrayDeque<View> views = new ArrayDeque<>();
+                    views.add(container);
+                    while (!views.isEmpty()) {
+                        View view = views.poll();
+                        if (view.getVisibility() != View.VISIBLE) {
+                            continue;
+                        }
+                        if (view instanceof ComponentHost host) {
+                            TextContent textContent = host.getTextContent();
+                            if (textContent != null && !textContent.getTextItems().isEmpty()) {
+                                return true;
+                            }
+                        } else if (!(view instanceof ViewGroup)) {
+                            return true;
+                        }
+                        if (view instanceof ViewGroup group) {
+                            for (int i = 0, count = group.getChildCount(); i < count; i++) {
+                                views.add(group.getChildAt(i));
+                            }
+                        }
+                    }
+                    container.setVisibility(View.GONE);
+                    // Not drawn with the empty bar.
+                    return false;
+                } catch (Exception ex) {
+                    Logger.printException(() -> "Bottom action bar check failure", ex);
+                }
+                return true;
+            };
+            container.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                @Override
+                public void onViewAttachedToWindow(@NonNull View view) {
+                    view.getViewTreeObserver().addOnPreDrawListener(listener);
+                }
+
+                @Override
+                public void onViewDetachedFromWindow(@NonNull View view) {
+                    view.getViewTreeObserver().removeOnPreDrawListener(listener);
+                }
+            });
+            if (container.isAttachedToWindow()) {
+                container.getViewTreeObserver().addOnPreDrawListener(listener);
+            }
+        } catch (Exception ex) {
+            Logger.printException(() -> "hideEmptyBottomActionBar failure", ex);
+        }
+    }
+
     @Override
     public boolean isFiltered(ContextInterface contextInterface,
                               String identifier,
@@ -641,7 +712,10 @@ public final class ShortsFilter extends Filter {
             case SUBSCRIPTIONS -> hideShortsInFeed(component, "subscriptions tab",
                     Settings.HIDE_SHORTS_SUBSCRIPTIONS, buffer, rootComponent);
             case LIBRARY -> hideShortsInFeed(component, "library tab", Settings.HIDE_SHORTS_HISTORY, buffer, rootComponent);
-            default -> logDecision(component, false, "other tab: " + selectedNavButton);
+            default -> {
+                logDecision(component, false, "other tab: " + selectedNavButton);
+                yield false;
+            }
         };
     }
 
