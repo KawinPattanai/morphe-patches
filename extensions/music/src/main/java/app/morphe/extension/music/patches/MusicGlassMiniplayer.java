@@ -74,6 +74,19 @@ public final class MusicGlassMiniplayer {
     public interface TimeBar {
     }
 
+    /**
+     * Class of the time bars, for a patcher that cannot add {@link TimeBar} to the class of the app.
+     */
+    private static Class<?> timeBarClass;
+
+    /**
+     * Injection point. Sets the class of the time bars, which the miniplayer has one next to it that
+     * has no id, for a patcher that cannot add {@link TimeBar} to their class.
+     */
+    public static void setTimeBarClass(Class<?> cls) {
+        timeBarClass = cls;
+    }
+
     static final boolean ENABLED = Settings.MINIPLAYER_GLASS.get() && MINI_PLAYER != 0;
 
     /**
@@ -408,7 +421,8 @@ public final class MusicGlassMiniplayer {
         if (miniplayer.getParent() instanceof ViewGroup parent) {
             for (int i = 0, count = parent.getChildCount(); i < count; i++) {
                 View child = parent.getChildAt(i);
-                if (child instanceof TimeBar) return child;
+                if (child instanceof TimeBar
+                        || (timeBarClass != null && timeBarClass.isInstance(child))) return child;
             }
         }
         return null;
