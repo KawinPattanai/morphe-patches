@@ -15,9 +15,12 @@ import android.os.Build;
 import android.text.Editable;
 import android.text.SpannableString;
 import android.text.Spanned;
+import android.text.TextPaint;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.text.style.ClickableSpan;
 import android.util.Base64;
+import android.view.View;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -57,6 +60,7 @@ import app.morphe.extension.shared.StringRef;
 import app.morphe.extension.shared.Utils;
 import app.morphe.extension.shared.patches.LithoRelayoutPatch;
 import app.morphe.extension.shared.patches.components.ContextInterface;
+import app.morphe.extension.youtube.patches.VideoInformation;
 import app.morphe.extension.youtube.patches.dearrow.DeArrowPatch;
 import app.morphe.extension.youtube.patches.dearrow.DeArrowTitleIcon;
 import app.morphe.extension.youtube.patches.utils.ProtoNode;
@@ -142,8 +146,6 @@ public final class RestoreOriginalTitlesPatch {
      */
     private static final String SHORTS_VIDEO_LINK_ID = "id.reel_multi_format_link";
 
-    private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{11}$");
-
     /**
      * Video id encoded in a key as any of the first fields, such as the key of a hashtag of a description.
      */
@@ -216,6 +218,39 @@ public final class RestoreOriginalTitlesPatch {
     }
 
     /**
+     * Span of the DeArrow icon of a title, which toggles the title and the thumbnail of the video between
+     * DeArrow and the original when tapped. Litho texts handle the taps of clickable spans themselves,
+     * before the element that shows the title, so tapping the icon does not open the video.
+     * The Litho texts of the video are laid out again when the title is toggled.
+     */
+    private static final class DeArrowIconSpan extends ClickableSpan implements LithoRelayoutPatch.RelayoutSpan {
+        final String videoId;
+        final String deArrowTitle;
+        final boolean showsOriginalTitle;
+
+        DeArrowIconSpan(String videoId, String deArrowTitle, boolean showsOriginalTitle) {
+            this.videoId = videoId;
+            this.deArrowTitle = deArrowTitle;
+            this.showsOriginalTitle = showsOriginalTitle;
+        }
+
+        @Override
+        public void onClick(@NonNull View widget) {
+            toggleOriginalTitle(videoId, showsOriginalTitle);
+        }
+
+        @Override
+        public void updateDrawState(@NonNull TextPaint paint) {
+            // The icon keeps the color of the title, instead of the link color.
+        }
+
+        @Override
+        public boolean isOutdated() {
+            return showsOriginalTitle == (selectedOriginalTitle(videoId) == null);
+        }
+    }
+
+    /**
      * Different videos can have the same title, such as a video and its reupload, and the Litho
      * texts do not include the video id. So the titles that are not yet fetched when the elements
      * are parsed are marked with the video id, and the text hook removes the marker.
@@ -226,9 +261,8 @@ public final class RestoreOriginalTitlesPatch {
     private static final char TITLE_MARKER_FIRST_DIGIT = '\u2061'; // Invisible operators U+2061 to U+2064.
     private static final String VIDEO_ID_CHARACTERS =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    private static final int VIDEO_ID_LENGTH = 11;
     private static final int TITLE_MARKER_DIGITS_PER_CHARACTER = 3;
-    private static final int TITLE_MARKER_LENGTH = 1 + VIDEO_ID_LENGTH * TITLE_MARKER_DIGITS_PER_CHARACTER;
+    private static final int TITLE_MARKER_LENGTH = 1 + VideoInformation.VIDEO_ID_LENGTH * TITLE_MARKER_DIGITS_PER_CHARACTER;
 
     /**
      * Minimum length of a translated title that is replaced inside other texts,
@@ -653,8 +687,12 @@ public final class RestoreOriginalTitlesPatch {
      */
     public static CharSequence onLithoTextLoaded(ContextInterface contextInterface, CharSequence text) {
         try {
-            if (!REPLACE_TITLES || text == null || DeArrowTitleIcon.hasIcon(text)) {
+            if (!REPLACE_TITLES || text == null) {
                 return text;
+            }
+            if (DeArrowTitleIcon.hasIcon(text)) {
+                // A reused title can be outdated after its DeArrow icon was tapped.
+                return updatedDeArrowTitle(text);
             }
             if (!replacesTitlesForCurrentNavigation()) {
                 // A title can be marked when the element was parsed for another navigation.
@@ -782,15 +820,71 @@ public final class RestoreOriginalTitlesPatch {
     /**
      * Same as {@link #spannedText(CharSequence, CharSequence, LithoRelayoutPatch.RelayoutSpan)}
      * without a relayout span, and shows the DeArrow icon before the title if the title is a DeArrow title.
+     * The original title is shown instead if the DeArrow icon of the video was tapped.
      */
     private static SpannableString titleText(CharSequence text, String title) {
-        if (!DeArrowTitleIcon.isShown(title)) {
+        String videoId = DeArrowTitleIcon.findVideoId(title);
+        if (videoId == null) {
             return spannedText(text, title, null);
         }
+        String originalTitle = selectedOriginalTitle(videoId);
+        final boolean showsOriginalTitle = originalTitle != null;
         // Spans of the entire text are also applied to the icon, such as the color of the text.
-        SpannableString spannedTitle = spannedText(text, DeArrowTitleIcon.addIcon(title), null);
-        DeArrowTitleIcon.setIconSpan(spannedTitle);
+        SpannableString spannedTitle = spannedText(text,
+                DeArrowTitleIcon.addIcon(showsOriginalTitle ? originalTitle : title), null);
+        DeArrowTitleIcon.setIconSpans(spannedTitle, showsOriginalTitle,
+                new DeArrowIconSpan(videoId, title.trim(), showsOriginalTitle));
         return spannedTitle;
+    }
+
+    /**
+     * @return The text with the other title if its DeArrow icon was tapped meanwhile, or the same text.
+     */
+    private static CharSequence updatedDeArrowTitle(CharSequence text) {
+        DeArrowIconSpan[] spans = ((Spanned) text).getSpans(0, text.length(), DeArrowIconSpan.class);
+        if (spans.length == 0 || !spans[0].isOutdated()) {
+            return text;
+        }
+        return titleText(text, spans[0].deArrowTitle);
+    }
+
+    /**
+     * @return The original title shown instead of the DeArrow title of the video after its DeArrow icon was tapped,
+     *         or null if the DeArrow title is shown.
+     */
+    @Nullable
+    private static String selectedOriginalTitle(String videoId) {
+        if (!DeArrowTitleIcon.isOriginalBrandingSelected(videoId)) {
+            return null;
+        }
+        OriginalTitleRequest.OriginalVideo original = OriginalTitleRequest.getOriginalIfFetched(videoId);
+        return original == null ? null : original.title();
+    }
+
+    /**
+     * Called on the main thread when the DeArrow icon of a title is tapped.
+     * The original title is fetched first if needed, such as when original titles are not restored,
+     * and the original thumbnail is shown with the original title.
+     *
+     * @param showsOriginalTitle If the tapped title is the original title.
+     */
+    private static void toggleOriginalTitle(String videoId, boolean showsOriginalTitle) {
+        try {
+            if (showsOriginalTitle) {
+                DeArrowTitleIcon.setOriginalBrandingSelected(videoId, false);
+                return;
+            }
+
+            OriginalTitleRequest.fetchOriginalTitleIfNeeded(videoId).thenAccept(originalTitle -> {
+                if (originalTitle == null) {
+                    Logger.printDebug(() -> "No original title to show instead of the DeArrow title of: " + videoId);
+                    return;
+                }
+                DeArrowTitleIcon.setOriginalBrandingSelected(videoId, true);
+            });
+        } catch (Exception ex) {
+            Logger.printException(() -> "toggleOriginalTitle failure", ex);
+        }
     }
 
     /**
@@ -1561,9 +1655,9 @@ public final class RestoreOriginalTitlesPatch {
      */
     @Nullable
     private static String decodeTitleMarker(CharSequence text, int markerStart) {
-        char[] videoId = new char[VIDEO_ID_LENGTH];
+        char[] videoId = new char[VideoInformation.VIDEO_ID_LENGTH];
         int index = markerStart + 1;
-        for (int i = 0; i < VIDEO_ID_LENGTH; i++) {
+        for (int i = 0; i < VideoInformation.VIDEO_ID_LENGTH; i++) {
             int value = 0;
             for (int digit = 0; digit < TITLE_MARKER_DIGITS_PER_CHARACTER; digit++) {
                 final int digitValue = text.charAt(index++) - TITLE_MARKER_FIRST_DIGIT;
@@ -1609,7 +1703,7 @@ public final class RestoreOriginalTitlesPatch {
         StringBuilder builder = new StringBuilder(nodeText.length() + TITLE_MARKER_LENGTH)
                 .append(nodeText)
                 .append(TITLE_MARKER_START);
-        for (int i = 0; i < VIDEO_ID_LENGTH; i++) {
+        for (int i = 0; i < VideoInformation.VIDEO_ID_LENGTH; i++) {
             final int value = VIDEO_ID_CHARACTERS.indexOf(videoId.charAt(i));
             for (int shift = 2 * (TITLE_MARKER_DIGITS_PER_CHARACTER - 1); shift >= 0; shift -= 2) {
                 builder.append((char) (TITLE_MARKER_FIRST_DIGIT + ((value >> shift) & 3)));
@@ -2507,7 +2601,7 @@ public final class RestoreOriginalTitlesPatch {
             ProtoNode videoIdNode = null;
             for (int j = i - 2; j >= Math.max(0, i - 1 - LINK_MAX_TEXTS_BEFORE_TITLE); j--) {
                 ProtoNode candidate = textNodes.get(j);
-                if (VIDEO_ID_PATTERN.matcher(candidate.getText().trim()).matches()) {
+                if (VideoInformation.isVideoId(candidate.getText().trim())) {
                     videoIdNode = candidate;
                     break;
                 }
