@@ -24,6 +24,11 @@ public final class HttpHeaderAccess {
 
     private static Field[] stringFields;
 
+    /** Whether the fields were handed over already, so the class is not looked at again. */
+    public static boolean isResolved() {
+        return stringFields != null;
+    }
+
     /**
      * The fields the module resolved from the bytecode of the app, which name and value the header
      * of a media request are. Set once while patching, in the process the patches run in.
