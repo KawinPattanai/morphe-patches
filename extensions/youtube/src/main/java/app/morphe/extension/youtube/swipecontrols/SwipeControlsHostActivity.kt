@@ -310,10 +310,15 @@ class SwipeControlsHostActivity(val activity: Activity) {
             // Feature can cause crashing if forced in newer targets.
             !VersionCheckPatch.IS_20_27_OR_GREATER && Settings.SWIPE_CHANGE_VIDEO.get()
 
-        private val MethodHookParam.swipeControlsHost
+        /**
+         * The host of this activity, or null while the activity is still being constructed or
+         * once it has been torn down. A hook installed on the activity runs in both of those
+         * windows, and reading the field with a cast that does not take null threw for each call.
+         */
+        private val MethodHookParam.swipeControlsHost: SwipeControlsHostActivity?
             get() = XposedHelpers.getAdditionalInstanceField(
                 thisObject, "swipeControlsHost"
-            ) as SwipeControlsHostActivity
+            ) as? SwipeControlsHostActivity
 
         private lateinit var dispatchDownstreamTouchEventMethod: XposedInterface.Invoker<*, Method?>
 
@@ -332,7 +337,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
             XposedHelpers.findAndHookMethod(
                 activityClass, "onCreate", Bundle::class.java, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        param.swipeControlsHost.apply {
+                        param.swipeControlsHost?.apply {
                             initialize()
                         }
                     }
@@ -340,13 +345,13 @@ class SwipeControlsHostActivity(val activity: Activity) {
             XposedHelpers.findAndHookMethod(
                 activityClass, "onStart", object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        param.swipeControlsHost.reAttachOverlays()
+                        param.swipeControlsHost?.reAttachOverlays()
                     }
                 })
             XposedHelpers.findAndHookMethod(
                 activityClass, "onDestroy", object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        PlayerType.getOnChange().removeObserver(param.swipeControlsHost::onPlayerTypeChanged)
+                        param.swipeControlsHost?.let { PlayerType.getOnChange().removeObserver(it::onPlayerTypeChanged) }
                     }
                 })
             XposedHelpers.findAndHookMethod(
@@ -356,7 +361,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val ev = param.args[0] as MotionEvent?
-                        param.swipeControlsHost.apply {
+                        param.swipeControlsHost?.apply {
                             ensureInitialized()
                             if ((ev != null) && gesture.submitTouchEvent(ev)) {
                                 param.result = true
@@ -380,7 +385,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val ev = param.args[0] as KeyEvent?
-                        param.swipeControlsHost.apply {
+                        param.swipeControlsHost?.apply {
                             ensureInitialized()
                             if ((ev != null) && keys.onKeyEvent(ev)) {
                                 param.result = true
