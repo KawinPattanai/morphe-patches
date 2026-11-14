@@ -24,6 +24,16 @@ public final class HttpHeaderAccess {
 
     private static Field[] stringFields;
 
+    /**
+     * The fields the module resolved from the bytecode of the app, which name and value the header
+     * of a media request are. Set once while patching, in the process the patches run in.
+     */
+    public static void setFields(Field name, Field value) {
+        name.setAccessible(true);
+        value.setAccessible(true);
+        stringFields = new Field[]{name, value};
+    }
+
     public static String name(HttpHeader header) {
         return string(header, 0);
     }
@@ -43,10 +53,32 @@ public final class HttpHeaderAccess {
             return null;
         }
         try {
-            return (String) fields[index].get(header);
+            String value = (String) fields[index].get(header);
+            if (index == 0 && !looksLikeHeaderName(value)) {
+                // The fields of the class are read in the order it declares them, which another build
+                // may swap: a value that cannot be a header name keeps the header instead of dropping
+                // it, so a wrong read costs a header that is sent twice rather than a request that fails.
+                return null;
+            }
+            return value;
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static boolean looksLikeHeaderName(String value) {
+        if (value == null || value.isEmpty() || value.length() > 64) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '-' || c == '_';
+            if (!allowed) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The first two string fields of the header class, which are its name and value. */
