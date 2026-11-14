@@ -1206,26 +1206,24 @@ public final class FeedVideoCardsPatch {
      * and when the list scrolls while the card is partly shown. After the first retries, the card
      * is checked a few more times with longer delays while it's shown.
      * Must be called on the main thread.
-     *
-     * @return If the card is checked again soon, or when the list scrolls.
      */
-    public static boolean scheduleRetry(ComponentHost root) {
+    public static void scheduleRetry(ComponentHost root) {
         final boolean partlyShown = scheduleScrollCheck(root);
 
         // Every patch that draws on the card can ask for a retry when the card is checked,
         // and the card is checked again once for all of them.
         if (pendingRetries.containsKey(root)) {
-            return true;
+            return;
         }
         Integer count = retries.get(root);
         final int attempt = count == null ? 0 : count;
         if (attempt >= MAX_RETRIES + LATE_RETRY_DELAYS_MS.length) {
-            return partlyShown;
+            return;
         }
         if (attempt >= MAX_RETRIES) {
             // A late retry of an earlier layout of the card can still be pending.
             if (pendingLateRetries.containsKey(root)) {
-                return partlyShown;
+                return;
             }
             retries.put(root, attempt + 1);
             // Not a pending retry, so what is drawn while the card is checked again soon is not kept
@@ -1237,7 +1235,7 @@ public final class FeedVideoCardsPatch {
                     scheduleUpdate(root);
                 }
             }, LATE_RETRY_DELAYS_MS[attempt - MAX_RETRIES]);
-            return partlyShown;
+            return;
         }
         retries.put(root, attempt + 1);
         pendingRetries.put(root, Boolean.TRUE);
@@ -1247,7 +1245,6 @@ public final class FeedVideoCardsPatch {
                 scheduleUpdate(root);
             }
         }, RETRY_DELAY_MS);
-        return true;
     }
 
     /**
@@ -1594,9 +1591,13 @@ public final class FeedVideoCardsPatch {
             duration = new Rect(0, 0, durationView.getWidth(), durationView.getHeight());
             ((ViewGroup) thumbnail).offsetDescendantRectToMyCoords(durationView, duration);
         }
+        final Rect frame = new Rect(0, 0, thumbnail.getWidth(), thumbnail.getHeight());
+        if (duration == null) {
+            // The duration is not found, so where it is is estimated, and the badge does not overlap it.
+            duration = FeedViewCountPatch.estimateDurationBadge(thumbnail, frame, null);
+        }
         FeedEngagementCountsPatch.onCardLaidOut(thumbnail, compactVideoIds.get(thumbnail),
-                new FeedViewCountPatch.ThumbnailFrame(duration,
-                        new Rect(0, 0, thumbnail.getWidth(), thumbnail.getHeight()), false));
+                new FeedViewCountPatch.ThumbnailFrame(duration, frame, false));
     }
 
     /**
