@@ -26,6 +26,7 @@ import java.util.WeakHashMap;
 
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.Utils;
+import app.morphe.extension.shared.patches.HttpHeaderAccess;
 import app.morphe.extension.shared.patches.MediaHttpHeader;
 import app.morphe.extension.shared.patches.MediaHttpRequest;
 import app.morphe.extension.shared.spoof.requests.StreamingDataRequest;
@@ -164,7 +165,7 @@ public final class MwebStream {
         ArrayList<HttpHeader> appHeaders = request.patch_getHeaders();
         if (appHeaders != null) {
             for (HttpHeader header : appHeaders) {
-                if (!isReplacedHeader(((MediaHttpHeader) header).patch_getName())) {
+                if (!isReplacedHeader(HttpHeaderAccess.name(header))) {
                     headers.add(header);
                 }
             }
