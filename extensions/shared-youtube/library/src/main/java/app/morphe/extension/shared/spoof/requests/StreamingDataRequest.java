@@ -749,6 +749,19 @@ public class StreamingDataRequest {
                 return null;
             }
 
+            // The player reads fvip and mn out of every googlevideo url it is handed, and aborts the
+            // load with a null pointer when they are missing, which it retries until the video gives
+            // up and the user is left with a spinner. A client whose urls carry neither is skipped,
+            // and the response of the app is used instead.
+            boolean urlWithoutHostParameters = streamingData.getAdaptiveFormatsList().stream()
+                    .map(Format::getUrl)
+                    .filter(url -> url != null && url.contains("googlevideo.com"))
+                    .anyMatch(url -> !url.contains("fvip=") || !url.contains("mn="));
+            if (urlWithoutHostParameters) {
+                Logger.printDebug(() -> "Ignoring client whose urls have no fvip or mn: " + clientType);
+                return null;
+            }
+
             // In YouTube 20.21.37, manifestless live streams cannot be played using the SABR protocol, or there are playback issues.
             // Until code to assemble the manifestUrl is implemented or code to override the exoPlayerConfig is ready,
             // TV SABR clients in live streams will be temporarily fallbacked to TV DASH clients.
