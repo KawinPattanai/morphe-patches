@@ -753,10 +753,15 @@ public class StreamingDataRequest {
             // load with a null pointer when they are missing, which it retries until the video gives
             // up and the user is left with a spinner. A client whose urls carry neither is skipped,
             // and the response of the app is used instead.
+            // The url the player starts from is not always one of the formats, so the streaming url of
+            // the server is checked with them.
             boolean urlWithoutHostParameters = streamingData.getAdaptiveFormatsList().stream()
                     .map(Format::getUrl)
                     .filter(url -> url != null && url.contains("googlevideo.com"))
-                    .anyMatch(url -> !url.contains("fvip=") || !url.contains("mn="));
+                    .anyMatch(url -> !url.contains("fvip=") || !url.contains("mn="))
+                    || (streamingData.getServerAbrStreamingUrl().contains("googlevideo.com")
+                    && (!streamingData.getServerAbrStreamingUrl().contains("fvip=")
+                    || !streamingData.getServerAbrStreamingUrl().contains("mn=")));
             if (urlWithoutHostParameters) {
                 Logger.printDebug(() -> "Ignoring client whose urls have no fvip or mn: " + clientType);
                 return null;
