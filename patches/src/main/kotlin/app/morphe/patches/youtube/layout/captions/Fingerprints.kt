@@ -56,6 +56,23 @@ internal object SubtitleManagerFingerprint : Fingerprint(
 )
 
 /**
+ * Same method as [SubtitleManagerFingerprint]. If no track is selected, the track that the audio track
+ * of the video marks as forced is shown anyway: `if (audioTrack.hasForcedTrack && audioTrack.forcedTrackIndex >= 0)`.
+ */
+internal object SubtitleManagerForcedTrackFingerprint : Fingerprint(
+    classFingerprint = SubtitleManagerFingerprintClassFingerprint,
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.FINAL),
+    returnType = "V",
+    parameters = listOf("L"),
+    filters = listOf(
+        fieldAccess(opcode = Opcode.IGET_BOOLEAN, type = "Z"),
+        opcode(Opcode.IF_EQZ, location = MatchAfterImmediately()),
+        fieldAccess(opcode = Opcode.IGET, type = "I", location = MatchAfterImmediately()),
+        opcode(Opcode.IF_LTZ, location = MatchAfterImmediately())
+    )
+)
+
+/**
  * YouTube 20.26+
  */
 internal object NoVolumeCaptionsFeatureFlagFingerprint : Fingerprint(
@@ -417,12 +434,12 @@ internal object DefaultCaptionTrackFingerprint : Fingerprint(
     )
 )
 
-internal fun preferredCaptionsTrackFingerprint() = Fingerprint(
+internal object PreferredCaptionsTrackFingerprint : Fingerprint(
     classFingerprint = DefaultCaptionTrackFingerprint,
     // 21.23+ also has a method without parameters that calls the default track method.
     parameters = listOf("L", "L"),
     filters = listOf(
-        methodCall(reference = DefaultCaptionTrackFingerprint.method),
+        methodCall(reference = { DefaultCaptionTrackFingerprint.originalMethod }),
         opcode(Opcode.MOVE_RESULT_OBJECT, location = MatchAfterImmediately())
     )
 )
