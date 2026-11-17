@@ -225,32 +225,6 @@ public class SeekbarThumbnailPreviewPatch {
         return chapterPreview;
     }
 
-    // Match the preview's aspect ratio to the bitmap (which mirrors the video).
-    private static void applyBitmapAspectRatio(FrameLayout previewFrame, Bitmap bitmap) {
-        final int bitmapWidth = bitmap.getWidth();
-        final int bitmapHeight = bitmap.getHeight();
-
-        if (bitmapWidth <= 0 || bitmapHeight <= 0) {
-            return;
-        }
-
-        final int newWidth;
-        final int newHeight;
-        if (bitmapWidth >= bitmapHeight) {
-            newWidth = THUMBNAIL_PREVIEW_LONG_SIDE;
-            newHeight = THUMBNAIL_PREVIEW_LONG_SIDE * bitmapHeight / bitmapWidth;
-        } else {
-            newHeight = THUMBNAIL_PREVIEW_LONG_SIDE;
-            newWidth = THUMBNAIL_PREVIEW_LONG_SIDE * bitmapWidth / bitmapHeight;
-        }
-
-        previewFrame.setLayoutParams(
-            new LinearLayout.LayoutParams(
-                newWidth, newHeight
-            )
-        );
-    }
-
     private static String formatSeekTime(int totalSeconds) {
         final int hours = totalSeconds / 3600;
         final int minutes = (totalSeconds % 3600) / 60;
@@ -461,7 +435,33 @@ public class SeekbarThumbnailPreviewPatch {
                     }
 
                     if (scalePreviewFrame) {
-                        applyBitmapAspectRatio(views.previewFrame, fineScrubbingPreviewBitmap);
+                        // Match the preview's aspect ratio to the bitmap (which mirrors the video).
+                        applyBitmapAspectRatio: {
+                            FrameLayout frame = views.previewFrame;
+                            Bitmap bitmap = fineScrubbingPreviewBitmap;
+                            final int bitmapWidth = bitmap.getWidth();
+                            final int bitmapHeight = bitmap.getHeight();
+
+                            if (bitmapWidth <= 0 || bitmapHeight <= 0) {
+                                break applyBitmapAspectRatio;
+                            }
+
+                            final int newWidth;
+                            final int newHeight;
+                            if (bitmapWidth >= bitmapHeight) {
+                                newWidth = THUMBNAIL_PREVIEW_LONG_SIDE;
+                                newHeight = THUMBNAIL_PREVIEW_LONG_SIDE * bitmapHeight / bitmapWidth;
+                            } else {
+                                newHeight = THUMBNAIL_PREVIEW_LONG_SIDE;
+                                newWidth = THUMBNAIL_PREVIEW_LONG_SIDE * bitmapWidth / bitmapHeight;
+                            }
+
+                            frame.setLayoutParams(
+                                new LinearLayout.LayoutParams(
+                                    newWidth, newHeight
+                                )
+                            );
+                        }
                         previewWidthPx = -1;
                         previewHeightPx = -1;
                         scalePreviewFrame = false;

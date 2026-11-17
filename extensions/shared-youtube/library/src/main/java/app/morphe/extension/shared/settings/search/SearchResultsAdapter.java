@@ -213,11 +213,67 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
     protected void bindDataToViewHolder(BaseSearchResultItem item, Object holder,
                                         BaseSearchResultItem.ViewType viewType, View view) {
         switch (viewType) {
-            case REGULAR, URL_LINK, LIST -> bindRegularViewHolder(item, (RegularViewHolder) holder, view);
-            case SWITCH -> bindSwitchViewHolder(item, (SwitchViewHolder) holder, view);
-            case COLOR_PICKER -> bindColorViewHolder(item, (ColorViewHolder) holder, view);
-            case GROUP_HEADER -> bindGroupHeaderViewHolder(item, (GroupHeaderViewHolder) holder, view);
-            case NO_RESULTS -> bindNoResultsViewHolder(item, (NoResultsViewHolder) holder);
+            case REGULAR, URL_LINK, LIST -> {
+                RegularViewHolder regularHolder = (RegularViewHolder) holder;
+                BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
+                bindTitleAndSummary(prefItem, regularHolder.titleView, regularHolder.summaryView,
+                        searchViewController.getCurrentQueryPattern());
+                setupPreferenceView(view, regularHolder.titleView, regularHolder.summaryView, prefItem.preference,
+                        () -> handlePreferenceClick(prefItem),
+                        () -> navigateAndScrollToPreference(item));
+            }
+            case SWITCH -> {
+                SwitchViewHolder switchHolder = (SwitchViewHolder) holder;
+                BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
+                SwitchPreference switchPref = (SwitchPreference) prefItem.preference;
+                bindTitleAndSummary(prefItem, switchHolder.titleView, switchHolder.summaryView,
+                        searchViewController.getCurrentQueryPattern());
+                switchHolder.switchWidget.setBackground(null); // Remove ripple/highlight.
+                // Sync switch state with preference without animation.
+                boolean currentState = switchPref.isChecked();
+                if (switchHolder.switchWidget.isChecked() != currentState) {
+                    switchHolder.switchWidget.setChecked(currentState);
+                    switchHolder.switchWidget.jumpDrawablesToCurrentState();
+                }
+                setupPreferenceView(view, switchHolder.titleView, switchHolder.summaryView, switchPref,
+                        () -> {
+                            boolean newState = !switchPref.isChecked();
+                            switchPref.setChecked(newState);
+                            switchHolder.switchWidget.setChecked(newState);
+                            if (switchPref.getOnPreferenceChangeListener() != null) {
+                                switchPref.getOnPreferenceChangeListener().onPreferenceChange(switchPref, newState);
+                            }
+
+                            // Toggled without a click on the preference.
+                            NewSettingsIndicator.markSeen(switchPref);
+                            notifyDataSetChanged();
+                        },
+                        () -> navigateAndScrollToPreference(item));
+                switchHolder.switchWidget.setEnabled(switchPref.isEnabled());
+            }
+            case COLOR_PICKER -> {
+                ColorViewHolder colorHolder = (ColorViewHolder) holder;
+                BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
+                bindTitleAndSummary(prefItem, colorHolder.titleView, colorHolder.summaryView,
+                        searchViewController.getCurrentQueryPattern());
+                ColorDot.applyColorDot(colorHolder.colorDot, prefItem.getColor(), prefItem.preference.isEnabled());
+                SegmentCategoryPreference.bindColorTarget(colorHolder.colorDot,
+                        prefItem.preference instanceof SegmentCategoryPreference categoryPref ? categoryPref : null);
+                setupPreferenceView(view, colorHolder.titleView, colorHolder.summaryView, prefItem.preference,
+                        () -> handlePreferenceClick(prefItem),
+                        () -> navigateAndScrollToPreference(item));
+            }
+            case GROUP_HEADER -> {
+                GroupHeaderViewHolder groupHolder = (GroupHeaderViewHolder) holder;
+                groupHolder.pathView.setText(item.getDisplayTitle(null));
+                view.setOnClickListener(v -> navigateToTargetScreen(item));
+            }
+            case NO_RESULTS -> {
+                NoResultsViewHolder noResultsHolder = (NoResultsViewHolder) holder;
+                BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
+                bindTitleAndSummary(prefItem, noResultsHolder.titleView, noResultsHolder.summaryView, null);
+                noResultsHolder.iconView.setImageDrawable(BaseSearchViewController.getSearchIconDrawable());
+            }
             default -> throw new IllegalStateException("Unknown viewType: " + viewType);
         }
     }
@@ -233,66 +289,6 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
         titleView.setText(item.getDisplayTitle(queryPattern));
         summaryView.setText(summary);
         summaryView.setVisibility(Utils.isEmpty(summary) ? View.GONE : View.VISIBLE);
-    }
-
-    protected void bindRegularViewHolder(BaseSearchResultItem item, RegularViewHolder holder, View view) {
-        BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
-        bindTitleAndSummary(prefItem, holder.titleView, holder.summaryView,
-                searchViewController.getCurrentQueryPattern());
-        setupPreferenceView(view, holder.titleView, holder.summaryView, prefItem.preference,
-                () -> handlePreferenceClick(prefItem),
-                () -> navigateAndScrollToPreference(item));
-    }
-
-    protected void bindSwitchViewHolder(BaseSearchResultItem item, SwitchViewHolder holder, View view) {
-        BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
-        SwitchPreference switchPref = (SwitchPreference) prefItem.preference;
-        bindTitleAndSummary(prefItem, holder.titleView, holder.summaryView,
-                searchViewController.getCurrentQueryPattern());
-        holder.switchWidget.setBackground(null); // Remove ripple/highlight.
-        // Sync switch state with preference without animation.
-        boolean currentState = switchPref.isChecked();
-        if (holder.switchWidget.isChecked() != currentState) {
-            holder.switchWidget.setChecked(currentState);
-            holder.switchWidget.jumpDrawablesToCurrentState();
-        }
-        setupPreferenceView(view, holder.titleView, holder.summaryView, switchPref,
-                () -> {
-                    boolean newState = !switchPref.isChecked();
-                    switchPref.setChecked(newState);
-                    holder.switchWidget.setChecked(newState);
-                    if (switchPref.getOnPreferenceChangeListener() != null) {
-                        switchPref.getOnPreferenceChangeListener().onPreferenceChange(switchPref, newState);
-                    }
-                    // Toggled without a click on the preference.
-                    NewSettingsIndicator.markSeen(switchPref);
-                    notifyDataSetChanged();
-                },
-                () -> navigateAndScrollToPreference(item));
-        holder.switchWidget.setEnabled(switchPref.isEnabled());
-    }
-
-    protected void bindColorViewHolder(BaseSearchResultItem item, ColorViewHolder holder, View view) {
-        BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
-        bindTitleAndSummary(prefItem, holder.titleView, holder.summaryView,
-                searchViewController.getCurrentQueryPattern());
-        ColorDot.applyColorDot(holder.colorDot, prefItem.getColor(), prefItem.preference.isEnabled());
-        SegmentCategoryPreference.bindColorTarget(holder.colorDot,
-                prefItem.preference instanceof SegmentCategoryPreference categoryPref ? categoryPref : null);
-        setupPreferenceView(view, holder.titleView, holder.summaryView, prefItem.preference,
-                () -> handlePreferenceClick(prefItem),
-                () -> navigateAndScrollToPreference(item));
-    }
-
-    protected void bindGroupHeaderViewHolder(BaseSearchResultItem item, GroupHeaderViewHolder holder, View view) {
-        holder.pathView.setText(item.getDisplayTitle(null));
-        view.setOnClickListener(v -> navigateToTargetScreen(item));
-    }
-
-    protected void bindNoResultsViewHolder(BaseSearchResultItem item, NoResultsViewHolder holder) {
-        BaseSearchResultItem.PreferenceSearchItem prefItem = (BaseSearchResultItem.PreferenceSearchItem) item;
-        bindTitleAndSummary(prefItem, holder.titleView, holder.summaryView, null);
-        holder.iconView.setImageDrawable(BaseSearchViewController.getSearchIconDrawable());
     }
 
     /**

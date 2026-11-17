@@ -998,40 +998,37 @@ public final class AmbientLightController {
         captureInFlight = true;
         if (video instanceof SurfaceView) {
             // Before Android 14 the request blocks until the copy is finished.
-            worker().post(() -> copySurface((SurfaceView) video, bitmap, current));
+            worker().post(() -> {
+                // Worker thread.
+                SurfaceView surfaceView = (SurfaceView) video;
+                try {
+                    if (!surfaceView.getHolder().getSurface().isValid()) {
+                        onCaptureFailed();
+                        return;
+                    }
+                    PixelCopy.request(surfaceView, bitmap, result -> {
+                        if (result == PixelCopy.SUCCESS) {
+                            // The next capture is a second away after failed ones, as while a video loads.
+                            if (captureFailures.getAndSet(0) >= CAPTURE_FAILURES_BEFORE_BACKOFF) {
+                                mainHandler.post(AmbientLightController::tickNow);
+                            }
+                            process(bitmap, current);
+                        } else {
+                            captureFailures.incrementAndGet();
+                        }
+                        captureInFlight = false;
+                    }, worker());
+                } catch (IllegalArgumentException ex) {
+                    Logger.printDebug(() -> "Video surface went away during the capture");
+                    onCaptureFailed();
+                }
+            });
         } else {
             ((TextureView) video).getBitmap(bitmap);
             worker().post(() -> {
                 process(bitmap, current);
                 captureInFlight = false;
             });
-        }
-    }
-
-    /**
-     * Worker thread.
-     */
-    private static void copySurface(SurfaceView video, Bitmap bitmap, Layout current) {
-        try {
-            if (!video.getHolder().getSurface().isValid()) {
-                onCaptureFailed();
-                return;
-            }
-            PixelCopy.request(video, bitmap, result -> {
-                if (result == PixelCopy.SUCCESS) {
-                    // The next capture is a second away after failed ones, as while a video loads.
-                    if (captureFailures.getAndSet(0) >= CAPTURE_FAILURES_BEFORE_BACKOFF) {
-                        mainHandler.post(AmbientLightController::tickNow);
-                    }
-                    process(bitmap, current);
-                } else {
-                    captureFailures.incrementAndGet();
-                }
-                captureInFlight = false;
-            }, worker());
-        } catch (IllegalArgumentException ex) {
-            Logger.printDebug(() -> "Video surface went away during the capture");
-            onCaptureFailed();
         }
     }
 

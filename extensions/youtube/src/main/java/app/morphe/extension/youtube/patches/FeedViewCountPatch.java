@@ -1063,46 +1063,9 @@ public final class FeedViewCountPatch {
         return Math.round(root.getWidth() * FeedVideoCardsPatch.THUMBNAIL_RATIO - TOLERANCE_DP * density);
     }
 
-    /**
-     * @return The view count of the texts below the thumbnail, such as
-     *         "Channel - 4.7M views - 2 days ago", or null if not found.
-     *         Used when the text was not created with the view count span.
-     */
-    @Nullable
-    private static String findViewCountInTexts(List<PlacedText> texts) {
-        texts.sort((a, b) -> a.top != b.top ? a.top - b.top : a.left - b.left);
-        Locale locale = Locale.getDefault();
-        // The texts below the title are below it, so they are checked first.
-        // The title is the first text, and can have numbers and delimiters too.
-        final int first = texts.size() > 1 ? 1 : 0;
-        for (int i = texts.size() - 1; i >= first; i--) {
-            ViewCountMatch match = findViewCount(texts.get(i).text, locale);
-            if (match != null) {
-                return match.parsed.count;
-            }
-        }
-        return null;
-    }
-
     /** Videos whose texts were logged, so each is logged once. Used only on the main thread. */
     private static final Set<String> loggedVideoIds = new LinkedHashSet<>();
     private static final int MAX_LOGGED_VIDEOS = 200;
-
-    private static void logTexts(String videoId, List<PlacedText> texts) {
-        if (!loggedVideoIds.add(videoId)) {
-            return;
-        }
-        if (loggedVideoIds.size() > MAX_LOGGED_VIDEOS) {
-            loggedVideoIds.clear();
-        }
-        Logger.printDebug(() -> {
-            StringBuilder builder = new StringBuilder();
-            for (PlacedText placed : texts) {
-                builder.append(" [").append(placed.text).append(']');
-            }
-            return "View count not found: " + videoId + " texts:" + builder;
-        });
-    }
 
     /**
      * @return The bottom of a square thumbnail, found from the texts below it, or -1.
@@ -1337,7 +1300,26 @@ public final class FeedViewCountPatch {
                         // Texts on a square thumbnail are not texts of the video.
                         info.texts.removeIf(placed -> placed.top < textsTop);
                     }
-                    viewCount = findViewCountInTexts(info.texts);
+
+                    // The view count of the texts below the thumbnail, such as
+                    // "Channel - 4.7M views - 2 days ago", or null if not found.
+                    // Used when the text was not created with the view count span.
+                    findViewCountInTexts: {
+                        List<PlacedText> placedTexts = info.texts;
+                        placedTexts.sort((a, b) -> a.top != b.top ? a.top - b.top : a.left - b.left);
+                        Locale locale = Locale.getDefault();
+                        // The texts below the title are below it, so they are checked first.
+                        // The title is the first text, and can have numbers and delimiters too.
+                        final int first = placedTexts.size() > 1 ? 1 : 0;
+                        for (int i = placedTexts.size() - 1; i >= first; i--) {
+                            ViewCountMatch match = findViewCount(placedTexts.get(i).text, locale);
+                            if (match != null) {
+                                viewCount = match.parsed.count;
+                                break findViewCountInTexts;
+                            }
+                        }
+                        viewCount = null;
+                    }
                     textShowsViewCount = viewCount != null;
                 }
                 if (viewCount == null) {
@@ -1366,7 +1348,22 @@ public final class FeedViewCountPatch {
                 if (viewCount == null) {
                     // Checked again when its texts are drawn, as they can show the view count.
                     FeedVideoCardsPatch.scheduleRetry(host);
-                    logTexts(id, info.texts);
+                    logTexts: {
+                        List<PlacedText> loggedTexts = info.texts;
+                        if (!loggedVideoIds.add(id)) {
+                            break logTexts;
+                        }
+                        if (loggedVideoIds.size() > MAX_LOGGED_VIDEOS) {
+                            loggedVideoIds.clear();
+                        }
+                        Logger.printDebug(() -> {
+                            StringBuilder builder = new StringBuilder();
+                            for (PlacedText placed : loggedTexts) {
+                                builder.append(" [").append(placed.text).append(']');
+                            }
+                            return "View count not found: " + id + " texts:" + builder;
+                        });
+                    }
                 } else if (duration == null) {
                     final Rect found = thumbnail;
                     Logger.printDebug(() -> "Duration badge not found: " + id + " thumbnail: " + found);

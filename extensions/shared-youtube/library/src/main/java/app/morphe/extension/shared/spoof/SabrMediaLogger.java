@@ -119,7 +119,17 @@ final class SabrMediaLogger {
                     for (int tag; (tag = input.readTag()) != 0; ) {
                         final int field = WireFormat.getTagFieldNumber(tag);
                         final int wireType = WireFormat.getTagWireType(tag);
-                        String name = getClientInfoFieldName(field);
+                        String name = switch (field) {
+                            case CLIENT_INFO_DEVICE_MAKE_FIELD -> "deviceMake";
+                            case CLIENT_INFO_DEVICE_MODEL_FIELD -> "deviceModel";
+                            case CLIENT_INFO_CLIENT_NAME_FIELD -> "clientName";
+                            case CLIENT_INFO_CLIENT_VERSION_FIELD -> "clientVersion";
+                            case CLIENT_INFO_OS_NAME_FIELD -> "osName";
+                            case CLIENT_INFO_OS_VERSION_FIELD -> "osVersion";
+                            case CLIENT_INFO_HL_FIELD -> "hl";
+                            case CLIENT_INFO_GL_FIELD -> "gl";
+                            default -> null;
+                        };
 
                         if (field == CLIENT_INFO_VISITOR_DATA_FIELD) {
                             // Only whether it is set is logged.
@@ -147,21 +157,6 @@ final class SabrMediaLogger {
         } catch (IOException ex) {
             Logger.printInfo(() -> "Could not read SABR request", ex);
         }
-    }
-
-    @Nullable
-    private static String getClientInfoFieldName(int field) {
-        return switch (field) {
-            case CLIENT_INFO_DEVICE_MAKE_FIELD -> "deviceMake";
-            case CLIENT_INFO_DEVICE_MODEL_FIELD -> "deviceModel";
-            case CLIENT_INFO_CLIENT_NAME_FIELD -> "clientName";
-            case CLIENT_INFO_CLIENT_VERSION_FIELD -> "clientVersion";
-            case CLIENT_INFO_OS_NAME_FIELD -> "osName";
-            case CLIENT_INFO_OS_VERSION_FIELD -> "osVersion";
-            case CLIENT_INFO_HL_FIELD -> "hl";
-            case CLIENT_INFO_GL_FIELD -> "gl";
-            default -> null;
-        };
     }
 
     @Nullable

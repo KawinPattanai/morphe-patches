@@ -120,7 +120,26 @@ public final class NetworkProxyPatch {
             ArrayList<Proxy> proxies = new ArrayList<>(config.allowDirectFallback ? 2 : 1);
             proxies.add(Proxy.createHttpProxy(scheme, config.host, config.port, DIRECT_EXECUTOR, CONNECT_CALLBACK));
 
-            builder.setProxyOptions(createProxyOptions(proxies, config.allowDirectFallback));
+            ProxyOptions proxyOptions;
+            createProxyOptions: {
+                boolean directFallback = config.allowDirectFallback;
+                if (useProxyListInt()) {
+                    proxyOptions = ProxyOptions.fromProxyList(
+                            proxies,
+                            directFallback
+                                    ? ALL_PROXIES_FAILED_BEHAVIOR_ALLOW_DIRECT
+                                    : ALL_PROXIES_FAILED_BEHAVIOR_DISALLOW_DIRECT
+                    );
+                    break createProxyOptions;
+                }
+
+                if (directFallback) {
+                    // Legacy Cronet proxy APIs use a null proxy as the direct fallback sentinel.
+                    proxies.add(null);
+                }
+                proxyOptions = ProxyOptions.fromProxyList(proxies);
+            }
+            builder.setProxyOptions(proxyOptions);
             PROXY_OPTIONS_APPLIED_ON_CURRENT_THREAD.set(true);
         } catch (Throwable ex) {
             PROXY_OPTIONS_APPLIED_ON_CURRENT_THREAD.remove();
@@ -146,23 +165,6 @@ public final class NetworkProxyPatch {
         PROXY_OPTIONS_APPLIED_ON_CURRENT_THREAD.remove();
         CronetTransport.setMainCronetEngine(engine);
         initialize();
-    }
-
-    private static ProxyOptions createProxyOptions(ArrayList<Proxy> proxies, boolean allowDirectFallback) {
-        if (useProxyListInt()) {
-            return ProxyOptions.fromProxyList(
-                    proxies,
-                    allowDirectFallback
-                            ? ALL_PROXIES_FAILED_BEHAVIOR_ALLOW_DIRECT
-                            : ALL_PROXIES_FAILED_BEHAVIOR_DISALLOW_DIRECT
-            );
-        }
-
-        if (allowDirectFallback) {
-            // Legacy Cronet proxy APIs use a null proxy as the direct fallback sentinel.
-            proxies.add(null);
-        }
-        return ProxyOptions.fromProxyList(proxies);
     }
 
     private static HttpURLConnection openConnection(URL url) throws IOException {

@@ -66,10 +66,17 @@ public final class PlayerIcons {
     private static final Style SHORTS_STYLE = Settings.SHORTS_ICON_STYLE.get();
 
     // The stroke weight of custom icons is unknown, so the text keeps the weight of the Automatic style.
-    private static final Typeface TEXT_TYPEFACE = textTypeface(
-            STYLE == Style.AUTO || STYLE == Style.CUSTOM
-                    ? (AUTO_SUFFIX.isEmpty() ? Style.REGULAR : Style.BOLD)
-                    : STYLE);
+    // The text weight follows the stroke weight of the icons next to it,
+    // the condensed face stays so the text keeps the look it always had.
+    private static final Typeface TEXT_TYPEFACE = switch (STYLE == Style.AUTO || STYLE == Style.CUSTOM
+            ? (AUTO_SUFFIX.isEmpty() ? Style.REGULAR : Style.BOLD)
+            : STYLE) {
+        case REGULAR -> Typeface.create("sans-serif-condensed", Typeface.NORMAL);
+        case PHOSPHOR_LIGHT -> Typeface.create("sans-serif-condensed-light", Typeface.NORMAL);
+        case FLUENT, PHOSPHOR, PHOSPHOR_DUOTONE, IONICONS, SHARP ->
+                Typeface.create("sans-serif-condensed-medium", Typeface.NORMAL);
+        default -> Typeface.create("sans-serif-condensed", Typeface.BOLD);
+    };
 
     // Some buttons resolve their icon on every tap.
     private static final Map<String, String> names = new ConcurrentHashMap<>();
@@ -166,18 +173,6 @@ public final class PlayerIcons {
             text.setShadowLayer(IconShadow.BLUR_RADIUS,
                     IconShadow.OFFSET_X, IconShadow.OFFSET_Y, IconShadow.COLOR);
         }
-    }
-
-    // The text weight follows the stroke weight of the icons next to it,
-    // the condensed face stays so the text keeps the look it always had.
-    private static Typeface textTypeface(Style style) {
-        return switch (style) {
-            case REGULAR -> Typeface.create("sans-serif-condensed", Typeface.NORMAL);
-            case PHOSPHOR_LIGHT -> Typeface.create("sans-serif-condensed-light", Typeface.NORMAL);
-            case FLUENT, PHOSPHOR, PHOSPHOR_DUOTONE, IONICONS, SHARP ->
-                    Typeface.create("sans-serif-condensed-medium", Typeface.NORMAL);
-            default -> Typeface.create("sans-serif-condensed", Typeface.BOLD);
-        };
     }
 
     /**

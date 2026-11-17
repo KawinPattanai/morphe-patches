@@ -725,7 +725,52 @@ public class FeatureFlagsManagerPreference extends Preference {
                 null,
                 editText,
                 str("morphe_settings_save"),
-                () -> importText(editText.getText().toString()),
+                () -> {
+                    // Applies exported text. Lines that are only flag IDs are treated as blocked flags,
+                    // so the output of the copy button can be pasted as well.
+                    String importedText = editText.getText().toString();
+                    try {
+                        TreeSet<Long> blocked = new TreeSet<>();
+                        TreeSet<Long> forced = new TreeSet<>();
+
+                        for (String line : importedText.split("\n")) {
+                            String trimmed = line.trim();
+                            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+
+                            final int separator = trimmed.indexOf('=');
+                            String key = separator < 0 ? "blocked" : trimmed.substring(0, separator).trim();
+                            String value = separator < 0 ? trimmed : trimmed.substring(separator + 1);
+
+                            switch (key) {
+                                case "blocked": blocked.addAll(EnableDebuggingPatch.parseFlags(value)); break;
+                                case "forced": forced.addAll(EnableDebuggingPatch.parseFlags(value)); break;
+                                default: break; // Ignore diagnostic flags (on/off) and metadata (app version).
+                            }
+                        }
+
+                        blocked.removeAll(FLAGS_TO_IGNORE);
+                        forced.removeAll(FLAGS_TO_IGNORE);
+
+                        if (blocked.isEmpty() && forced.isEmpty()) {
+                            Utils.showToastLong(str("morphe_debug_feature_flags_manager_import_failed"));
+                            return;
+                        }
+
+                        SharedYouTubeSettings.DISABLED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(blocked));
+                        SharedYouTubeSettings.FORCED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(forced));
+
+                        loadFlagStates();
+
+                        listView.clearChoices();
+                        adapter.refresh();
+                        updateChips();
+                        updateBottomBar();
+
+                        Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_success", blocked.size() + forced.size()));
+                    } catch (Exception ex) {
+                        Logger.printException(() -> "Could not import feature flags", ex);
+                    }
+                },
                 () -> {},
                 str("morphe_settings_import_copy"),
                 () -> Utils.setClipboard(editText.getText().toString()),
@@ -777,54 +822,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         }
 
         return flags;
-    }
-
-    /**
-     * Applies exported text. Lines that are only flag IDs are treated as blocked flags,
-     * so the output of the copy button can be pasted as well.
-     */
-    private void importText(String text) {
-        try {
-            TreeSet<Long> blocked = new TreeSet<>();
-            TreeSet<Long> forced = new TreeSet<>();
-
-            for (String line : text.split("\n")) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
-
-                final int separator = trimmed.indexOf('=');
-                String key = separator < 0 ? "blocked" : trimmed.substring(0, separator).trim();
-                String value = separator < 0 ? trimmed : trimmed.substring(separator + 1);
-
-                switch (key) {
-                    case "blocked": blocked.addAll(EnableDebuggingPatch.parseFlags(value)); break;
-                    case "forced": forced.addAll(EnableDebuggingPatch.parseFlags(value)); break;
-                    default: break; // Ignore diagnostic flags (on/off) and metadata (app version).
-                }
-            }
-
-            blocked.removeAll(FLAGS_TO_IGNORE);
-            forced.removeAll(FLAGS_TO_IGNORE);
-
-            if (blocked.isEmpty() && forced.isEmpty()) {
-                Utils.showToastLong(str("morphe_debug_feature_flags_manager_import_failed"));
-                return;
-            }
-
-            SharedYouTubeSettings.DISABLED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(blocked));
-            SharedYouTubeSettings.FORCED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(forced));
-
-            loadFlagStates();
-
-            listView.clearChoices();
-            adapter.refresh();
-            updateChips();
-            updateBottomBar();
-
-            Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_success", blocked.size() + forced.size()));
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not import feature flags", ex);
-        }
     }
 
     private Button createBisectButton(Context context, Dialog dialog, String stringKey,

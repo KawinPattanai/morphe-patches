@@ -191,17 +191,13 @@ public final class DeArrowPatch {
     }
 
     public static final class StillImagesAvailability implements Setting.Availability {
-        public static boolean usingStillImagesAnywhere() {
-            return Settings.DEARROW_THUMBNAIL_HOME.get().useStillImages
+        @Override
+        public boolean isAvailable() {
+            return (Settings.DEARROW_THUMBNAIL_HOME.get().useStillImages
                     || Settings.DEARROW_THUMBNAIL_SUBSCRIPTIONS.get().useStillImages
                     || Settings.DEARROW_THUMBNAIL_LIBRARY.get().useStillImages
                     || Settings.DEARROW_THUMBNAIL_PLAYER.get().useStillImages
-                    || Settings.DEARROW_THUMBNAIL_SEARCH.get().useStillImages;
-        }
-
-        @Override
-        public boolean isAvailable() {
-            return usingStillImagesAnywhere();
+                    || Settings.DEARROW_THUMBNAIL_SEARCH.get().useStillImages);
         }
 
         @Override

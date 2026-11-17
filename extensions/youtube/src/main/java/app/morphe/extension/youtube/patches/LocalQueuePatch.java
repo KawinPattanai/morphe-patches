@@ -452,7 +452,23 @@ public final class LocalQueuePatch {
 
         Utils.runOnBackgroundThread(() -> {
             try {
-                JSONObject details = fetchOEmbed(item.videoId);
+                JSONObject details;
+                fetchOEmbed: {
+                    String itemVideoId = item.videoId;
+                    //noinspection CharsetObjectCanBeUsed
+                    String watchUrl = URLEncoder.encode("https://www.youtube.com/watch?v=" + itemVideoId, "UTF-8");
+                    HttpURLConnection connection = Requester.openConnection(
+                            "https://www.youtube.com/oembed?format=json&url=" + watchUrl);
+                    connection.setConnectTimeout(CONNECTION_TIMEOUT_MILLISECONDS);
+                    connection.setReadTimeout(CONNECTION_TIMEOUT_MILLISECONDS);
+                    if (connection.getResponseCode() != Requester.HTTP_STATUS_CODE_SUCCESS) {
+                        Logger.printDebug(() -> "oEmbed request failed for: " + itemVideoId);
+                        connection.disconnect();
+                        details = null;
+                        break fetchOEmbed;
+                    }
+                    details = Requester.parseJSONObjectAndDisconnect(connection);
+                }
                 String title;
                 String author;
                 if (details != null) {
@@ -460,7 +476,26 @@ public final class LocalQueuePatch {
                     author = details.optString("author_name");
                 } else {
                     // oEmbed has no title for videos whose uploader disabled embedding.
-                    details = fetchPlayerDetails(item.videoId);
+                    fetchPlayerDetails: {
+                        String detailsVideoId = item.videoId;
+                        byte[] requestBody = ChannelIdRoutes.createBody(detailsVideoId);
+                        HttpURLConnection connection = ChannelIdRoutes.getConnection(ChannelIdRoutes.GET_TITLE);
+                        connection.setFixedLengthStreamingMode(requestBody.length);
+                        try (OutputStream output = connection.getOutputStream()) {
+                            output.write(requestBody);
+                        }
+                        if (connection.getResponseCode() != Requester.HTTP_STATUS_CODE_SUCCESS) {
+                            Logger.printDebug(() -> "Player request failed for: " + detailsVideoId);
+                            connection.disconnect();
+                            details = null;
+                            break fetchPlayerDetails;
+                        }
+                        JSONObject videoDetails = Requester.parseJSONObjectAndDisconnect(connection).optJSONObject("videoDetails");
+                        if (videoDetails == null) {
+                            Logger.printDebug(() -> "Player response has no video details for: " + detailsVideoId);
+                        }
+                        details = videoDetails;
+                    }
                     if (details == null) return;
                     title = details.optString("title");
                     author = details.optString("author");
@@ -487,41 +522,5 @@ public final class LocalQueuePatch {
                 }
             }
         });
-    }
-
-    @Nullable
-    private static JSONObject fetchOEmbed(String videoId) throws IOException, JSONException {
-        //noinspection CharsetObjectCanBeUsed
-        String watchUrl = URLEncoder.encode("https://www.youtube.com/watch?v=" + videoId, "UTF-8");
-        HttpURLConnection connection = Requester.openConnection(
-                "https://www.youtube.com/oembed?format=json&url=" + watchUrl);
-        connection.setConnectTimeout(CONNECTION_TIMEOUT_MILLISECONDS);
-        connection.setReadTimeout(CONNECTION_TIMEOUT_MILLISECONDS);
-        if (connection.getResponseCode() != Requester.HTTP_STATUS_CODE_SUCCESS) {
-            Logger.printDebug(() -> "oEmbed request failed for: " + videoId);
-            connection.disconnect();
-            return null;
-        }
-        return Requester.parseJSONObjectAndDisconnect(connection);
-    }
-
-    @Nullable
-    private static JSONObject fetchPlayerDetails(String videoId) throws IOException, JSONException {
-        byte[] requestBody = ChannelIdRoutes.createBody(videoId);
-        HttpURLConnection connection = ChannelIdRoutes.getConnection(ChannelIdRoutes.GET_TITLE);
-        connection.setFixedLengthStreamingMode(requestBody.length);
-        try (OutputStream output = connection.getOutputStream()) {
-            output.write(requestBody);
-        }
-        if (connection.getResponseCode() != Requester.HTTP_STATUS_CODE_SUCCESS) {
-            Logger.printDebug(() -> "Player request failed for: " + videoId);
-            connection.disconnect();
-            return null;
-        }
-        JSONObject videoDetails = Requester.parseJSONObjectAndDisconnect(connection).optJSONObject("videoDetails");
-        if (videoDetails == null) {
-            Logger.printDebug(() -> "Player response has no video details for: " + videoId);
-        }
-        return videoDetails;
     }
 }

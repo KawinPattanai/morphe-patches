@@ -599,15 +599,6 @@ public final class MwebSiteSession {
         }
     }
 
-    private static boolean isBlocked(String url) {
-        for (String part : BLOCKED_URL_PARTS) {
-            if (url.contains(part)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /**
      * A hidden page of the website, which makes the session of one video at a time.
      */
@@ -762,7 +753,18 @@ public final class MwebSiteSession {
                 @Nullable
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest request) {
-                    if (isBlocked(request.getUrl().toString())) {
+                    boolean isBlocked;
+                    isBlocked: {
+                        String requestUrl = request.getUrl().toString();
+                        for (String part : BLOCKED_URL_PARTS) {
+                            if (requestUrl.contains(part)) {
+                                isBlocked = true;
+                                break isBlocked;
+                            }
+                        }
+                        isBlocked = false;
+                    }
+                    if (isBlocked) {
                         blockedRequests.incrementAndGet();
                         // The page can fetch them from its own origin, so the empty response allows it.
                         return new WebResourceResponse("text/plain", "utf-8", 204, "No Content",

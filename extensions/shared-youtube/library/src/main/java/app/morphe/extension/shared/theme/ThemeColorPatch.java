@@ -828,7 +828,15 @@ public class ThemeColorPatch {
         for (int l = 0; l < 8; l++) {
             for (int c = 0; c < 4; c++) {
                 for (int h = 0; h < 8; h++) {
-                    float[] paletteLab = oklchToOklab(lLevels[l], PALETTE_C_LEVELS[c], PALETTE_H_LEVELS[h]);
+                    float paletteL = lLevels[l];
+                    float paletteC = PALETTE_C_LEVELS[c];
+                    float paletteH = PALETTE_H_LEVELS[h];
+                    final double hRad = Math.toRadians(paletteH);
+                    float[] paletteLab = new float[]{
+                            paletteL,
+                            (float) (paletteC * Math.cos(hRad)),
+                            (float) (paletteC * Math.sin(hRad))
+                    };
                     final float dl = targetLab[0] - paletteLab[0];
                     final float da = targetLab[1] - paletteLab[1];
                     final float db = targetLab[2] - paletteLab[2];
@@ -868,15 +876,6 @@ public class ThemeColorPatch {
         return (value > 0.04045)
                 ? Math.pow((value + 0.055) / 1.055, 2.4)
                 : value / 12.92;
-    }
-
-    private static float[] oklchToOklab(float l, float c, float h) {
-        final double hRad = Math.toRadians(h);
-        return new float[]{
-                l,
-                (float) (c * Math.cos(hRad)),
-                (float) (c * Math.sin(hRad))
-        };
     }
 
 

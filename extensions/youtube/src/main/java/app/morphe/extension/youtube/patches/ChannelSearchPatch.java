@@ -1089,7 +1089,58 @@ public final class ChannelSearchPatch {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         TextView body = new TextView(activity);
-        body.setText(postSnippet(post.text, query));
+        // Text of the post from shortly before the first word of the search, with the words of
+        // the search in bold, so that a match deep in a long post is still shown.
+        CharSequence postSnippet;
+        postSnippet: {
+            String postText = post.text;
+            if (postText.isEmpty()) {
+                postSnippet = postText;
+                break postSnippet;
+            }
+
+            String foldedText = foldForHighlight(postText);
+            List<String> words = new ArrayList<>();
+            for (String word : foldForHighlight(query).split("\\s+")) {
+                if (!word.isEmpty()) words.add(word);
+            }
+
+            int firstMatch = -1;
+            for (String word : words) {
+                final int index = foldedText.indexOf(word);
+                if (index >= 0 && (firstMatch < 0 || index < firstMatch)) {
+                    firstMatch = index;
+                }
+            }
+
+            int start = 0;
+            if (firstMatch > POST_SNIPPET_LEAD_CHARACTERS) {
+                start = firstMatch - POST_SNIPPET_LEAD_CHARACTERS;
+                // Starts at a word, or at a line.
+                final int lineStart = postText.lastIndexOf('\n', firstMatch - 1);
+                if (lineStart >= start) {
+                    start = lineStart + 1;
+                } else {
+                    final int space = postText.indexOf(' ', start);
+                    if (space >= 0 && space < firstMatch) start = space + 1;
+                }
+            }
+
+            final String prefix = start > 0 ? "…" : "";
+            SpannableString snippet = new SpannableString(prefix + postText.substring(start));
+            String foldedSnippet = foldedText.substring(start);
+            for (String word : words) {
+                int index = foldedSnippet.indexOf(word);
+                while (index >= 0) {
+                    final int spanStart = prefix.length() + index;
+                    snippet.setSpan(new StyleSpan(Typeface.BOLD), spanStart, spanStart + word.length(),
+                            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    index = foldedSnippet.indexOf(word, index + word.length());
+                }
+            }
+            postSnippet = snippet;
+        }
+        body.setText(postSnippet);
         body.setTextColor(ThemeUtils.getAppForegroundColor());
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         body.setMaxLines(3);
@@ -1117,57 +1168,6 @@ public final class ChannelSearchPatch {
 
         row.addView(text);
         return row;
-    }
-
-    /**
-     * Text of the post from shortly before the first word of the search, with the words of
-     * the search in bold, so that a match deep in a long post is still shown.
-     */
-    private static CharSequence postSnippet(String text, String query) {
-        if (text.isEmpty()) {
-            return text;
-        }
-
-        String foldedText = foldForHighlight(text);
-        List<String> words = new ArrayList<>();
-        for (String word : foldForHighlight(query).split("\\s+")) {
-            if (!word.isEmpty()) words.add(word);
-        }
-
-        int firstMatch = -1;
-        for (String word : words) {
-            final int index = foldedText.indexOf(word);
-            if (index >= 0 && (firstMatch < 0 || index < firstMatch)) {
-                firstMatch = index;
-            }
-        }
-
-        int start = 0;
-        if (firstMatch > POST_SNIPPET_LEAD_CHARACTERS) {
-            start = firstMatch - POST_SNIPPET_LEAD_CHARACTERS;
-            // Starts at a word, or at a line.
-            final int lineStart = text.lastIndexOf('\n', firstMatch - 1);
-            if (lineStart >= start) {
-                start = lineStart + 1;
-            } else {
-                final int space = text.indexOf(' ', start);
-                if (space >= 0 && space < firstMatch) start = space + 1;
-            }
-        }
-
-        final String prefix = start > 0 ? "…" : "";
-        SpannableString snippet = new SpannableString(prefix + text.substring(start));
-        String foldedSnippet = foldedText.substring(start);
-        for (String word : words) {
-            int index = foldedSnippet.indexOf(word);
-            while (index >= 0) {
-                final int spanStart = prefix.length() + index;
-                snippet.setSpan(new StyleSpan(Typeface.BOLD), spanStart, spanStart + word.length(),
-                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                index = foldedSnippet.indexOf(word, index + word.length());
-            }
-        }
-        return snippet;
     }
 
     /**

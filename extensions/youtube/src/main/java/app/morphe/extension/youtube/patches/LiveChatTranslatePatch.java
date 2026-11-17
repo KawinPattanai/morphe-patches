@@ -801,7 +801,50 @@ public final class LiveChatTranslatePatch {
                         try {
                             executor.execute(() -> {
                                 try {
-                                    fetchTranslation(span.message, span.language, span.key);
+                                    // Runs on a worker thread.
+                                    String spanMessage = span.message;
+                                    String spanLanguage = span.language;
+                                    String spanKey = span.key;
+                                    try {
+                                        waitForRequestSlot();
+                                        final TextTranslator.Translation result = translate(spanMessage, spanLanguage);
+                                        final String translation = result.text().trim();
+                                        final String detected = result.detectedLanguage();
+                                        final boolean isTranslated = !translation.isEmpty() && !translation.equalsIgnoreCase(spanMessage)
+                                                && (detected == null || !(detected.equalsIgnoreCase(spanLanguage) || isExcludedLanguage(detected)));
+                                        translations.put(spanKey, isTranslated ? translation : NOT_TRANSLATED);
+                                        backoffMilliseconds = MIN_BACKOFF_MILLISECONDS;
+                                        LithoRelayoutPatch.relayoutOutdatedTexts();
+                                    } catch (InterruptedException ex) {
+                                        Thread.currentThread().interrupt();
+                                        Logger.printInfo(() -> "Translation was interrupted", ex);
+                                    } catch (Exception ex) {
+                                        // The shared translator retries on its own, which suits a patch that asks once.
+                                        // This one keeps asking, so a rate limit backs off for longer.
+                                        boolean rateLimited;
+                                        isRateLimited: {
+                                            for (Throwable t = ex; t != null; t = t.getCause()) {
+                                                if (t instanceof TextTranslator.TranslationHttpException httpException
+                                                        && httpException.statusCode == Requester.HTTP_STATUS_CODE_TOO_MANY_REQUESTS) {
+                                                    rateLimited = true;
+                                                    break isRateLimited;
+                                                }
+                                            }
+                                            rateLimited = false;
+                                        }
+
+                                        final long now = System.currentTimeMillis();
+                                        synchronized (requestLock) {
+                                            if (now >= retryAfterFailureTime) {
+                                                backoffMilliseconds = Math.min(
+                                                        rateLimited ? backoffMilliseconds * 2 : backoffMilliseconds,
+                                                        MAX_BACKOFF_MILLISECONDS);
+                                                retryAfterFailureTime = now + backoffMilliseconds;
+                                            }
+                                        }
+
+                                        Logger.printInfo(() -> "Could not translate the chat message to: " + spanLanguage, ex);
+                                    }
                                 } finally {
                                     pendingLookups.remove(span.key);
                                 }
@@ -822,52 +865,6 @@ public final class LiveChatTranslatePatch {
             }
         } catch (Exception ex) {
             Logger.printException(() -> "runVisibleScan failure", ex);
-        }
-    }
-
-    /**
-     * Runs on a worker thread.
-     */
-    private static void fetchTranslation(String message, String language, String key) {
-        try {
-            waitForRequestSlot();
-            final TextTranslator.Translation result = translate(message, language);
-            final String translation = result.text().trim();
-            final String detected = result.detectedLanguage();
-            final boolean isTranslated = !translation.isEmpty() && !translation.equalsIgnoreCase(message)
-                    && (detected == null || !(detected.equalsIgnoreCase(language) || isExcludedLanguage(detected)));
-            translations.put(key, isTranslated ? translation : NOT_TRANSLATED);
-            backoffMilliseconds = MIN_BACKOFF_MILLISECONDS;
-            LithoRelayoutPatch.relayoutOutdatedTexts();
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            Logger.printInfo(() -> "Translation was interrupted", ex);
-        } catch (Exception ex) {
-            // The shared translator retries on its own, which suits a patch that asks once.
-            // This one keeps asking, so a rate limit backs off for longer.
-            boolean rateLimited;
-            isRateLimited: {
-                for (Throwable t = ex; t != null; t = t.getCause()) {
-                    if (t instanceof TextTranslator.TranslationHttpException httpException
-                            && httpException.statusCode == Requester.HTTP_STATUS_CODE_TOO_MANY_REQUESTS) {
-                        rateLimited = true;
-                        break isRateLimited;
-                    }
-                }
-                rateLimited = false;
-            }
-
-            final long now = System.currentTimeMillis();
-            synchronized (requestLock) {
-                if (now >= retryAfterFailureTime) {
-                    backoffMilliseconds = Math.min(
-                            rateLimited ? backoffMilliseconds * 2 : backoffMilliseconds,
-                            MAX_BACKOFF_MILLISECONDS);
-                    retryAfterFailureTime = now + backoffMilliseconds;
-                }
-            }
-
-            Logger.printInfo(() -> "Could not translate the chat message to: " + language, ex);
         }
     }
 

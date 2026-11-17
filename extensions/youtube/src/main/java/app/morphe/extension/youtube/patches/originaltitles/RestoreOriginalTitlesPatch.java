@@ -2132,7 +2132,61 @@ public final class RestoreOriginalTitlesPatch {
             for (boolean afterColon : new boolean[]{false, true}) {
                 for (Map.Entry<String, Integer> entry : labels) {
                     String label = entry.getKey();
-                    String title = findTitleOfLabel(label, texts, afterColon);
+                    // Elements without an accessibility label can have other texts that start with a text,
+                    // such as the views and date 'Views - Date', or a title that starts with the channel name
+                    // 'Channel - Song'. The accessibility label of a video also includes the other texts
+                    // of the video after the title, such as the channel or the views.
+                    // The accessibility label of a channel includes the channel handle after the channel name.
+                    // The accessibility label of a Short can include only the title and the action to play it,
+                    // such as 'Title - play Short' of a Short without views or with a long title.
+                    // The title, which is the longest text that starts the accessibility label
+                    // and is followed by a punctuation separator, such as 'Title - 10 minutes'.
+                    // Any text can be the title, including titles that look like keys such as 'a-ha'.
+                    // Null if not found, or if the label is not the accessibility label of the video.
+                    String title;
+                    findTitleOfLabel: {
+                        title = null;
+                        int titleStart = 0;
+                        int titleLength = 0;
+                        for (String text : texts) {
+                            final int length = text.length();
+                            if (length <= titleLength || length >= label.length() || isChannelHandle(text, texts)) {
+                                continue;
+                            }
+                            int start = afterColon ? label.indexOf(text) : (label.startsWith(text) ? 0 : -1);
+                            while (start >= 0 && !(isFollowedBySeparator(label, start + length)
+                                    && (!afterColon || isPrecededByColon(label, start)))) {
+                                start = afterColon ? label.indexOf(text, start + 1) : -1;
+                            }
+                            if (start >= 0) {
+                                title = text;
+                                titleStart = start;
+                                titleLength = length;
+                            }
+                        }
+                        if (title == null) {
+                            break findTitleOfLabel;
+                        }
+
+                        String otherTexts = label.substring(0, titleStart) + label.substring(titleStart + titleLength);
+                        boolean includesOtherText = false;
+                        boolean isShort = false;
+                        for (String text : texts) {
+                            if (text.startsWith(SHORTS_ITEM_KEY_PREFIX)) {
+                                isShort = true;
+                            }
+                            if (text.length() < 2 || text.length() >= label.length() || !otherTexts.contains(text)
+                                    || title.contains(text) || !isLabelCandidate(text)) {
+                                continue;
+                            }
+                            if (isChannelHandle(text, texts)) {
+                                title = null;
+                                break findTitleOfLabel;
+                            }
+                            includesOtherText = true;
+                        }
+                        title = includesOtherText || isShort ? title : null;
+                    }
                     if (title != null) {
                         labelAndTitle = new String[]{label, title};
                         break findLabeledTitle;
@@ -2816,67 +2870,6 @@ public final class RestoreOriginalTitlesPatch {
             }
         }
         return label;
-    }
-
-    /**
-     * Elements without an accessibility label can have other texts that start with a text,
-     * such as the views and date 'Views - Date', or a title that starts with the channel name
-     * 'Channel - Song'. The accessibility label of a video also includes the other texts
-     * of the video after the title, such as the channel or the views.
-     * The accessibility label of a channel includes the channel handle after the channel name.
-     * The accessibility label of a Short can include only the title and the action to play it,
-     * such as 'Title - play Short' of a Short without views or with a long title.
-     *
-     * @param afterColon If the title follows a colon instead of starting the label, as the labels
-     *                   of some languages, such as the Russian label that translates to
-     *                   'Play video "Duration" - on channel "Channel"; - duration: Title - Channel - Views - Date'.
-     * @return The title, which is the longest text that starts the accessibility label
-     *         and is followed by a punctuation separator, such as 'Title - 10 minutes'.
-     *         Any text can be the title, including titles that look like keys such as 'a-ha'.
-     *         Null if not found, or if the label is not the accessibility label of the video.
-     */
-    @Nullable
-    private static String findTitleOfLabel(String label, Set<String> texts, boolean afterColon) {
-        String title = null;
-        int titleStart = 0;
-        int titleLength = 0;
-        for (String text : texts) {
-            final int length = text.length();
-            if (length <= titleLength || length >= label.length() || isChannelHandle(text, texts)) {
-                continue;
-            }
-            int start = afterColon ? label.indexOf(text) : (label.startsWith(text) ? 0 : -1);
-            while (start >= 0 && !(isFollowedBySeparator(label, start + length)
-                    && (!afterColon || isPrecededByColon(label, start)))) {
-                start = afterColon ? label.indexOf(text, start + 1) : -1;
-            }
-            if (start >= 0) {
-                title = text;
-                titleStart = start;
-                titleLength = length;
-            }
-        }
-        if (title == null) {
-            return null;
-        }
-
-        String otherTexts = label.substring(0, titleStart) + label.substring(titleStart + titleLength);
-        boolean includesOtherText = false;
-        boolean isShort = false;
-        for (String text : texts) {
-            if (text.startsWith(SHORTS_ITEM_KEY_PREFIX)) {
-                isShort = true;
-            }
-            if (text.length() < 2 || text.length() >= label.length() || !otherTexts.contains(text)
-                    || title.contains(text) || !isLabelCandidate(text)) {
-                continue;
-            }
-            if (isChannelHandle(text, texts)) {
-                return null;
-            }
-            includesOtherText = true;
-        }
-        return includesOtherText || isShort ? title : null;
     }
 
     /**

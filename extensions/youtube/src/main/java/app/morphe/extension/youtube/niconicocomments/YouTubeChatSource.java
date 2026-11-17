@@ -246,11 +246,36 @@ final class YouTubeChatSource implements Runnable {
                         String previousContinuation = continuation.value;
                         long previousLoadedUntilMs = loadedUntilMs;
                         try {
-                            ChatPage page = fetchReplayChatPage(
-                                    state,
-                                    continuation.value,
-                                    playerOffsetMs
-                            );
+                            ChatPage page;
+                            fetchReplayChatPage: {
+                                String replayContinuationToken = continuation.value;
+                                JSONObject body = new JSONObject();
+                                body.put("continuation", replayContinuationToken);
+                                body.put(
+                                        "currentPlayerState",
+                                        new JSONObject().put("playerOffsetMs", Long.toString(playerOffsetMs))
+                                );
+
+                                JSONObject response = postInnertube(state, "live_chat/get_live_chat_replay", body);
+                                JSONObject liveChatContinuation = getLiveChatContinuation(response);
+                                if (liveChatContinuation == null) {
+                                    page = new ChatPage(new ArrayList<>(), null, -1);
+                                    break fetchReplayChatPage;
+                                }
+
+                                ReplayParseResult parsed = parseReplayComments(
+                                        liveChatContinuation.optJSONArray("actions")
+                                );
+                                Continuation next = findContinuation(
+                                        liveChatContinuation.opt("continuations"),
+                                        "liveChatReplayContinuationData",
+                                        "playerSeekContinuationData",
+                                        "timedContinuationData",
+                                        "invalidationContinuationData",
+                                        "reloadContinuationData"
+                                );
+                                page = new ChatPage(parsed.comments, next, parsed.maxVideoOffsetMs);
+                            }
                             consecutiveFailures = 0;
                             hasFetched = true;
 
@@ -305,7 +330,29 @@ final class YouTubeChatSource implements Runnable {
                 Continuation continuation = state.continuation;
                 while (!stopped && continuation != null) {
                     try {
-                        ChatPage page = fetchChatPage(state, continuation.value);
+                        ChatPage page;
+                        fetchChatPage: {
+                            String continuationToken = continuation.value;
+                            JSONObject response = postInnertube(
+                                    state,
+                                    "live_chat/get_live_chat",
+                                    new JSONObject().put("continuation", continuationToken)
+                            );
+                            JSONObject liveChatContinuation = getLiveChatContinuation(response);
+                            if (liveChatContinuation == null) {
+                                page = new ChatPage(new ArrayList<>(), null, -1);
+                                break fetchChatPage;
+                            }
+
+                            List<NiconicoComment> comments = parseComments(liveChatContinuation.optJSONArray("actions"));
+                            Continuation next = findContinuation(
+                                    liveChatContinuation.opt("continuations"),
+                                    "timedContinuationData",
+                                    "invalidationContinuationData",
+                                    "reloadContinuationData"
+                            );
+                            page = new ChatPage(comments, next, -1);
+                        }
                         consecutiveFailures = 0;
 
                         List<NiconicoComment> comments = deduplicate(page.comments);
@@ -657,60 +704,6 @@ final class YouTubeChatSource implements Runnable {
                     );
         }
         return null;
-    }
-
-    private ChatPage fetchChatPage(PageState state, String continuation)
-            throws IOException, JSONException {
-        JSONObject response = postInnertube(
-                state,
-                "live_chat/get_live_chat",
-                new JSONObject().put("continuation", continuation)
-        );
-        JSONObject liveChatContinuation = getLiveChatContinuation(response);
-        if (liveChatContinuation == null) {
-            return new ChatPage(new ArrayList<>(), null, -1);
-        }
-
-        List<NiconicoComment> comments = parseComments(liveChatContinuation.optJSONArray("actions"));
-        Continuation next = findContinuation(
-                liveChatContinuation.opt("continuations"),
-                "timedContinuationData",
-                "invalidationContinuationData",
-                "reloadContinuationData"
-        );
-        return new ChatPage(comments, next, -1);
-    }
-
-    private ChatPage fetchReplayChatPage(
-            PageState state,
-            String continuation,
-            long playerOffsetMs
-    ) throws IOException, JSONException {
-        JSONObject body = new JSONObject();
-        body.put("continuation", continuation);
-        body.put(
-                "currentPlayerState",
-                new JSONObject().put("playerOffsetMs", Long.toString(playerOffsetMs))
-        );
-
-        JSONObject response = postInnertube(state, "live_chat/get_live_chat_replay", body);
-        JSONObject liveChatContinuation = getLiveChatContinuation(response);
-        if (liveChatContinuation == null) {
-            return new ChatPage(new ArrayList<>(), null, -1);
-        }
-
-        ReplayParseResult parsed = parseReplayComments(
-                liveChatContinuation.optJSONArray("actions")
-        );
-        Continuation next = findContinuation(
-                liveChatContinuation.opt("continuations"),
-                "liveChatReplayContinuationData",
-                "playerSeekContinuationData",
-                "timedContinuationData",
-                "invalidationContinuationData",
-                "reloadContinuationData"
-        );
-        return new ChatPage(parsed.comments, next, parsed.maxVideoOffsetMs);
     }
 
     /**

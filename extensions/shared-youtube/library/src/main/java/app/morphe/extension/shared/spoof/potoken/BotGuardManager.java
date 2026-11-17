@@ -227,7 +227,55 @@ public final class BotGuardManager {
 
     @Nullable
     public static IntegrityToken getIntegrityToken(@Nullable String botGuardResult) {
-        CompletableFuture<IntegrityToken> integrityTokenFuture = CompletableFuture.supplyAsync(() -> fetchIntegrityToken(botGuardResult))
+        CompletableFuture<IntegrityToken> integrityTokenFuture = CompletableFuture.supplyAsync(() -> {
+            if (!Utils.isNotEmpty(botGuardResult)) {
+                handleConnectionError("BotGuardResult is null", null);
+                return null;
+            }
+            if (!Utils.isNetworkConnected()) {
+                Logger.printInfo(() -> "No internet connection");
+                return null;
+            }
+            try {
+                Logger.printDebug(() -> "Starting fetching integrity token");
+
+                final long start = System.currentTimeMillis();
+                HttpURLConnection connection = Requester.openConnection(BOT_GUARD_URL);
+                connection.setDoOutput(true);
+                connection.setRequestMethod("POST");
+                connection.setRequestProperty("Referer", YOUTUBE_URL);
+                connection.setRequestProperty("User-Agent", USER_AGENT);
+                connection.setRequestProperty("Accept", "application/json");
+                connection.setRequestProperty("Content-Type", "application/json+protobuf");
+                connection.setRequestProperty("x-goog-api-key", "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw");
+                connection.setRequestProperty("x-user-agent", "grpc-web-javascript/0.1");
+                connection.setConnectTimeout(HTTP_TIMEOUT_MILLISECONDS);
+                connection.setReadTimeout(HTTP_TIMEOUT_MILLISECONDS);
+                JSONArray body = new JSONArray(List.of(challengeRequestKey, botGuardResult));
+                byte[] requestBody = body.toString().getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(requestBody.length);
+                connection.getOutputStream().write(requestBody);
+                final int responseCode = connection.getResponseCode();
+
+                final JSONArray result;
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    result = Requester.parseJSONArray(connection);
+                } else {
+                    Logger.printDebug(() -> "Ignoring response code: " + responseCode);
+                    result = null;
+                }
+                connection.disconnect();
+
+                Logger.printDebug(() -> "Fetched integrity token, took: " + (System.currentTimeMillis() - start) + "ms");
+                return result;
+            } catch (JSONException | SocketTimeoutException ex) {
+                handleConnectionError("Connection timeout", ex);
+            } catch (IOException ex) {
+                handleConnectionError("Network error", ex);
+            }
+
+            return null;
+        })
                 .thenApply(botGuardResponse -> {
                     if (botGuardResponse != null) {
                         try {
@@ -346,57 +394,6 @@ public final class BotGuardManager {
             }
         } else {
             Logger.printInfo(() -> "No internet connection: " + url);
-        }
-
-        return null;
-    }
-
-    @Nullable
-    private static JSONArray fetchIntegrityToken(@Nullable String botGuardResult) {
-        if (!Utils.isNotEmpty(botGuardResult)) {
-            handleConnectionError("BotGuardResult is null", null);
-            return null;
-        }
-        if (!Utils.isNetworkConnected()) {
-            Logger.printInfo(() -> "No internet connection");
-            return null;
-        }
-        try {
-            Logger.printDebug(() -> "Starting fetching integrity token");
-
-            final long start = System.currentTimeMillis();
-            HttpURLConnection connection = Requester.openConnection(BOT_GUARD_URL);
-            connection.setDoOutput(true);
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Referer", YOUTUBE_URL);
-            connection.setRequestProperty("User-Agent", USER_AGENT);
-            connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("Content-Type", "application/json+protobuf");
-            connection.setRequestProperty("x-goog-api-key", "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw");
-            connection.setRequestProperty("x-user-agent", "grpc-web-javascript/0.1");
-            connection.setConnectTimeout(HTTP_TIMEOUT_MILLISECONDS);
-            connection.setReadTimeout(HTTP_TIMEOUT_MILLISECONDS);
-            JSONArray body = new JSONArray(List.of(challengeRequestKey, botGuardResult));
-            byte[] requestBody = body.toString().getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(requestBody.length);
-            connection.getOutputStream().write(requestBody);
-            final int responseCode = connection.getResponseCode();
-
-            final JSONArray result;
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                result = Requester.parseJSONArray(connection);
-            } else {
-                Logger.printDebug(() -> "Ignoring response code: " + responseCode);
-                result = null;
-            }
-            connection.disconnect();
-
-            Logger.printDebug(() -> "Fetched integrity token, took: " + (System.currentTimeMillis() - start) + "ms");
-            return result;
-        } catch (JSONException | SocketTimeoutException ex) {
-            handleConnectionError("Connection timeout", ex);
-        } catch (IOException ex) {
-            handleConnectionError("Network error", ex);
         }
 
         return null;

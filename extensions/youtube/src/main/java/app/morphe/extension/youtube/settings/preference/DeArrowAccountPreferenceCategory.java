@@ -94,7 +94,36 @@ public class DeArrowAccountPreferenceCategory extends PreferenceCategory {
 
             // There is no reason to set a username before submitting anything.
             if (info.hasUserName() || info.titleSubmissions() > 0 || info.thumbnailSubmissions() > 0) {
-                addAccountPreference(createUserNamePreference(context, info.userName()));
+                String accountUserName = info.userName();
+                ResettableEditTextPreference preference = new ResettableEditTextPreference(context);
+                preference.setSingleLineTitle(false);
+                preference.setTitle(Html.fromHtml(str("morphe_dearrow_account_username", accountUserName),
+                        Html.FROM_HTML_MODE_COMPACT));
+                preference.setSummary(str("morphe_dearrow_account_username_change"));
+                preference.setText(accountUserName);
+                preference.setOnPreferenceChangeListener((pref, value) -> {
+                    String newUserName = value.toString();
+                    Utils.runOnBackgroundThread(() -> {
+                        String errorMessage = DeArrowAccountRequest.setUsername(newUserName);
+                        Utils.runOnMainThread(() -> {
+                            try {
+                                if (errorMessage == null) {
+                                    preference.setTitle(Html.fromHtml(str("morphe_dearrow_account_username", newUserName),
+                                            Html.FROM_HTML_MODE_COMPACT));
+                                    Utils.showSnackbarLong(str("morphe_dearrow_account_username_changed"));
+                                } else {
+                                    preference.setText(accountUserName);
+                                    showErrorDialog(context, errorMessage);
+                                }
+                            } catch (Exception ex) {
+                                Logger.printException(() -> "setUsername result failure", ex);
+                            }
+                        });
+                    });
+                    return true;
+                });
+                preference.setEnabled(Settings.SB_PRIVATE_USER_ID.isAvailable());
+                addAccountPreference(preference);
             }
 
             addAccountPreference(createSubmissionsPreference(context, info, info.titleSubmissions(),
@@ -104,38 +133,6 @@ public class DeArrowAccountPreferenceCategory extends PreferenceCategory {
         } catch (Exception ex) {
             Logger.printException(() -> "showAccountInfo failure", ex);
         }
-    }
-
-    private static ResettableEditTextPreference createUserNamePreference(Context context, String userName) {
-        ResettableEditTextPreference preference = new ResettableEditTextPreference(context);
-        preference.setSingleLineTitle(false);
-        preference.setTitle(Html.fromHtml(str("morphe_dearrow_account_username", userName),
-                Html.FROM_HTML_MODE_COMPACT));
-        preference.setSummary(str("morphe_dearrow_account_username_change"));
-        preference.setText(userName);
-        preference.setOnPreferenceChangeListener((pref, value) -> {
-            String newUserName = value.toString();
-            Utils.runOnBackgroundThread(() -> {
-                String errorMessage = DeArrowAccountRequest.setUsername(newUserName);
-                Utils.runOnMainThread(() -> {
-                    try {
-                        if (errorMessage == null) {
-                            preference.setTitle(Html.fromHtml(str("morphe_dearrow_account_username", newUserName),
-                                    Html.FROM_HTML_MODE_COMPACT));
-                            Utils.showSnackbarLong(str("morphe_dearrow_account_username_changed"));
-                        } else {
-                            preference.setText(userName);
-                            showErrorDialog(context, errorMessage);
-                        }
-                    } catch (Exception ex) {
-                        Logger.printException(() -> "setUsername result failure", ex);
-                    }
-                });
-            });
-            return true;
-        });
-        preference.setEnabled(Settings.SB_PRIVATE_USER_ID.isAvailable());
-        return preference;
     }
 
     /**

@@ -623,7 +623,50 @@ public final class OfflineVideoExporter {
                 String mimeType = webm ? "video/webm" : "video/mp4";
                 OutputFile output = OutputFile.create(fileName, webm ? ".webm" : ".mp4", mimeType);
                 try {
-                    mux(extractors, formats, output.descriptor, muxerFormat, notification);
+                    // Writes the samples of all streams in the order of their time, so the file is interleaved.
+                    ParcelFileDescriptor outputDescriptor = output.descriptor;
+                    MediaMuxer muxer = new MediaMuxer(outputDescriptor.getFileDescriptor(), muxerFormat);
+                    try {
+                        final int count = extractors.size();
+                        int[] tracks = new int[count];
+                        for (int i = 0; i < count; i++) {
+                            tracks[i] = muxer.addTrack(formats.get(i));
+                        }
+                        muxer.start();
+
+                        ByteBuffer buffer = ByteBuffer.allocate(SAMPLE_BUFFER_SIZE);
+                        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                        while (true) {
+                            int next = -1;
+                            long nextTime = Long.MAX_VALUE;
+                            for (int i = 0; i < count; i++) {
+                                final long time = extractors.get(i).getSampleTime();
+                                if (time >= 0 && time < nextTime) {
+                                    next = i;
+                                    nextTime = time;
+                                }
+                            }
+                            if (next < 0) {
+                                break;
+                            }
+
+                            MediaExtractor extractor = extractors.get(next);
+                            final int size = extractor.readSampleData(buffer, 0);
+                            if (size < 0) {
+                                break;
+                            }
+
+                            final boolean keyFrame = (extractor.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0;
+                            info.set(0, size, nextTime, keyFrame ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
+                            muxer.writeSampleData(tracks[next], buffer, info);
+                            extractor.advance();
+                            notification.showProgress();
+                        }
+
+                        muxer.stop();
+                    } finally {
+                        muxer.release();
+                    }
                     return new ExportResult(output.finish(), output.uri, mimeType);
                 } catch (Exception ex) {
                     output.delete();
@@ -698,55 +741,6 @@ public final class OfflineVideoExporter {
         return name.length() > MAX_FILE_NAME_LENGTH
                 ? name.substring(0, MAX_FILE_NAME_LENGTH).trim()
                 : name;
-    }
-
-    /**
-     * Writes the samples of all streams in the order of their time, so the file is interleaved.
-     */
-    private static void mux(List<MediaExtractor> extractors, List<MediaFormat> formats,
-                            ParcelFileDescriptor descriptor, int outputFormat,
-                            ExportNotification notification) throws IOException {
-        MediaMuxer muxer = new MediaMuxer(descriptor.getFileDescriptor(), outputFormat);
-        try {
-            final int count = extractors.size();
-            int[] tracks = new int[count];
-            for (int i = 0; i < count; i++) {
-                tracks[i] = muxer.addTrack(formats.get(i));
-            }
-            muxer.start();
-
-            ByteBuffer buffer = ByteBuffer.allocate(SAMPLE_BUFFER_SIZE);
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            while (true) {
-                int next = -1;
-                long nextTime = Long.MAX_VALUE;
-                for (int i = 0; i < count; i++) {
-                    final long time = extractors.get(i).getSampleTime();
-                    if (time >= 0 && time < nextTime) {
-                        next = i;
-                        nextTime = time;
-                    }
-                }
-                if (next < 0) {
-                    break;
-                }
-
-                MediaExtractor extractor = extractors.get(next);
-                final int size = extractor.readSampleData(buffer, 0);
-                if (size < 0) {
-                    break;
-                }
-                final boolean keyFrame = (extractor.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0;
-                info.set(0, size, nextTime, keyFrame ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
-                muxer.writeSampleData(tracks[next], buffer, info);
-                extractor.advance();
-                notification.showProgress();
-            }
-
-            muxer.stop();
-        } finally {
-            muxer.release();
-        }
     }
 
     private static void copy(StreamSource source, ParcelFileDescriptor descriptor,

@@ -238,14 +238,15 @@ final class LocalizedTitleRequest {
                     // The search results of a video id can include other videos, so the title is the title
                     // of the result with the same video id.
                     findListTitleRuns: {
+                        JSONObject results = json;
                         for (String pathKey : SEARCH_SECTIONS_PATH) {
-                            json = json.optJSONObject(pathKey);
-                            if (json == null) {
+                            results = results.optJSONObject(pathKey);
+                            if (results == null) {
                                 runs = null;
                                 break findListTitleRuns;
                             }
                         }
-                        JSONArray sections = json.optJSONArray("contents");
+                        JSONArray sections = results.optJSONArray("contents");
                         if (sections == null) {
                             runs = null;
                             break findListTitleRuns;

@@ -464,8 +464,39 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
             }
 
             for (ProtoNode actionsNode : ProtoNode.findMessages(element, FLEXIBLE_ACTIONS_VIEW_MODEL_FIELD)) {
-                FlexibleActionsViewModel actions = withPlaylistDownloadButton(
-                        FlexibleActionsViewModel.parseFrom(actionsNode.getPayload()));
+                // The buttons with a Download button in the row of the Play all button of a playlist,
+                // or null if the buttons are not of a playlist or already have a Download button.
+                FlexibleActionsViewModel actions;
+                withPlaylistDownloadButton: {
+                    FlexibleActionsViewModel originalActions = FlexibleActionsViewModel.parseFrom(actionsNode.getPayload());
+                    int playlistRowIndex = -1;
+                    String playlistId = "";
+
+                    List<FlexibleActionsRow> rows = originalActions.getActionsRowsList();
+                    for (int i = 0; i < rows.size(); i++) {
+                        for (FlexibleAction action : rows.get(i).getActionsList()) {
+                            if (action.hasDownloadButtonViewModel()) {
+                                actions = null;
+                                break withPlaylistDownloadButton;
+                            }
+                            String id = action.getButtonViewModel().getOnTap().getInnertubeCommand()
+                                    .getWatchEndpoint().getPlaylistId();
+                            if (playlistId.isEmpty() && !id.isEmpty()) {
+                                playlistRowIndex = i;
+                                playlistId = id;
+                            }
+                        }
+                    }
+                    if (playlistId.isEmpty()) {
+                        actions = null;
+                        break withPlaylistDownloadButton;
+                    }
+
+                    actions = originalActions.toBuilder()
+                            .setActionsRows(playlistRowIndex, rows.get(playlistRowIndex).toBuilder()
+                                    .addActions(playlistDownloadButton(playlistId)))
+                            .build();
+                }
                 if (actions != null) {
                     actionsNode.setPayload(actions.toByteArray());
                     return ProtoNode.write(element);
@@ -476,39 +507,6 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
         }
 
         return bytes;
-    }
-
-    /**
-     * @return The buttons with a Download button in the row of the Play all button of a playlist,
-     *         or null if the buttons are not of a playlist or already have a Download button.
-     */
-    @Nullable
-    private static FlexibleActionsViewModel withPlaylistDownloadButton(FlexibleActionsViewModel actions) {
-        int playlistRowIndex = -1;
-        String playlistId = "";
-
-        List<FlexibleActionsRow> rows = actions.getActionsRowsList();
-        for (int i = 0; i < rows.size(); i++) {
-            for (FlexibleAction action : rows.get(i).getActionsList()) {
-                if (action.hasDownloadButtonViewModel()) {
-                    return null;
-                }
-                String id = action.getButtonViewModel().getOnTap().getInnertubeCommand()
-                        .getWatchEndpoint().getPlaylistId();
-                if (playlistId.isEmpty() && !id.isEmpty()) {
-                    playlistRowIndex = i;
-                    playlistId = id;
-                }
-            }
-        }
-        if (playlistId.isEmpty()) {
-            return null;
-        }
-
-        return actions.toBuilder()
-                .setActionsRows(playlistRowIndex, rows.get(playlistRowIndex).toBuilder()
-                        .addActions(playlistDownloadButton(playlistId)))
-                .build();
     }
 
     /**

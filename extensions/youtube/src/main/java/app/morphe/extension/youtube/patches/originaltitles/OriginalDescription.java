@@ -116,7 +116,12 @@ final class OriginalDescription {
                                 && !isNameCharacter(originalDescription.codePointBefore(index))
                                 && (end == originalDescription.length() || !isNameCharacter(originalDescription.codePointAt(end)))) {
                             linkStart = start;
-                            linkEnd = tokenEnd(originalDescription, end);
+                            // The link ends at the end of the token.
+                            linkEnd = end;
+                            final int length = originalDescription.length();
+                            while (linkEnd < length && !Character.isWhitespace(originalDescription.charAt(linkEnd))) {
+                                linkEnd++;
+                            }
                             break;
                         }
                     }
@@ -275,7 +280,38 @@ final class OriginalDescription {
                 continue; // Inside another run, or the entire text.
             }
             String runText = translatedText.substring(anchor.start, anchor.end);
-            int[] originalRun = findRunText(anchor.runs, runText, originalText, originalIndex);
+            // The range of the text of the runs in the original text, or null if not found.
+            // Found with the text, or with the urls of the runs if the text is shortened.
+            List<ProtoNode> anchorRuns = anchor.runs;
+            final int originalLength = originalText.length();
+            int foundStart = originalLength;
+            int foundEnd = -1;
+
+            String trimmedText = trim(runText);
+            if (!trimmedText.isEmpty()) {
+                int index = originalText.indexOf(trimmedText, originalIndex);
+                if (index >= 0) {
+                    foundStart = index;
+                    foundEnd = index + trimmedText.length();
+                }
+            }
+
+            for (ProtoNode run : anchorRuns) {
+                for (String url : findUrls(run.children)) {
+                    int index = originalText.indexOf(url, originalIndex);
+                    if (index < 0 || index >= foundStart) {
+                        continue;
+                    }
+                    int end = index + url.length();
+                    // The trailing slash is not part of the url.
+                    if (end < originalLength && originalText.charAt(end) == '/') {
+                        end++;
+                    }
+                    foundStart = tokenStart(originalText, index, originalIndex);
+                    foundEnd = end;
+                }
+            }
+            int[] originalRun = foundEnd < 0 ? null : new int[]{foundStart, foundEnd};
             if (originalRun == null) {
                 continue;
             }
@@ -368,44 +404,6 @@ final class OriginalDescription {
     }
 
     /**
-     * @return The range of the text of the runs in the original text, or null if not found.
-     *         Found with the text, or with the urls of the runs if the text is shortened.
-     */
-    @Nullable
-    private static int[] findRunText(List<ProtoNode> runs, String runText, String originalText, int from) {
-        final int originalLength = originalText.length();
-        int foundStart = originalLength;
-        int foundEnd = -1;
-
-        String trimmedText = trim(runText);
-        if (!trimmedText.isEmpty()) {
-            int index = originalText.indexOf(trimmedText, from);
-            if (index >= 0) {
-                foundStart = index;
-                foundEnd = index + trimmedText.length();
-            }
-        }
-
-        for (ProtoNode run : runs) {
-            for (String url : findUrls(run.children)) {
-                int index = originalText.indexOf(url, from);
-                if (index < 0 || index >= foundStart) {
-                    continue;
-                }
-                int end = index + url.length();
-                // The trailing slash is not part of the url.
-                if (end < originalLength && originalText.charAt(end) == '/') {
-                    end++;
-                }
-                foundStart = tokenStart(originalText, index, from);
-                foundEnd = end;
-            }
-        }
-
-        return foundEnd < 0 ? null : new int[]{foundStart, foundEnd};
-    }
-
-    /**
      * @return The urls of the run without the scheme, the 'www.' host prefix and the trailing slash,
      *         as the description can include the url with or without any of them.
      */
@@ -483,14 +481,6 @@ final class OriginalDescription {
     private static int tokenStart(String text, int index, int from) {
         while (index > from && !Character.isWhitespace(text.charAt(index - 1))) {
             index--;
-        }
-        return index;
-    }
-
-    private static int tokenEnd(String text, int index) {
-        final int length = text.length();
-        while (index < length && !Character.isWhitespace(text.charAt(index))) {
-            index++;
         }
         return index;
     }

@@ -259,20 +259,6 @@ public abstract class BaseSearchViewController {
     }
 
     /**
-     * Determines whether a preference should be included in the search index.
-     *
-     * @param preference   The preference to evaluate.
-     * @param currentDepth The current depth in the preference hierarchy.
-     * @param includeDepth The maximum depth to include in the search index.
-     * @return True if the preference should be included, false otherwise.
-     */
-    protected boolean shouldIncludePreference(Preference preference, int currentDepth, int includeDepth) {
-        return includeDepth <= currentDepth
-                && !(preference instanceof PreferenceCategory)
-                && !(preference instanceof PreferenceScreen);
-    }
-
-    /**
      * Sets up the toolbar menu for the search action.
      */
     protected void setupToolbarMenu() {
@@ -456,7 +442,9 @@ public abstract class BaseSearchViewController {
             Preference preference = group.getPreference(i);
 
             // Add to search results only if it is not a category, special group, or PreferenceScreen.
-            if (shouldIncludePreference(preference, currentDepth, includeDepth)) {
+            if (includeDepth <= currentDepth
+                    && !(preference instanceof PreferenceCategory)
+                    && !(preference instanceof PreferenceScreen)) {
                 allSearchItems.add(new BaseSearchResultItem.PreferenceSearchItem(
                         preference, parentPath, parentKeys));
             }

@@ -488,7 +488,22 @@ public final class FeedVideoActionsPatch {
                     }
                     icon = queueIcon;
                 } else {
-                    icon = getWatchLaterIcon(videoId != null && savedVideos.containsKey(videoId));
+                    getWatchLaterIcon: {
+                        boolean isSaved = videoId != null && savedVideos.containsKey(videoId);
+                        if (isSaved) {
+                            if (checkIcon == null) {
+                                checkIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
+                                        ? "yt_outline_experimental_check_vd_theme_24" : "yt_outline_check_black_24");
+                            }
+                            icon = checkIcon;
+                            break getWatchLaterIcon;
+                        }
+                        if (clockIcon == null) {
+                            clockIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
+                                    ? "yt_outline_experimental_clock_vd_theme_24" : "yt_outline_clock_black_24");
+                        }
+                        icon = clockIcon;
+                    }
                 }
                 if (icon != null) {
                     final int iconSize = bounds.width() * BADGE_ICON_DP / BADGE_SIZE_DP;
@@ -513,22 +528,6 @@ public final class FeedVideoActionsPatch {
                 return PixelFormat.TRANSLUCENT;
             }
         }
-    }
-
-    @Nullable
-    private static Drawable getWatchLaterIcon(boolean saved) {
-        if (saved) {
-            if (checkIcon == null) {
-                checkIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
-                        ? "yt_outline_experimental_check_vd_theme_24" : "yt_outline_check_black_24");
-            }
-            return checkIcon;
-        }
-        if (clockIcon == null) {
-            clockIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
-                    ? "yt_outline_experimental_clock_vd_theme_24" : "yt_outline_clock_black_24");
-        }
-        return clockIcon;
     }
 
     @Nullable

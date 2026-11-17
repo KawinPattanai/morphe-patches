@@ -73,26 +73,26 @@ public final class WebViewCheck {
             return WebViewStatus.MISSING;
         }
 
-        Integer majorVersion = getMajorVersion(webView.versionName);
+        Integer majorVersion;
+        getMajorVersion: {
+            String webViewVersionName = webView.versionName;
+            if (webViewVersionName == null) {
+                Logger.printException(() -> "WebView has no version name");
+                majorVersion = null;
+                break getMajorVersion;
+            }
+            try {
+                int end = webViewVersionName.indexOf('.');
+                majorVersion = Integer.parseInt(end < 0 ? webViewVersionName : webViewVersionName.substring(0, end));
+            } catch (NumberFormatException ex) {
+                Logger.printException(() -> "Unknown WebView version: " + webViewVersionName, ex);
+                majorVersion = null;
+            }
+        }
         if (majorVersion != null && majorVersion < MIN_WEBVIEW_MAJOR_VERSION) {
             return WebViewStatus.OUTDATED;
         }
         return WebViewStatus.OK;
-    }
-
-    @Nullable
-    private static Integer getMajorVersion(@Nullable String versionName) {
-        if (versionName == null) {
-            Logger.printException(() -> "WebView has no version name");
-            return null;
-        }
-        try {
-            int end = versionName.indexOf('.');
-            return Integer.parseInt(end < 0 ? versionName : versionName.substring(0, end));
-        } catch (NumberFormatException ex) {
-            Logger.printException(() -> "Unknown WebView version: " + versionName, ex);
-            return null;
-        }
     }
 
     /**

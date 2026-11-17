@@ -671,7 +671,18 @@ final class DeArrowVoteDialog {
                             null,
                             null,
                             str("morphe_dearrow_vote_submit"),
-                            () -> submitFrame(context, sheet, videoId, videoLength, chosen.videoTime, chosen.image),
+                            () -> {
+                                long chosenVideoTime = chosen.videoTime;
+                                Bitmap chosenImage = chosen.image;
+                                final double timestamp = chosenVideoTime / 1000.0;
+                                vote(context, sheet, videoId, false, () -> {
+                                    String error = DeArrowVoteRequest.voteThumbnail(videoId, false, timestamp, false, videoLength);
+                                    if (error == null && chosenImage != null) {
+                                        localFrames.put(new LocalFrame(videoId, timestamp), chosenImage);
+                                    }
+                                    return error;
+                                });
+                            },
                             () -> {},
                             null,
                             null,
@@ -779,18 +790,6 @@ final class DeArrowVoteDialog {
             chosen.image = image;
             onChanged.run();
         }), FRAME_STEP_COPY_DELAY_MILLISECONDS);
-    }
-
-    private static void submitFrame(Context context, SheetBottomDialog.SlideDialog sheet, String videoId,
-                                    long videoLength, long videoTime, @Nullable Bitmap image) {
-        final double timestamp = videoTime / 1000.0;
-        vote(context, sheet, videoId, false, () -> {
-            String error = DeArrowVoteRequest.voteThumbnail(videoId, false, timestamp, false, videoLength);
-            if (error == null && image != null) {
-                localFrames.put(new LocalFrame(videoId, timestamp), image);
-            }
-            return error;
-        });
     }
 
     /**
