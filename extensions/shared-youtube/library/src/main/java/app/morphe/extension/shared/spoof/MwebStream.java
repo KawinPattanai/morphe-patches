@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright 2026 Morphe.
  * https://github.com/MorpheApp/morphe-patches/pull/4764
  *
@@ -72,6 +72,15 @@ public final class MwebStream {
      * Headers of the app that name the app, which are replaced with the headers of the website.
      */
     private static final String[] REPLACED_HEADERS = {"User-Agent", "Origin", "Referer"};
+
+    private static boolean isReplacedHeader(String name) {
+        for (String replaced : REPLACED_HEADERS) {
+            if (replaced.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
      * Streams by the 'id' parameter of their url.

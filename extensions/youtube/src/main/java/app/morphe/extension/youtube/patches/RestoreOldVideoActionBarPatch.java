@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright 2026 Morphe.
  * https://github.com/MorpheApp/morphe-patches
  *
@@ -876,7 +876,7 @@ public class RestoreOldVideoActionBarPatch {
                 // If the message cannot be read, true is returned.
                 boolean hasTopLevelField;
                 hasTopLevelField: {
-                    byte[] message = body.toByteArray();
+                    byte[] message = body.get();
                     int fieldNumber = NEXT_REQUEST_CONTINUATION_FIELD;
                     int position = 0;
                     final int end = message.length;
