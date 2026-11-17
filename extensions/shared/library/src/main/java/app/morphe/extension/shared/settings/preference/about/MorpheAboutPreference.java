@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright 2026 Morphe.
  * https://github.com/MorpheApp/morphe-patches
  *
@@ -154,7 +154,7 @@ public class MorpheAboutPreference extends Preference {
                 .append("<div class=\"settings-group\">");
 
         var myLinks = new WebLink[]{
-                new WebLink("GitHub", null, "https://github.com/KawinPattanai/KawinNext"),
+                new WebLink("GitHub", "https://github.com/KawinPattanai/KawinNext"),
         };
 
         // Link buttons with per-URL SVG icons.
