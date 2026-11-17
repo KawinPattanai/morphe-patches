@@ -101,6 +101,11 @@ Second \"item\" text"</string>
   <string name="morphe_debug_level_entry_disabled">ปิดการใช้งาน</string>
   <string name="morphe_debug_level_entry_debug">ดีบั๊ก</string>
   <string name="morphe_debug_level_entry_verbose">ละเอียด</string>
+  <string name="morphe_debug_title">เปิดการบันทึกดีบัก</string>
+  <string name="morphe_debug_protobuffer_title">ดีบัก protobuffer</string>
+  <string name="morphe_debug_protobuffer_summary">บันทึก protobuffer ของคำขอ</string>
+  <string name="morphe_debug_stacktrace_title">ดีบัก stack trace</string>
+  <string name="morphe_debug_stacktrace_summary">บันทึกว่าฮุกถูกติดตั้งจากที่ไหน</string>
   <string name="morphe_debug_toast_on_error_title">แสดงข้อความแจ้งเตือนชั่วคราวเมื่อเกิดข้อผิดพลาดของ Morphe</string>
   <string name="morphe_debug_toast_on_error_user_dialog_message">"การปิดข้อความแจ้งเตือนข้อผิดพลาดจะซ่อนการแจ้งเตือนข้อผิดพลาดทั้งหมดของ Morphe
 

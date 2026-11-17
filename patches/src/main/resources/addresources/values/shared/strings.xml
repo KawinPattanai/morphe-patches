@@ -113,6 +113,11 @@ To translate new languages or improve the existing translations, visit morphe.so
     <string name="morphe_debug_level_entry_disabled">Disabled</string>
     <string name="morphe_debug_level_entry_debug">Debug</string>
     <string name="morphe_debug_level_entry_verbose">Verbose</string>
+    <string name="morphe_debug_title">Enable debug logging</string>
+    <string name="morphe_debug_protobuffer_title">Debug protobuffer</string>
+    <string name="morphe_debug_protobuffer_summary">Log the protobuffer of the requests</string>
+    <string name="morphe_debug_stacktrace_title">Debug stack traces</string>
+    <string name="morphe_debug_stacktrace_summary">Log where a hook was installed from</string>
     <string name="morphe_debug_toast_on_error_title">Show toast on Morphe error</string>
     <string name="morphe_debug_toast_on_error_user_dialog_message">"Turning off error toasts hides all Morphe error notifications.
 
