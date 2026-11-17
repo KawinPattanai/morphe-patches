@@ -77,75 +77,76 @@ public final class PlaylistCardSource {
         for (View view = sender; view != null && !(view instanceof RecyclerView);
              view = view.getParent() instanceof View parent ? parent : null) {
             if (view.getTag(nodeInfoId) instanceof TapActions owner) {
-                Selection selection;
-                fromTapActions: {
-                    List<?> actions = owner.patch_getPlaylistTapActions();
-                    if (actions == null) {
-                        selection = null;
-                        break fromTapActions;
-                    }
-                    String found = "";
-                    for (Object action : actions) {
-                        if (!(action instanceof TapCommand tap)) {
-                            continue;
-                        }
-                        var command = PlaylistQueueRenderer.ElementsCommand.parseFrom(
-                                tap.patch_getPlaylistTapCommand().toByteArray()).getInnertubeCommand();
-                        if (command.hasWatchEndpoint() || command.hasAlternateWatchEndpoint()) {
-                            // The caller has already classified this mounted card as a collection.
-                            // Mix cards start through Watch, with the first video as their seed.
-                            if (!command.hasWatchEndpoint() || !isMixStart(command.getWatchEndpoint())) {
-                                selection = new Selection("", false);
-                                break fromTapActions;
-                            }
-                            String id = command.getWatchEndpoint().getPlaylistId();
-                            if (!found.isEmpty() && !found.equals(id)) {
-                                selection = new Selection("", true);
-                                break fromTapActions;
-                            }
-                            found = id;
-                        }
-                        var fields = ProtoNode.parse(command.toByteArray());
-                        if (fields == null) {
-                            continue;
-                        }
-                        for (var field : fields) {
-                            if (field.getFieldNumber() != BROWSE_ENDPOINT || field.children == null) {
-                                continue;
-                            }
-
-                            // Read only the direct BrowseEndpoint, never a menu's nested
-                            // Share, Download or Premium navigation commands.
-                            String browseId = "";
-                            for (var value : field.children) {
-                                if (value.getFieldNumber() == BROWSE_ID && value.isText()) {
-                                    browseId = value.getText();
-                                }
-                            }
-                            if (!browseId.startsWith(PLAYLIST_BROWSE_PREFIX)) {
-                                selection = new Selection("", false);
-                                break fromTapActions;
-                            }
-                            String playlistId = browseId.substring(PLAYLIST_BROWSE_PREFIX.length());
-                            if (!isPlaylistId(playlistId)) {
-                                selection = new Selection("", false);
-                                break fromTapActions;
-                            }
-                            if (!found.isEmpty() && !found.equals(playlistId)) {
-                                selection = new Selection("", true);
-                                break fromTapActions;
-                            }
-                            found = playlistId;
-                        }
-                    }
-                    selection = found.isEmpty() ? null : new Selection(found, true);
-                }
+                Selection selection = fromTapActions(owner.patch_getPlaylistTapActions());
                 if (selection != null) {
                     return selection;
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Decides which collection a mounted card starts from the commands of its tap actions.
+     *
+     * A module reads the actions of a mounted card itself, because the app never implements the
+     * two interfaces above, and asks for the same decision through this method.
+     */
+    @Nullable
+    static Selection fromTapActions(@Nullable List<?> actions) throws InvalidProtocolBufferException {
+        if (actions == null) {
+            return null;
+        }
+        String found = "";
+        for (Object action : actions) {
+            if (!(action instanceof TapCommand tap)) {
+                continue;
+            }
+            var command = PlaylistQueueRenderer.ElementsCommand.parseFrom(
+                    tap.patch_getPlaylistTapCommand().toByteArray()).getInnertubeCommand();
+            if (command.hasWatchEndpoint() || command.hasAlternateWatchEndpoint()) {
+                // The caller has already classified this mounted card as a collection.
+                // Mix cards start through Watch, with the first video as their seed.
+                if (!command.hasWatchEndpoint() || !isMixStart(command.getWatchEndpoint())) {
+                    return new Selection("", false);
+                }
+                String id = command.getWatchEndpoint().getPlaylistId();
+                if (!found.isEmpty() && !found.equals(id)) {
+                    return new Selection("", true);
+                }
+                found = id;
+            }
+            var fields = ProtoNode.parse(command.toByteArray());
+            if (fields == null) {
+                continue;
+            }
+            for (var field : fields) {
+                if (field.getFieldNumber() != BROWSE_ENDPOINT || field.children == null) {
+                    continue;
+                }
+
+                // Read only the direct BrowseEndpoint, never a menu's nested
+                // Share, Download or Premium navigation commands.
+                String browseId = "";
+                for (var value : field.children) {
+                    if (value.getFieldNumber() == BROWSE_ID && value.isText()) {
+                        browseId = value.getText();
+                    }
+                }
+                if (!browseId.startsWith(PLAYLIST_BROWSE_PREFIX)) {
+                    return new Selection("", false);
+                }
+                String playlistId = browseId.substring(PLAYLIST_BROWSE_PREFIX.length());
+                if (!isPlaylistId(playlistId)) {
+                    return new Selection("", false);
+                }
+                if (!found.isEmpty() && !found.equals(playlistId)) {
+                    return new Selection("", true);
+                }
+                found = playlistId;
+            }
+        }
+        return found.isEmpty() ? null : new Selection(found, true);
     }
 
     static Selection fromElement(byte[] bytes, boolean collectionCard) throws InvalidProtocolBufferException {
