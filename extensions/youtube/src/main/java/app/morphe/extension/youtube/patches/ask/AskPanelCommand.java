@@ -474,7 +474,29 @@ final class AskPanelCommand {
             }
             if (tokens[0] == null && field.value.length >= MIN_TOKEN_LENGTH) {
                 String token = latin1(field.value);
-                if (isWelcomeRequest(getAskRequest(token))) {
+                boolean isWelcomeRequest;
+                isWelcomeRequest: {
+                    List<Field> request = getAskRequest(token);
+                    if (request == null) {
+                        isWelcomeRequest = false;
+                        break isWelcomeRequest;
+                    }
+                    for (Field requestField : request) {
+                        if (requestField.number == REQUEST_TYPE_FIELD && requestField.wireType == WIRE_TYPE_LENGTH_DELIMITED) {
+                            List<Field> type = parse(requestField.value);
+                            if (type != null) {
+                                for (Field typeField : type) {
+                                    if (typeField.number == REQUEST_TYPE_WELCOME_FIELD) {
+                                        isWelcomeRequest = true;
+                                        break isWelcomeRequest;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    isWelcomeRequest = false;
+                }
+                if (isWelcomeRequest) {
                     tokens[0] = token;
                     continue;
                 }
@@ -492,25 +514,6 @@ final class AskPanelCommand {
         ProtoWriter message = new ProtoWriter();
         message.writeLengthDelimited(SELECTION_FIELD, selection.toByteArray());
         return indexOf(command, message.toByteArray()) >= 0;
-    }
-
-    private static boolean isWelcomeRequest(@Nullable List<Field> request) {
-        if (request == null) {
-            return false;
-        }
-        for (Field field : request) {
-            if (field.number == REQUEST_TYPE_FIELD && field.wireType == WIRE_TYPE_LENGTH_DELIMITED) {
-                List<Field> type = parse(field.value);
-                if (type != null) {
-                    for (Field typeField : type) {
-                        if (typeField.number == REQUEST_TYPE_WELCOME_FIELD) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
     }
 
     /**
@@ -722,7 +725,58 @@ final class AskPanelCommand {
         int end = 0;
         while (matcher.find()) {
             result.append(data, end, matcher.start());
-            result.append(retargetRun(matcher.group(), fromVideoId, toVideoId, depth, replacements));
+            // A base64 run can start with a byte of the message that holds it, such as a length
+            // byte that is also a base64 character, and base64 aligns every 4 characters,
+            // so each of the 4 first characters is tried as the start of the base64.
+            // A token of the panel without padding can also be followed by such a byte, such as the tag of the next field,
+            // so for the runs of the panel, up to 3 last characters are tried as not part of the base64 too.
+            // Every start is tried with all the characters first, and the runs inside tokens keep all their characters,
+            // as base64 that starts at the wrong character can also encode back the same,
+            // and the runs it holds could then be retargeted with characters left out.
+            String retargetedRun;
+            retargetRun: {
+                retargetedRun = matcher.group();
+                Matcher padding = BASE64_PADDING.matcher(retargetedRun);
+                if (!padding.matches()) {
+                    break retargetRun;
+                }
+                String body = Objects.requireNonNull(padding.group(1));
+                String pad = padding.group(2);
+
+                final int maxTrim = depth == 0 ? 3 : 0;
+                for (int trim = 0; trim <= maxTrim; trim++) {
+                    for (int offset = 0; offset < 4; offset++) {
+                        String head = body.substring(0, offset);
+                        String tail = body.substring(offset, body.length() - trim);
+                        if (tail.length() < 16) {
+                            break;
+                        }
+
+                        final byte[] decoded = decodeBase64(tail);
+                        // Base64 that ends with a byte after the token can decode too, but decoding can drop
+                        // the last bits of that byte, so only base64 that encodes back the same is used.
+                        if (decoded == null || !Base64.encodeToString(decoded, base64Flags(tail)).equals(tail)) {
+                            continue;
+                        }
+
+                        final int previousReplacements = replacements[0];
+                        String retargeted = retarget(latin1(decoded), fromVideoId, toVideoId, depth + 1, replacements);
+                        if (replacements[0] == previousReplacements) {
+                            continue;
+                        }
+
+                        String encoded = Base64.encodeToString(bytes(retargeted), base64Flags(tail));
+                        if (encoded.length() != tail.length()) {
+                            // Not the base64 of the token, as a token keeps its length.
+                            replacements[0] = previousReplacements;
+                            continue;
+                        }
+                        retargetedRun = head + encoded + body.substring(body.length() - trim) + pad;
+                        break retargetRun;
+                    }
+                }
+            }
+            result.append(retargetedRun);
             end = matcher.end();
         }
         result.append(data, end, data.length());
@@ -733,60 +787,6 @@ final class AskPanelCommand {
             replacements[0]++;
         }
         return retargeted.replace(fromVideoId, toVideoId);
-    }
-
-    /**
-     * A base64 run can start with a byte of the message that holds it, such as a length
-     * byte that is also a base64 character, and base64 aligns every 4 characters,
-     * so each of the 4 first characters is tried as the start of the base64.
-     * A token of the panel without padding can also be followed by such a byte, such as the tag of the next field,
-     * so for the runs of the panel, up to 3 last characters are tried as not part of the base64 too.
-     * Every start is tried with all the characters first, and the runs inside tokens keep all their characters,
-     * as base64 that starts at the wrong character can also encode back the same,
-     * and the runs it holds could then be retargeted with characters left out.
-     */
-    private static String retargetRun(String run, String fromVideoId, String toVideoId,
-                                      int depth, int[] replacements) {
-        Matcher padding = BASE64_PADDING.matcher(run);
-        if (!padding.matches()) {
-            return run;
-        }
-        String body = Objects.requireNonNull(padding.group(1));
-        String pad = padding.group(2);
-
-        final int maxTrim = depth == 0 ? 3 : 0;
-        for (int trim = 0; trim <= maxTrim; trim++) {
-            for (int offset = 0; offset < 4; offset++) {
-                String head = body.substring(0, offset);
-                String tail = body.substring(offset, body.length() - trim);
-                if (tail.length() < 16) {
-                    break;
-                }
-
-                final byte[] decoded = decodeBase64(tail);
-                // Base64 that ends with a byte after the token can decode too, but decoding can drop
-                // the last bits of that byte, so only base64 that encodes back the same is used.
-                if (decoded == null || !Base64.encodeToString(decoded, base64Flags(tail)).equals(tail)) {
-                    continue;
-                }
-
-                final int previousReplacements = replacements[0];
-                String retargeted = retarget(latin1(decoded), fromVideoId, toVideoId, depth + 1, replacements);
-                if (replacements[0] == previousReplacements) {
-                    continue;
-                }
-
-                String encoded = Base64.encodeToString(bytes(retargeted), base64Flags(tail));
-                if (encoded.length() != tail.length()) {
-                    // Not the base64 of the token, as a token keeps its length.
-                    replacements[0] = previousReplacements;
-                    continue;
-                }
-                return head + encoded + body.substring(body.length() - trim) + pad;
-            }
-        }
-
-        return run;
     }
 
     private static int base64Flags(String base64) {

@@ -173,21 +173,20 @@ public class DisableVideoCodecsPatch {
         return false;
     }
 
-    private static VideoCodec resolveVideoCodec() {
-        VideoCodec codec = Settings.VIDEO_CODEC.get();
-        if (codec == VideoCodec.AVC && !isAvcAvailable()) {
-            return VideoCodec.VP9;
-        }
-        return codec;
-    }
-
     /**
      * @return The codec in use, which is VP9 if AVC is selected but cannot be forced.
      */
     public static VideoCodec getVideoCodec() {
         VideoCodec codec = videoCodec;
         if (codec == null) {
-            codec = resolveVideoCodec();
+            resolveVideoCodec: {
+                VideoCodec selectedCodec = Settings.VIDEO_CODEC.get();
+                if (selectedCodec == VideoCodec.AVC && !isAvcAvailable()) {
+                    codec = VideoCodec.VP9;
+                    break resolveVideoCodec;
+                }
+                codec = selectedCodec;
+            }
             videoCodec = codec;
         }
         return codec;

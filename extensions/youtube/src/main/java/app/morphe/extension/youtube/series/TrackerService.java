@@ -559,7 +559,41 @@ public final class TrackerService {
         repository.refreshAttempt(id, now);
         refreshTickets.put(id, ticket);
         try {
-            Future<?> future = network.submit(() -> fetchAndPublish(ticket, quiet, error));
+            Future<?> future = network.submit(() -> {
+                String ticketId = ticket.id;
+                CatalogClient.Catalog result = null;
+                Exception failure = null;
+                try {
+                    result = catalogs.fetch(ticketId);
+                } catch (Exception e) {
+                    failure = e;
+                }
+                CatalogClient.Catalog ready = result;
+                Exception problem = failure;
+                completion(
+                        new Mutation(
+                                () -> {
+                                    if (refreshTickets.get(ticketId) != ticket) return;
+                                    // Keep ownership until the database commit succeeds, including a storage retry.
+                                    if (problem == null) {
+                                        repository.publish(ticket, ready, System.currentTimeMillis());
+                                        updateTrackedVideos();
+                                        repository.refreshRetry(ticketId, 0);
+                                    } else {
+                                        long serverDelay =
+                                                problem instanceof CatalogClient.Failure
+                                                        ? ((CatalogClient.Failure) problem).retryAfterMs
+                                                        : 0;
+                                        long delay = Math.max(quiet ? CatalogRefreshPolicy.RETRY_MS : 30000, serverDelay);
+                                        repository.fetchFailed(ticket, message(problem));
+                                        repository.refreshRetry(ticketId, System.currentTimeMillis() + delay);
+                                    }
+                                    refreshTickets.remove(ticketId);
+                                    refreshing.remove(ticketId);
+                                },
+                                () -> submit(this::pumpQuiet),
+                                error));
+            });
             refreshing.put(id, future);
         } catch (RejectedExecutionException failure) {
             Logger.printDebug(() -> "Catalog queue is full", failure);
@@ -567,50 +601,6 @@ public final class TrackerService {
             repository.fetchFailed(ticket, "morphe_series_tracker_error_catalog_busy");
             repository.refreshRetry(id, now + CatalogRefreshPolicy.RETRY_MS);
         }
-    }
-
-    private void fetchAndPublish(
-            TrackerRepository.FetchTicket ticket, boolean quiet, Consumer<String> error) {
-        String id = ticket.id;
-        CatalogClient.Catalog result = null;
-        Exception failure = null;
-        try {
-            result = catalogs.fetch(id);
-        } catch (Exception e) {
-            failure = e;
-        }
-        CatalogClient.Catalog ready = result;
-        Exception problem = failure;
-        completion(
-                new Mutation(
-                        () -> publishFetch(ticket, ready, problem, quiet),
-                        () -> submit(this::pumpQuiet),
-                        error));
-    }
-
-    private void publishFetch(
-            TrackerRepository.FetchTicket ticket,
-            CatalogClient.Catalog catalog,
-            Exception failure,
-            boolean quiet) {
-        String id = ticket.id;
-        if (refreshTickets.get(id) != ticket) return;
-        // Keep ownership until the database commit succeeds, including a storage retry.
-        if (failure == null) {
-            repository.publish(ticket, catalog, System.currentTimeMillis());
-            updateTrackedVideos();
-            repository.refreshRetry(id, 0);
-        } else {
-            long serverDelay =
-                    failure instanceof CatalogClient.Failure
-                            ? ((CatalogClient.Failure) failure).retryAfterMs
-                            : 0;
-            long delay = Math.max(quiet ? CatalogRefreshPolicy.RETRY_MS : 30000, serverDelay);
-            repository.fetchFailed(ticket, message(failure));
-            repository.refreshRetry(id, System.currentTimeMillis() + delay);
-        }
-        refreshTickets.remove(id);
-        refreshing.remove(id);
     }
 
     public void startHere(Series s, Episode e, Runnable done, Consumer<String> error) {

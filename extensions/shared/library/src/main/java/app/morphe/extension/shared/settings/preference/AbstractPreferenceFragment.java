@@ -58,7 +58,6 @@ import androidx.annotation.Nullable;
 
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -193,7 +192,20 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
             Object item = parent.getAdapter().getItem(position);
             if (!(item instanceof Preference preference)) return false;
 
-            List<CharSequence> path = findPreferencePath(preference);
+            List<CharSequence> path;
+            findPreferencePath: {
+                PreferenceScreen root = getPreferenceScreen();
+                if (root == null) {
+                    path = null;
+                    break findPreferencePath;
+                }
+                path = new ArrayList<>();
+                path.add(SettingsNamePatch.getSettingsName());
+                if (preference == root) {
+                    break findPreferencePath;
+                }
+                path = searchPreferencePath(root, preference, path) ? path : null;
+            }
             if (path == null || path.isEmpty()) return false;
 
             String text = TextUtils.join(" > ", path);
@@ -205,16 +217,6 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
             Logger.printException(() -> "onPreferenceLongClick failure", ex);
             return false;
         }
-    }
-
-    @Nullable
-    private List<CharSequence> findPreferencePath(Preference target) {
-        PreferenceScreen root = getPreferenceScreen();
-        if (root == null) return null;
-        List<CharSequence> path = new ArrayList<>();
-        path.add(SettingsNamePatch.getSettingsName());
-        if (target == root) return path;
-        return searchPreferencePath(root, target, path) ? path : null;
     }
 
     private static boolean searchPreferencePath(PreferenceGroup group, Preference target, List<CharSequence> path) {

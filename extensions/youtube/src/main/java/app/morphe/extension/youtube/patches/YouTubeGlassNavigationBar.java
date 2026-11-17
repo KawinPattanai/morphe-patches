@@ -198,17 +198,6 @@ public final class YouTubeGlassNavigationBar {
     private static final int SEEN_ROOM_TOLERANCE = Dim.dp2;
 
     /**
-     * @return The room below the buttons the app added to the height of the bar itself.
-     */
-    private static int getAppRoom(View navigationBar) {
-        final int padding = navigationBar.getPaddingBottom();
-        final int seenRoom = padding == seenAppRoomPadding ? seenAppRoom : 0;
-        // The stored room can still be the room of a previous bar, such as after switching between
-        // gesture and 3-button navigation, and the app never adds more room than the padding.
-        return Math.max(0, Math.min(Math.max(padding, seenRoom), Math.max(appRoom, seenRoom)));
-    }
-
-    /**
      * Injection point helper.
      * <p>
      * The room below the buttons that the app did not add to the height of the bar, such as the
@@ -291,7 +280,12 @@ public final class YouTubeGlassNavigationBar {
      */
     private static int getAddedRoom(View navigationBar, int height) {
         final int base = baseHeight;
-        final int extra = navigationBar.getPaddingBottom() - getAppRoom(navigationBar) + heightDelta;
+        final int padding = navigationBar.getPaddingBottom();
+        final int seenRoom = padding == seenAppRoomPadding ? seenAppRoom : 0;
+        // The stored room can still be the room of a previous bar, such as after switching between
+        // gesture and 3-button navigation, and the app never adds more room than the padding.
+        final int appRoomOfPadding = Math.max(0, Math.min(Math.max(padding, seenRoom), Math.max(appRoom, seenRoom)));
+        final int extra = padding - appRoomOfPadding + heightDelta;
         if (base <= 0 || extra == 0 || height <= 0) return 0;
 
         // A navigation rail along the side.

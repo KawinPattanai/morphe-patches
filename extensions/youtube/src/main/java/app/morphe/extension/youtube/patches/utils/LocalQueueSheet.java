@@ -406,7 +406,74 @@ public final class LocalQueueSheet {
 
         DragHandleView handle = new DragHandleView(context, mutedColor);
         handle.setContentDescription(str("morphe_local_queue_reorder"));
-        handle.setOnTouchListener((v, event) -> onHandleTouch(row, event));
+        handle.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (drag != null || row.root.getParent() == null) return false;
+
+                    row.root.getParent().requestDisallowInterceptTouchEvent(true);
+                    beginInteraction();
+                    drag = new DragSession(row, event.getRawY());
+                    row.root.setElevation(Dim.dp8);
+                    row.root.setScaleX(1.02f);
+                    row.root.setScaleY(1.02f);
+                    scrollView.postOnAnimation(drag.autoScroll);
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (drag == null || drag.row != row) return false;
+
+                    drag.lastRawY = event.getRawY();
+                    updateDrag(drag);
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (drag == null || drag.row != row) return false;
+
+                    DragSession session = drag;
+                    final int origin = session.origin;
+                    final int target = session.target;
+
+                    float settle = 0;
+                    if (target > origin) {
+                        for (int j = origin + 1; j <= target; j++) settle += session.heights[j];
+                    } else if (target < origin) {
+                        for (int j = target; j < origin; j++) settle -= session.heights[j];
+                    }
+
+                    session.row.root.animate()
+                            .translationY(settle)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(SETTLE_MILLISECONDS)
+                            .setListener(new AnimatorListenerAdapter() {
+                                @Override
+                                public void onAnimationEnd(Animator animation) {
+                                    session.row.root.animate().setListener(null);
+                                    for (Row row : rows) {
+                                        row.root.animate().cancel();
+                                        row.root.setTranslationY(0);
+                                        row.shift = 0;
+                                    }
+                                    session.row.root.setElevation(0);
+                                    if (drag == session) {
+                                        drag = null;
+                                    }
+                                    if (target != origin) {
+                                        LocalQueuePatch.moveTo(session.row.videoId, rows.get(target).videoId);
+                                        renderPending = true;
+                                    }
+                                    endInteraction();
+                                }
+                            })
+                            .start();
+                    return true;
+
+                default:
+                    return false;
+            }
+        });
         foreground.addView(handle, new LinearLayout.LayoutParams(Dim.dp(44), Dim.dp(44)));
 
         foreground.setOnClickListener(v -> {
@@ -556,75 +623,6 @@ public final class LocalQueueSheet {
         }
     }
 
-    private boolean onHandleTouch(Row row, MotionEvent event) {
-        switch (event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-                if (drag != null || row.root.getParent() == null) return false;
-
-                row.root.getParent().requestDisallowInterceptTouchEvent(true);
-                beginInteraction();
-                drag = new DragSession(row, event.getRawY());
-                row.root.setElevation(Dim.dp8);
-                row.root.setScaleX(1.02f);
-                row.root.setScaleY(1.02f);
-                scrollView.postOnAnimation(drag.autoScroll);
-                return true;
-
-            case MotionEvent.ACTION_MOVE:
-                if (drag == null || drag.row != row) return false;
-
-                drag.lastRawY = event.getRawY();
-                updateDrag(drag);
-                return true;
-
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                if (drag == null || drag.row != row) return false;
-
-                DragSession session = drag;
-                final int origin = session.origin;
-                final int target = session.target;
-
-                float settle = 0;
-                if (target > origin) {
-                    for (int j = origin + 1; j <= target; j++) settle += session.heights[j];
-                } else if (target < origin) {
-                    for (int j = target; j < origin; j++) settle -= session.heights[j];
-                }
-
-                session.row.root.animate()
-                        .translationY(settle)
-                        .scaleX(1f)
-                        .scaleY(1f)
-                        .setDuration(SETTLE_MILLISECONDS)
-                        .setListener(new AnimatorListenerAdapter() {
-                            @Override
-                            public void onAnimationEnd(Animator animation) {
-                                session.row.root.animate().setListener(null);
-                                for (Row row : rows) {
-                                    row.root.animate().cancel();
-                                    row.root.setTranslationY(0);
-                                    row.shift = 0;
-                                }
-                                session.row.root.setElevation(0);
-                                if (drag == session) {
-                                    drag = null;
-                                }
-                                if (target != origin) {
-                                    LocalQueuePatch.moveTo(session.row.videoId, rows.get(target).videoId);
-                                    renderPending = true;
-                                }
-                                endInteraction();
-                            }
-                        })
-                        .start();
-                return true;
-
-            default:
-                return false;
-        }
-    }
-
     private void updateDrag(DragSession session) {
         final Row dragged = session.row;
         final int count = rows.size();
@@ -645,9 +643,21 @@ public final class LocalQueueSheet {
                 others[n++] = session.tops[j] + session.heights[j] / 2f;
             }
         }
-        // At maxY, dropIndex() can still return the second-to-last position,
+        // At maxY, the drop index counted below can still be the second-to-last position,
         // so select last explicitly.
-        session.target = finger >= maxY ? last : dropIndex(center, others);
+        if (finger >= maxY) {
+            session.target = last;
+        } else {
+            // Index a dragged row ends at, from the center of the dragged row and the centers of the other
+            // rows in their current order.
+            int before = 0;
+            for (float otherCenter : others) {
+                if (otherCenter < center) {
+                    before++;
+                }
+            }
+            session.target = before;
+        }
 
         final float draggedHeight = session.heights[origin];
         for (int j = 0; j <= last; j++) {
@@ -944,20 +954,6 @@ public final class LocalQueueSheet {
                 canvas.drawRoundRect(rect, barWidth / 2, barWidth / 2, paint);
             }
         }
-    }
-
-    /**
-     * Index a dragged row ends at, from the center of the dragged row and the centers of the other
-     * rows in their current order.
-     */
-    private static int dropIndex(float draggedCenter, float[] otherCenters) {
-        int before = 0;
-        for (float center : otherCenters) {
-            if (center < draggedCenter) {
-                before++;
-            }
-        }
-        return before;
     }
 
     private RippleDrawable createRipple(int color, int radius) {

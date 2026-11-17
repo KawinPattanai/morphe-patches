@@ -455,29 +455,6 @@ public final class GlassCapsuleDrawable extends Drawable {
         }
     }
 
-    private void updateShaders() {
-        if (capsule.top == shaderTop && capsule.bottom == shaderBottom
-                && capsule.left == shaderLeft && capsule.right == shaderRight) return;
-        shaderTop = capsule.top;
-        shaderBottom = capsule.bottom;
-        shaderLeft = capsule.left;
-        shaderRight = capsule.right;
-
-        final float radius = host.getCornerRadius(capsule);
-        capsulePath.reset();
-        capsulePath.addRoundRect(capsule, radius, radius, Path.Direction.CW);
-
-        // Only made again when the size of the capsule or the colors change, not on every frame.
-        sheenPaint.setShader(new LinearGradient(0, capsule.top, 0, capsule.bottom,
-                sheenTopColor, Color.TRANSPARENT, Shader.TileMode.CLAMP));
-        strokePaint.setShader(new LinearGradient(0, capsule.top, 0, capsule.bottom,
-                strokeTopColor, strokeBottomColor, Shader.TileMode.CLAMP));
-        final float end = Math.min(0.5f, radius / capsule.width());
-        rimPaint.setShader(new LinearGradient(capsule.left, 0, capsule.right, 0,
-                new int[]{rimEndColor, rimMiddleColor, rimMiddleColor, rimEndColor},
-                new float[]{0, end, 1 - end, 1}, Shader.TileMode.CLAMP));
-    }
-
     private void updateFillPaint() {
         // The blurred background of the app is already tinted, unless the glass has a tint of its own.
         fillPaint.setColor(fillOverBlur && tintColor == 0 ? Color.TRANSPARENT : fillColor);
@@ -490,7 +467,28 @@ public final class GlassCapsuleDrawable extends Drawable {
             if (capsule.width() <= 0 || capsule.height() <= 0) return;
 
             final float radius = host.getCornerRadius(capsule);
-            updateShaders();
+            updateShaders: {
+                if (capsule.top == shaderTop && capsule.bottom == shaderBottom
+                        && capsule.left == shaderLeft && capsule.right == shaderRight) break updateShaders;
+                shaderTop = capsule.top;
+                shaderBottom = capsule.bottom;
+                shaderLeft = capsule.left;
+                shaderRight = capsule.right;
+
+                final float shaderRadius = host.getCornerRadius(capsule);
+                capsulePath.reset();
+                capsulePath.addRoundRect(capsule, shaderRadius, shaderRadius, Path.Direction.CW);
+
+                // Only made again when the size of the capsule or the colors change, not on every frame.
+                sheenPaint.setShader(new LinearGradient(0, capsule.top, 0, capsule.bottom,
+                        sheenTopColor, Color.TRANSPARENT, Shader.TileMode.CLAMP));
+                strokePaint.setShader(new LinearGradient(0, capsule.top, 0, capsule.bottom,
+                        strokeTopColor, strokeBottomColor, Shader.TileMode.CLAMP));
+                final float end = Math.min(0.5f, shaderRadius / capsule.width());
+                rimPaint.setShader(new LinearGradient(capsule.left, 0, capsule.right, 0,
+                        new int[]{rimEndColor, rimMiddleColor, rimMiddleColor, rimEndColor},
+                        new float[]{0, end, 1 - end, 1}, Shader.TileMode.CLAMP));
+            }
 
             // The dark player can end above the navigation bar, so the background of the window
             // would show around the capsule, which is white with the light theme.
@@ -543,7 +541,47 @@ public final class GlassCapsuleDrawable extends Drawable {
             }
             canvas.drawRoundRect(capsule, radius, radius, sheenPaint);
 
-            drawIndicator(canvas);
+            drawIndicator: {
+                lastIndicatorValid = false;
+
+                View tab = host.getSelectedTabView();
+                if (tab == null || tab.getVisibility() != View.VISIBLE || tab.getWidth() <= 0) break drawIndicator;
+
+                // The position of the tab inside the navigation bar.
+                final float tabLeft = GlassNavigationBarLayout.getLeftIn(tab, view);
+                if (Float.isNaN(tabLeft)) break drawIndicator;
+
+                final float minLeft = capsule.left + INDICATOR_INSET;
+                final float maxRight = capsule.right - INDICATOR_INSET;
+                float targetLeft = tabLeft + INDICATOR_INSET;
+                float targetRight = tabLeft + tab.getWidth() - INDICATOR_INSET;
+                if (targetRight - targetLeft > INDICATOR_MAX_WIDTH) {
+                    final float center = (targetLeft + targetRight) / 2;
+                    targetLeft = center - INDICATOR_MAX_WIDTH / 2f;
+                    targetRight = center + INDICATOR_MAX_WIDTH / 2f;
+                }
+                targetLeft = Math.max(targetLeft, minLeft);
+                targetRight = Math.min(targetRight, maxRight);
+
+                float left = targetLeft;
+                float right = targetRight;
+                if (animationFromValid && indicatorAnimator.isRunning()) {
+                    final float fraction = (float) indicatorAnimator.getAnimatedValue();
+                    left = animationFromLeft + (targetLeft - animationFromLeft) * fraction;
+                    right = animationFromRight + (targetRight - animationFromRight) * fraction;
+                }
+                if (right - left <= 0) break drawIndicator;
+
+                scratch.set(left, capsule.top + INDICATOR_INSET, right, capsule.bottom - INDICATOR_INSET);
+                if (scratch.height() <= 0) break drawIndicator;
+                // The corners follow the corners of the capsule, half the height with a round capsule.
+                final float indicatorRadius = getIndicatorRadius(host.getCornerRadius(capsule), scratch.height());
+                canvas.drawRoundRect(scratch, indicatorRadius, indicatorRadius, indicatorPaint);
+
+                lastIndicatorLeft = left;
+                lastIndicatorRight = right;
+                lastIndicatorValid = true;
+            }
 
             if (rimScale <= 0) return;
 
@@ -563,48 +601,6 @@ public final class GlassCapsuleDrawable extends Drawable {
         } catch (Exception ex) {
             Logger.printException(() -> "Glass navigation bar draw failure", ex);
         }
-    }
-
-    private void drawIndicator(Canvas canvas) {
-        lastIndicatorValid = false;
-
-        View tab = host.getSelectedTabView();
-        if (tab == null || tab.getVisibility() != View.VISIBLE || tab.getWidth() <= 0) return;
-
-        // The position of the tab inside the navigation bar.
-        final float tabLeft = GlassNavigationBarLayout.getLeftIn(tab, view);
-        if (Float.isNaN(tabLeft)) return;
-
-        final float minLeft = capsule.left + INDICATOR_INSET;
-        final float maxRight = capsule.right - INDICATOR_INSET;
-        float targetLeft = tabLeft + INDICATOR_INSET;
-        float targetRight = tabLeft + tab.getWidth() - INDICATOR_INSET;
-        if (targetRight - targetLeft > INDICATOR_MAX_WIDTH) {
-            final float center = (targetLeft + targetRight) / 2;
-            targetLeft = center - INDICATOR_MAX_WIDTH / 2f;
-            targetRight = center + INDICATOR_MAX_WIDTH / 2f;
-        }
-        targetLeft = Math.max(targetLeft, minLeft);
-        targetRight = Math.min(targetRight, maxRight);
-
-        float left = targetLeft;
-        float right = targetRight;
-        if (animationFromValid && indicatorAnimator.isRunning()) {
-            final float fraction = (float) indicatorAnimator.getAnimatedValue();
-            left = animationFromLeft + (targetLeft - animationFromLeft) * fraction;
-            right = animationFromRight + (targetRight - animationFromRight) * fraction;
-        }
-        if (right - left <= 0) return;
-
-        scratch.set(left, capsule.top + INDICATOR_INSET, right, capsule.bottom - INDICATOR_INSET);
-        if (scratch.height() <= 0) return;
-        // The corners follow the corners of the capsule, half the height with a round capsule.
-        final float radius = getIndicatorRadius(host.getCornerRadius(capsule), scratch.height());
-        canvas.drawRoundRect(scratch, radius, radius, indicatorPaint);
-
-        lastIndicatorLeft = left;
-        lastIndicatorRight = right;
-        lastIndicatorValid = true;
     }
 
     /**

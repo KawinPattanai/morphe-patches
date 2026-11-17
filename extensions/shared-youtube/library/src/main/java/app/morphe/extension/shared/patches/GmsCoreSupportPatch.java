@@ -39,7 +39,6 @@ import androidx.annotation.Nullable;
 
 import org.json.JSONException;
 
-import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
@@ -245,7 +244,42 @@ public class GmsCoreSupportPatch {
 
             // Find every MicroG install and verify the installed MicroG-RE is signed by the
             // official key, since an installation signed by another key cannot be updated.
-            List<VariantPackage> variants = findMicroGVariants(context);
+            // Finds every MicroG / Google Play services install that could conflict with MicroG-RE.
+            // The current user is always scanned, and so is every profile of it the app is allowed to
+            // query (such as the work profile).
+            List<VariantPackage> variants = new ArrayList<>();
+            final int ownUserId = currentUserId();
+
+            scanUser(context, ownUserId, null, variants);
+
+            try {
+                // noinspection WrongConstant
+                UserManager userManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
+                if (userManager != null) {
+                    List<UserHandle> profiles = userManager.getUserProfiles();
+                    for (UserHandle handle : profiles) {
+                        // The id of the given user handle, or -1 if it cannot be resolved.
+                        int userId;
+                        userHandleIdentifier: {
+                            try {
+                                if (USER_HANDLE_GET_IDENTIFIER == null) {
+                                    userId = -1;
+                                    break userHandleIdentifier;
+                                }
+                                Object result = USER_HANDLE_GET_IDENTIFIER.invoke(handle);
+                                userId = result instanceof Integer ? (Integer) result : -1;
+                            } catch (InvocationTargetException | IllegalAccessException ex) {
+                                userId = -1;
+                            }
+                        }
+                        if (userId < 0 || userId == ownUserId) continue;
+                        scanUser(context, userId, handle, variants);
+                    }
+                }
+            } catch (Exception ex) {
+                // A profile that cannot be listed has no installs that can be found.
+                Logger.printInfo(() -> "Could not check for MicroG variants", ex);
+            }
             List<VariantPackage> conflicts = new ArrayList<>();
             boolean officialGmsCoreInstalled = false;
             for (VariantPackage variant : variants) {
@@ -378,7 +412,26 @@ public class GmsCoreSupportPatch {
                             return;
                         }
 
-                        String latestVersionName = fetchLatestMicroGVersion();
+                        // The latest stable MicroG version name from the main branch of the MicroG-RE repository,
+                        // or null if it could not be fetched or parsed.
+                        final String latestVersionName;
+                        HttpURLConnection connection = Requester.openConnection(MICROG_LATEST_RELEASE_API_URL);
+                        connection.setFixedLengthStreamingMode(0);
+                        connection.setConnectTimeout(5000);
+                        connection.setReadTimeout(5000);
+                        if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                            connection.disconnect();
+                            latestVersionName = null;
+                        } else {
+                            String tagName;
+                            try {
+                                // The latest release endpoint returns the newest stable (non-prerelease) tag.
+                                tagName = Requester.parseJSONObjectAndDisconnect(connection).optString("tag_name");
+                            } catch (JSONException ex) {
+                                tagName = "";
+                            }
+                            latestVersionName = tagName.isEmpty() ? null : tagName;
+                        }
                         if (latestVersionName == null || compareVersions(installedVersionName, latestVersionName) >= 0) {
                             // Version could not be fetched, or MicroG is already up to date.
                             return;
@@ -424,7 +477,8 @@ public class GmsCoreSupportPatch {
                 // Ignore Android Automotive devices (Google built-in),
                 // as there is no way to disable battery optimizations.
                 Logger.printDebug(() -> "Device is Android Automotive");
-            } else if (batteryOptimizationsEnabled(context)) {
+            } else if (!((PowerManager) context.getSystemService(Context.POWER_SERVICE))
+                    .isIgnoringBatteryOptimizations(GMS_CORE_PACKAGE_NAME)) {
                 Logger.printInfo(() -> "GmsCore is not whitelisted from battery optimizations");
 
                 if (SharedSettings.GMS_CORE_BATTERY_OPTIMIZATION_DIALOG.get()) {
@@ -490,49 +544,6 @@ public class GmsCoreSupportPatch {
         } catch (Exception ex) {
             Logger.printException(() -> "checkGmsCore failure", ex);
         }
-    }
-
-    /**
-     * Finds every MicroG / Google Play services install that could conflict with MicroG-RE.
-     * The current user is always scanned, and so is every profile of it the app is allowed to
-     * query (such as the work profile).
-     */
-    private static List<VariantPackage> findMicroGVariants(Context context) {
-        List<VariantPackage> variants = new ArrayList<>();
-        final int currentUserId = currentUserId();
-
-        scanUser(context, currentUserId, null, variants);
-
-        try {
-            // noinspection WrongConstant
-            UserManager userManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
-            if (userManager != null) {
-                List<UserHandle> profiles = userManager.getUserProfiles();
-                for (UserHandle handle : profiles) {
-                    // The id of the given user handle, or -1 if it cannot be resolved.
-                    int userId;
-                    userHandleIdentifier: {
-                        try {
-                            if (USER_HANDLE_GET_IDENTIFIER == null) {
-                                userId = -1;
-                                break userHandleIdentifier;
-                            }
-                            Object result = USER_HANDLE_GET_IDENTIFIER.invoke(handle);
-                            userId = result instanceof Integer ? (Integer) result : -1;
-                        } catch (InvocationTargetException | IllegalAccessException ex) {
-                            userId = -1;
-                        }
-                    }
-                    if (userId < 0 || userId == currentUserId) continue;
-                    scanUser(context, userId, handle, variants);
-                }
-            }
-        } catch (Exception ex) {
-            // A profile that cannot be listed has no installs that can be found.
-            Logger.printInfo(() -> "Could not check for MicroG variants", ex);
-        }
-
-        return variants;
     }
 
     private static void addPackageName(List<String> packageNames, @Nullable String packageName) {
@@ -763,30 +774,6 @@ public class GmsCoreSupportPatch {
     }
 
     /**
-     * @return The latest stable MicroG version name from the main branch of the MicroG-RE repository,
-     *         or null if it could not be fetched or parsed.
-     */
-    @Nullable
-    private static String fetchLatestMicroGVersion() throws IOException {
-        HttpURLConnection connection = Requester.openConnection(MICROG_LATEST_RELEASE_API_URL);
-        connection.setFixedLengthStreamingMode(0);
-        connection.setConnectTimeout(5000);
-        connection.setReadTimeout(5000);
-        final int responseCode = connection.getResponseCode();
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            connection.disconnect();
-            return null;
-        }
-        try {
-            // The latest release endpoint returns the newest stable (non-prerelease) tag.
-            String tagName = Requester.parseJSONObjectAndDisconnect(connection).optString("tag_name");
-            return tagName.isEmpty() ? null : tagName;
-        } catch (JSONException ex) {
-            return null;
-        }
-    }
-
-    /**
      * Compares two MicroG version names such as "7.1.0-dev.2".
      * @return A negative value if {@code a} is older than {@code b}, zero if equal, a positive value if newer.
      */
@@ -828,14 +815,6 @@ public class GmsCoreSupportPatch {
         Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
         intent.setData(Uri.fromParts("package", GMS_CORE_PACKAGE_NAME, null));
         activity.startActivityForResult(intent, 0);
-    }
-
-    /**
-     * @return If GmsCore is not whitelisted from battery optimizations.
-     */
-    private static boolean batteryOptimizationsEnabled(Context context) {
-        var powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-        return !powerManager.isIgnoringBatteryOptimizations(GMS_CORE_PACKAGE_NAME);
     }
 
     private static String getGmsCoreDownload() {

@@ -241,7 +241,15 @@ public final class GlassNavigationBarLayout {
                                 + label.getPaddingLeft() + label.getPaddingRight()
                         : child.getWidth());
                 if (laidOut && child.getHeight() > 0) {
-                    final int top = getTopIn(child, button);
+                    // The top of the view in the coordinates of the ancestor.
+                    View topView = child;
+                    int top = 0;
+                    while (topView != button) {
+                        top += topView.getTop();
+                        ViewParent parent = topView.getParent();
+                        if (!(parent instanceof View parentView)) break;
+                        topView = parentView;
+                    }
                     contentTop = Math.min(contentTop, top);
                     contentBottom = Math.max(contentBottom, top + child.getHeight());
                 }
@@ -293,20 +301,6 @@ public final class GlassNavigationBarLayout {
             button.setVisibility(View.VISIBLE);
         }
         hidden.clear();
-    }
-
-    /**
-     * @return The top of the view in the coordinates of the ancestor.
-     */
-    private static int getTopIn(View view, View ancestor) {
-        int top = 0;
-        while (view != ancestor) {
-            top += view.getTop();
-            ViewParent parent = view.getParent();
-            if (!(parent instanceof View parentView)) break;
-            view = parentView;
-        }
-        return top;
     }
 
     /**

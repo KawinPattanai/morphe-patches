@@ -140,9 +140,23 @@ public final class TextTranslator {
     public static String resolveLanguage(String language) {
         if (DEVICE_LANGUAGE.equalsIgnoreCase(language)) {
             Configuration configuration = Utils.getContext().getResources().getConfiguration();
-            language = getLanguageCode(configuration.getLocales().isEmpty()
+            getLanguageCode: {
+                Locale locale = configuration.getLocales().isEmpty()
                     ? Locale.getDefault()
-                    : configuration.getLocales().get(0));
+                    : configuration.getLocales().get(0);
+                String localeLanguage = locale.getLanguage();
+                if ("zh".equals(localeLanguage)) {
+                    String country = locale.getCountry();
+                    language = "Hant".equals(locale.getScript()) || "TW".equals(country)
+                            || "HK".equals(country) || "MO".equals(country) ? "zh-TW" : "zh-CN";
+                    break getLanguageCode;
+                }
+                if ("pt".equals(localeLanguage) && "PT".equals(locale.getCountry())) {
+                    language = "pt-PT";
+                    break getLanguageCode;
+                }
+                language = localeLanguage.isEmpty() ? "en" : localeLanguage;
+            }
         }
         return switch (language.toLowerCase(Locale.ROOT)) {
             case "fil" -> "tl";
@@ -153,19 +167,6 @@ public final class TextTranslator {
             case "kmr" -> "ku";
             default -> language;
         };
-    }
-
-    private static String getLanguageCode(Locale locale) {
-        String language = locale.getLanguage();
-        if ("zh".equals(language)) {
-            String country = locale.getCountry();
-            return "Hant".equals(locale.getScript()) || "TW".equals(country)
-                    || "HK".equals(country) || "MO".equals(country) ? "zh-TW" : "zh-CN";
-        }
-        if ("pt".equals(language) && "PT".equals(locale.getCountry())) {
-            return "pt-PT";
-        }
-        return language.isEmpty() ? "en" : language;
     }
 
     /**
@@ -325,9 +326,31 @@ public final class TextTranslator {
         return request(joined.toString(), url, fallbackUrl, romanize, response -> {
             // Response: [[["translated","original",null,"romanized",...],...],...]
             JSONArray sentences = response.getJSONArray(0);
-            return romanize
-                    ? extractRomanizedLines(sentences, preferTranslatedRomanization, lineSeparator)
-                    : Arrays.asList(joinSentences(sentences).split("\n", -1));
+            if (!romanize) {
+                return Arrays.asList(joinSentences(sentences).split("\n", -1));
+            }
+
+            // One romanization covers the whole batch and arrives after the per-line segments: index 3
+            // holds the source, index 2 the translation, and only one of them is ever asked for.
+            final JSONArray last = sentences.optJSONArray(sentences.length() - 1);
+            final String source = last != null ? last.optString(3) : "";
+            final String translated = last != null ? last.optString(2) : "";
+            final String first = preferTranslatedRomanization ? translated : source;
+            final String second = preferTranslatedRomanization ? source : translated;
+            String romanized = first.isEmpty() ? second : first;
+            if ("null".equals(romanized)) {
+                romanized = "";
+            }
+
+            // Cuts the batch romanization back into the lines that were sent.
+            if (LINE_FALLBACK_SEPARATOR.equals(lineSeparator)) {
+                List<String> romanizedLines = new ArrayList<>();
+                for (String line : romanized.split("\\|", -1)) {
+                    romanizedLines.add(line.trim());
+                }
+                return romanizedLines;
+            }
+            return Arrays.asList(romanized.split("\n", -1));
         });
     }
 
@@ -433,34 +456,5 @@ public final class TextTranslator {
             result.append(sentences.getJSONArray(i).getString(0));
         }
         return result.toString();
-    }
-
-    /**
-     * One romanization covers the whole batch and arrives after the per-line segments: index 3
-     * holds the source, index 2 the translation, and only one of them is ever asked for.
-     */
-    @NonNull
-    private static List<String> extractRomanizedLines(@NonNull JSONArray sentences,
-                                                      boolean preferTranslated,
-                                                      @NonNull String lineSeparator) {
-        final JSONArray last = sentences.optJSONArray(sentences.length() - 1);
-        final String source = last != null ? last.optString(3) : "";
-        final String translated = last != null ? last.optString(2) : "";
-        final String first = preferTranslated ? translated : source;
-        final String second = preferTranslated ? source : translated;
-        String romanized = first.isEmpty() ? second : first;
-        if ("null".equals(romanized)) {
-            romanized = "";
-        }
-
-        // Cuts the batch romanization back into the lines that were sent.
-        if (LINE_FALLBACK_SEPARATOR.equals(lineSeparator)) {
-            List<String> lines = new ArrayList<>();
-            for (String line : romanized.split("\\|", -1)) {
-                lines.add(line.trim());
-            }
-            return lines;
-        }
-        return Arrays.asList(romanized.split("\n", -1));
     }
 }

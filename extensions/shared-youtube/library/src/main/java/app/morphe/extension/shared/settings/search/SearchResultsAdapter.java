@@ -139,7 +139,24 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
         // so convertView is always of the type of this position and only a null view needs a new layout.
         View view = convertView;
         if (view == null) {
-            view = inflateViewForType(viewType, parent);
+            if (viewType == BaseSearchResultItem.ViewType.GROUP_HEADER) {
+                Context context = parent.getContext();
+                TextView headerView = new TextView(context);
+                headerView.setPadding(Dim.dp16, Dim.dp4, Dim.dp16, Dim.dp4);
+                ThemeUtils.setThemeTextStyle(headerView, android.R.attr.textAppearanceSmall,
+                        android.R.attr.textColorTertiary);
+                headerView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                headerView.setTypeface(headerView.getTypeface(), Typeface.ITALIC);
+                headerView.setEllipsize(TextUtils.TruncateAt.END);
+                headerView.setMaxLines(1);
+                headerView.setBackgroundResource(ThemeUtils.getThemeResourceId(
+                        context, android.R.attr.selectableItemBackground));
+                headerView.setClickable(true);
+                headerView.setFocusable(true);
+                view = headerView;
+            } else {
+                view = inflater.inflate(viewType.getLayoutResourceId(), parent, false);
+            }
             switch (viewType) {
                 case REGULAR, LIST, URL_LINK -> {
                     RegularViewHolder regularHolder = new RegularViewHolder();
@@ -179,39 +196,6 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
 
         // Retrieve the cached ViewHolder.
         Object holder = view.getTag();
-        bindDataToViewHolder(item, holder, viewType, view);
-        return view;
-    }
-
-    @Override
-    public boolean isEnabled(int position) {
-        BaseSearchResultItem item = getItem(position);
-        // Disable for NO_RESULTS items to prevent ripple/selection.
-        return item != null && item.preferenceType != BaseSearchResultItem.ViewType.NO_RESULTS;
-    }
-
-    protected View inflateViewForType(BaseSearchResultItem.ViewType viewType, ViewGroup parent) {
-        if (viewType == BaseSearchResultItem.ViewType.GROUP_HEADER) {
-            Context context = parent.getContext();
-            TextView view = new TextView(context);
-            view.setPadding(Dim.dp16, Dim.dp4, Dim.dp16, Dim.dp4);
-            ThemeUtils.setThemeTextStyle(view, android.R.attr.textAppearanceSmall,
-                    android.R.attr.textColorTertiary);
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            view.setTypeface(view.getTypeface(), Typeface.ITALIC);
-            view.setEllipsize(TextUtils.TruncateAt.END);
-            view.setMaxLines(1);
-            view.setBackgroundResource(ThemeUtils.getThemeResourceId(
-                    context, android.R.attr.selectableItemBackground));
-            view.setClickable(true);
-            view.setFocusable(true);
-            return view;
-        }
-        return inflater.inflate(viewType.getLayoutResourceId(), parent, false);
-    }
-
-    protected void bindDataToViewHolder(BaseSearchResultItem item, Object holder,
-                                        BaseSearchResultItem.ViewType viewType, View view) {
         switch (viewType) {
             case REGULAR, URL_LINK, LIST -> {
                 RegularViewHolder regularHolder = (RegularViewHolder) holder;
@@ -276,6 +260,14 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
             }
             default -> throw new IllegalStateException("Unknown viewType: " + viewType);
         }
+        return view;
+    }
+
+    @Override
+    public boolean isEnabled(int position) {
+        BaseSearchResultItem item = getItem(position);
+        // Disable for NO_RESULTS items to prevent ripple/selection.
+        return item != null && item.preferenceType != BaseSearchResultItem.ViewType.NO_RESULTS;
     }
 
     /**
@@ -333,14 +325,33 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
         Preference targetPreference = prefItem.preference;
 
         fragment.getView().post(() -> {
-            ListView listView = targetScreen == fragment.getPreferenceScreenForSearch()
-                    ? getPreferenceListView()
-                    : targetScreen.getDialog().findViewById(android.R.id.list);
+            ListView listView;
+            if (targetScreen == fragment.getPreferenceScreenForSearch()) {
+                // The ListView of the PreferenceFragment.
+                View fragmentView = fragment.getView();
+                ListView fragmentListView = fragmentView == null ? null : findListViewInViewGroup(fragmentView);
+                listView = fragmentListView != null
+                        ? fragmentListView
+                        : fragment.getActivity().findViewById(android.R.id.list);
+            } else {
+                listView = targetScreen.getDialog().findViewById(android.R.id.list);
+            }
 
             if (listView == null) return;
 
-            int targetPosition = findPreferencePosition(targetPreference, listView);
-            if (targetPosition == -1) return;
+            // The position of the preference in the ListView adapter.
+            ListAdapter adapter = listView.getAdapter();
+            if (adapter == null) return;
+            int adapterPosition = -1;
+            for (int i = 0, count = adapter.getCount(); i < count && adapterPosition == -1; i++) {
+                Object adapterItem = adapter.getItem(i);
+                if (adapterItem == targetPreference || (adapterItem instanceof Preference pref
+                        && targetPreference.getKey() != null && targetPreference.getKey().equals(pref.getKey()))) {
+                    adapterPosition = i;
+                }
+            }
+            if (adapterPosition == -1) return;
+            final int targetPosition = adapterPosition;
 
             int firstVisible = listView.getFirstVisiblePosition();
             int lastVisible = listView.getLastVisiblePosition();
@@ -457,20 +468,6 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
     }
 
     /**
-     * Gets the ListView from the PreferenceFragment.
-     */
-    protected ListView getPreferenceListView() {
-        View fragmentView = fragment.getView();
-        if (fragmentView != null) {
-            ListView listView = findListViewInViewGroup(fragmentView);
-            if (listView != null) {
-                return listView;
-            }
-        }
-        return fragment.getActivity().findViewById(android.R.id.list);
-    }
-
-    /**
      * Recursively searches for a ListView in a ViewGroup.
      */
     protected ListView findListViewInViewGroup(View view) {
@@ -486,29 +483,6 @@ public class SearchResultsAdapter extends ArrayAdapter<BaseSearchResultItem> {
             }
         }
         return null;
-    }
-
-    /**
-     * Finds the position of a preference in the ListView adapter.
-     */
-    protected int findPreferencePosition(Preference targetPreference, ListView listView) {
-        ListAdapter adapter = listView.getAdapter();
-        if (adapter == null) {
-            return -1;
-        }
-
-        for (int i = 0, count = adapter.getCount(); i < count; i++) {
-            Object item = adapter.getItem(i);
-            if (item == targetPreference) {
-                return i;
-            }
-            if (item instanceof Preference pref && targetPreference.getKey() != null) {
-                if (targetPreference.getKey().equals(pref.getKey())) {
-                    return i;
-                }
-            }
-        }
-        return -1;
     }
 
     /**

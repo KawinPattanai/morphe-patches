@@ -310,7 +310,13 @@ public final class CopyTextPatch {
                         }
                     }
                     if (SELECT_TEXT) {
-                        String selectable = findSelectableText(itemText);
+                        // The full text of a description or a post, which can be the start of a collapsed post.
+                        String normalizedText = normalize(itemText);
+                        String selectable;
+                        synchronized (selectableTexts) {
+                            String key = findShownText(normalizedText, selectableTexts.keySet());
+                            selectable = key == null ? null : selectableTexts.get(key);
+                        }
                         if (selectable != null) {
                             setTouchedText(selectable, "", true);
                             copyableText = true;
@@ -361,18 +367,6 @@ public final class CopyTextPatch {
         touchedText = text;
         touchedToastKey = toastKey;
         touchedTextSelectable = selectable;
-    }
-
-    /**
-     * @return The full text of a description or a post, which can be the start of a collapsed post.
-     */
-    @Nullable
-    private static String findSelectableText(String text) {
-        String shown = normalize(text);
-        synchronized (selectableTexts) {
-            String key = findShownText(shown, selectableTexts.keySet());
-            return key == null ? null : selectableTexts.get(key);
-        }
     }
 
     /**
@@ -462,20 +456,15 @@ public final class CopyTextPatch {
         if (shownText.equals(fullText)) {
             return fullText.length();
         }
-        final int prefixLength = commonPrefixLength(shownText, fullText);
+        final int maxLength = Math.min(shownText.length(), fullText.length());
+        int prefixLength = 0;
+        while (prefixLength < maxLength && shownText.charAt(prefixLength) == fullText.charAt(prefixLength)) {
+            prefixLength++;
+        }
         return prefixLength >= MIN_TRUNCATED_TEXT_LENGTH
                 && prefixLength < fullText.length()
                 && shownText.length() - prefixLength <= MAX_ELLIPSIS_LENGTH
                 ? prefixLength
                 : -1;
-    }
-
-    private static int commonPrefixLength(String first, String second) {
-        final int maxLength = Math.min(first.length(), second.length());
-        int length = 0;
-        while (length < maxLength && first.charAt(length) == second.charAt(length)) {
-            length++;
-        }
-        return length;
     }
 }

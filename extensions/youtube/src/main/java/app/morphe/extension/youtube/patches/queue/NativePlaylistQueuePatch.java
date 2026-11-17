@@ -432,7 +432,53 @@ public final class NativePlaylistQueuePatch {
             playlistRequest = Utils.submitOnBackgroundThread(() -> {
                 PlaylistQueue candidate = null;
                 try {
-                    candidate = loadPlayingPlaylist(owner, source, panel, conversion);
+                    loadPlayingPlaylist: {
+                        Utils.verifyOffMainThread();
+                        PlaylistPage playing = PlaylistPage.readPanel(panel, conversion.playlistId());
+                        final int selected = playing.selectedIndex();
+                        if (selected < 0 || !playing.rows().get(selected).entry().videoId().equals(conversion.videoId())) {
+                            throw new IllegalArgumentException("Playing playlist has no matching selected occurrence");
+                        }
+                        PlaylistPage.Anchor firstRowAnchor = playing.rows().get(0).anchor();
+                        // Mixes retain the finite generated batch already accepted by the player.
+                        if (source == null || (firstRowAnchor != null && firstRowAnchor.index() == 0)) {
+                            candidate = PlaylistQueue.fromPage(playing, source).select(selected);
+                            break loadPlayingPlaylist;
+                        }
+                        PlaylistPage.Anchor anchor = playing.rows().get(selected).anchor();
+                        if (anchor == null) {
+                            throw new IllegalArgumentException("Playing playlist row has no anchor");
+                        }
+                        PlaylistPage first = PlaylistPages.first(owner, source);
+                        PlaylistQueue playingQueue = PlaylistQueue.fromPage(first, source);
+                        int position = first.find(anchor);
+                        if (position >= 0) {
+                            candidate = playingQueue.select(position);
+                            break loadPlayingPlaylist;
+                        }
+                        // Local playback indexes are contiguous. Recover the prefix through the
+                        // exact playing occurrence before handing its remaining tail to paging.
+                        PlaylistQueue.Source candidateSource;
+                        while ((candidateSource = playingQueue.source()) != null) {
+                            PlaylistPage.Anchor candidateAnchor = candidateSource.anchor();
+                            if (candidateAnchor == null || candidateAnchor.index() >= anchor.index()) {
+                                break;
+                            }
+                            if (Thread.currentThread().isInterrupted()) {
+                                throw new InterruptedException();
+                            }
+                            var page = PlaylistPages.next(owner, candidateSource);
+                            final int previous = page.page().find(candidateAnchor);
+                            position = page.page().find(anchor);
+                            final int boundary = candidateSource.boundary();
+                            playingQueue = playingQueue.appendPage(page.page(), page.end());
+                            if (position > previous) {
+                                candidate = playingQueue.select(boundary + position - previous - 1);
+                                break loadPlayingPlaylist;
+                            }
+                        }
+                        throw new IllegalArgumentException("Playlist changed before its playing occurrence could be preserved");
+                    }
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                 } catch (Exception ex) {
@@ -447,52 +493,6 @@ public final class NativePlaylistQueuePatch {
             Logger.printException(() -> "convertPlayingPlaylist failure", ex);
             Utils.showSnackbarShort(str("morphe_native_playlist_queue_unavailable"));
         }
-    }
-
-    private static PlaylistQueue loadPlayingPlaylist(@Nullable PlaylistPages.Source owner, @Nullable PlaylistQueue.Source source,
-                                                     MessageLite panel, PlaylistConversion conversion) throws Exception {
-        Utils.verifyOffMainThread();
-        PlaylistPage playing = PlaylistPage.readPanel(panel, conversion.playlistId());
-        final int selected = playing.selectedIndex();
-        if (selected < 0 || !playing.rows().get(selected).entry().videoId().equals(conversion.videoId())) {
-            throw new IllegalArgumentException("Playing playlist has no matching selected occurrence");
-        }
-        PlaylistPage.Anchor firstRowAnchor = playing.rows().get(0).anchor();
-        // Mixes retain the finite generated batch already accepted by the player.
-        if (source == null || (firstRowAnchor != null && firstRowAnchor.index() == 0)) {
-            return PlaylistQueue.fromPage(playing, source).select(selected);
-        }
-        PlaylistPage.Anchor anchor = playing.rows().get(selected).anchor();
-        if (anchor == null) {
-            throw new IllegalArgumentException("Playing playlist row has no anchor");
-        }
-        PlaylistPage first = PlaylistPages.first(owner, source);
-        PlaylistQueue candidate = PlaylistQueue.fromPage(first, source);
-        int position = first.find(anchor);
-        if (position >= 0) {
-            return candidate.select(position);
-        }
-        // Local playback indexes are contiguous. Recover the prefix through the
-        // exact playing occurrence before handing its remaining tail to paging.
-        PlaylistQueue.Source candidateSource;
-        while ((candidateSource = candidate.source()) != null) {
-            PlaylistPage.Anchor candidateAnchor = candidateSource.anchor();
-            if (candidateAnchor == null || candidateAnchor.index() >= anchor.index()) {
-                break;
-            }
-            if (Thread.currentThread().isInterrupted()) {
-                throw new InterruptedException();
-            }
-            var page = PlaylistPages.next(owner, candidateSource);
-            final int previous = page.page().find(candidateAnchor);
-            position = page.page().find(anchor);
-            final int boundary = candidateSource.boundary();
-            candidate = candidate.appendPage(page.page(), page.end());
-            if (position > previous) {
-                return candidate.select(boundary + position - previous - 1);
-            }
-        }
-        throw new IllegalArgumentException("Playlist changed before its playing occurrence could be preserved");
     }
 
     private static void completePlaylistConversion(PlaylistConversion conversion, @Nullable PlaylistPages.Source owner,
@@ -3568,25 +3568,6 @@ public final class NativePlaylistQueuePatch {
                 && playback != null && playback.patch_isLocalQueue();
     }
 
-    private static PlaylistQueueRenderer.Menu playlistMenu(PlaylistQueue source) {
-        List<String> videoIds = new ArrayList<>();
-        for (PlaylistQueue.Entry entry : source.entries()) {
-            videoIds.add(entry.videoId());
-        }
-        return PlaylistQueueRenderer.Menu.newBuilder().setMenuRenderer(
-                        PlaylistQueueRenderer.MenuRenderer.newBuilder()
-                                // Only an activated, currently owned header may attach a batch selection.
-                                .addItems(serviceMenuItem(str("playlist_save"), YTIconType.BOOKMARK_BORDER,
-                                        QueueSaveActions.openPicker(videoIds)))
-                                .addItems(serviceMenuItem(str("morphe_native_playlist_queue_clear"), YTIconType.DELETE,
-                                        PlaylistQueueRenderer.NavigationEndpoint.newBuilder().setHideEnclosingAction(
-                                                PlaylistQueueRenderer.HideEnclosingAction.newBuilder().setHack(true)).build()))
-                                .setAccessibility(PlaylistQueueRenderer.Accessibility.newBuilder().setAccessibilityData(
-                                        PlaylistQueueRenderer.AccessibilityLabel.newBuilder()
-                                                .setLabel(str("accessibility_overflow_menu")))))
-                .build();
-    }
-
     private static PlaylistQueueRenderer.Menu rowMenu(PlaylistQueue source, int index) {
         PlaylistQueue.Entry entry = source.entries().get(index);
         String videoId = entry.videoId();
@@ -3650,11 +3631,27 @@ public final class NativePlaylistQueuePatch {
     }
 
     private static byte[] renderer(PlaylistQueue source) {
+        List<String> videoIds = new ArrayList<>();
+        for (PlaylistQueue.Entry entry : source.entries()) {
+            videoIds.add(entry.videoId());
+        }
+        var playlistMenu = PlaylistQueueRenderer.Menu.newBuilder().setMenuRenderer(
+                        PlaylistQueueRenderer.MenuRenderer.newBuilder()
+                                // Only an activated, currently owned header may attach a batch selection.
+                                .addItems(serviceMenuItem(str("playlist_save"), YTIconType.BOOKMARK_BORDER,
+                                        QueueSaveActions.openPicker(videoIds)))
+                                .addItems(serviceMenuItem(str("morphe_native_playlist_queue_clear"), YTIconType.DELETE,
+                                        PlaylistQueueRenderer.NavigationEndpoint.newBuilder().setHideEnclosingAction(
+                                                PlaylistQueueRenderer.HideEnclosingAction.newBuilder().setHack(true)).build()))
+                                .setAccessibility(PlaylistQueueRenderer.Accessibility.newBuilder().setAccessibilityData(
+                                        PlaylistQueueRenderer.AccessibilityLabel.newBuilder()
+                                                .setLabel(str("accessibility_overflow_menu")))))
+                .build();
         var panel = PlaylistQueueRenderer.Panel.newBuilder()
                 .setTitle(str("morphe_native_playlist_queue_title"))
                 .setSelectedIndex(source.selectedIndex()).setPlaylistId("").setVideoCount(source.totalCount())
                 .setLocalSelectedIndex(source.selectedIndex())
-                .setMenu(playlistMenu(source));
+                .setMenu(playlistMenu);
         var removeLabel = PlaylistQueueRenderer.Accessibility.newBuilder().setAccessibilityData(
                 PlaylistQueueRenderer.AccessibilityLabel.newBuilder().setLabel(str("remove")));
         var removeEndpoint = PlaylistQueueRenderer.NavigationEndpoint.newBuilder().setHideEnclosingAction(

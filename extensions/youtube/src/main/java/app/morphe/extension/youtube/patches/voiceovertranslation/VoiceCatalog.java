@@ -57,7 +57,15 @@ final class VoiceCatalog {
                 }
             }
             this.countryTag = country;
-            this.flag = countryToFlag(country);
+            if (country == null || country.length() != 2) {
+                this.flag = "";
+            } else {
+                // The flag emoji of the country, made of the regional indicator symbols of its two letters.
+                String code = country.toUpperCase(Locale.ROOT);
+                final int firstChar = code.charAt(0) - 'A' + 0x1F1E6;
+                final int secondChar = code.charAt(1) - 'A' + 0x1F1E6;
+                this.flag = new String(Character.toChars(firstChar)) + new String(Character.toChars(secondChar));
+            }
 
             this.isMultilingual = id.contains(MULTILINGUAL_NEURAL_SUFFIX);
             this.shortName = id.substring(dash2 + 1)
@@ -65,14 +73,6 @@ final class VoiceCatalog {
                     .replace(EXPRESSIVE_SUFFIX, "")
                     .replace(NEURAL_SUFFIX, "");
             this.dialogDisplayName = flag + " " + shortName;
-        }
-
-        private static String countryToFlag(String countryCode) {
-            if (countryCode == null || countryCode.length() != 2) return "";
-            String code = countryCode.toUpperCase(Locale.ROOT);
-            final int firstChar = code.charAt(0) - 'A' + 0x1F1E6;
-            final int secondChar = code.charAt(1) - 'A' + 0x1F1E6;
-            return new String(Character.toChars(firstChar)) + new String(Character.toChars(secondChar));
         }
 
         @Override

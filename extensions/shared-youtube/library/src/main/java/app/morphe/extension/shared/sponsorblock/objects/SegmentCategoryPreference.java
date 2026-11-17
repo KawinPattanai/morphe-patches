@@ -78,7 +78,22 @@ public class SegmentCategoryPreference extends ColorPickerPreference {
         super.onAttachedToHierarchy(preferenceManager);
         if (category == null) {
             String key = getKey();
-            SegmentCategory resolved = byColorSettingKey(key);
+            SegmentCategory resolved;
+            byColorSettingKey: {
+                if (key == null) {
+                    resolved = null;
+                    break byColorSettingKey;
+                }
+                // activeCategories() respects Configuration.includesHighlight(); the full set would call
+                // colorFor() on categories the host has not registered and throw.
+                for (SegmentCategory category : SegmentCategory.activeCategories()) {
+                    if (key.equals(category.colorSetting().key)) {
+                        resolved = category;
+                        break byColorSettingKey;
+                    }
+                }
+                resolved = null;
+            }
             if (resolved == null) {
                 throw new IllegalStateException(
                         "SegmentCategoryPreference: no SegmentCategory matches key: " + key);
@@ -281,18 +296,5 @@ public class SegmentCategoryPreference extends ColorPickerPreference {
                 preference.showDialog(null);
             }
         });
-    }
-
-    @Nullable
-    private static SegmentCategory byColorSettingKey(@Nullable String colorSettingKey) {
-        if (colorSettingKey == null) return null;
-        // activeCategories() respects Configuration.includesHighlight(); the full set would call
-        // colorFor() on categories the host has not registered and throw.
-        for (SegmentCategory category : SegmentCategory.activeCategories()) {
-            if (colorSettingKey.equals(category.colorSetting().key)) {
-                return category;
-            }
-        }
-        return null;
     }
 }

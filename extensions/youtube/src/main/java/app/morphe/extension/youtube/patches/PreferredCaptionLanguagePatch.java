@@ -161,9 +161,15 @@ public class PreferredCaptionLanguagePatch {
                     break choosePreferredCaptionTrack;
                 }
 
-                String targetLang = normalizeLanguageCode("default".equalsIgnoreCase(prefLang)
-                        ? getAppLanguage()
-                        : prefLang);
+                String preferredLang = prefLang;
+                if ("default".equalsIgnoreCase(prefLang)) {
+                    Locale appLocale = Requester.getAppLocale();
+                    String tag = appLocale.toLanguageTag();
+                    preferredLang = !tag.isEmpty() && !"und".equalsIgnoreCase(tag)
+                            ? tag
+                            : appLocale.getLanguage();
+                }
+                String targetLang = normalizeLanguageCode(preferredLang);
                 if (targetLang.isEmpty()) {
                     selected = originalTrack;
                     break choosePreferredCaptionTrack;
@@ -452,14 +458,6 @@ public class PreferredCaptionLanguagePatch {
         }
         return AutoTranslateCaptionsPatch.findFallbackSource(manager.patch_getDirectCaptionTracks(),
                 manager.patch_getCurrentAudioCaptionSource());
-    }
-
-    private static String getAppLanguage() {
-        Locale appLocale = Requester.getAppLocale();
-        String tag = appLocale.toLanguageTag();
-        return !tag.isEmpty() && !"und".equalsIgnoreCase(tag)
-                ? tag
-                : appLocale.getLanguage();
     }
 
     private static boolean isExplicitlyDisabled(@Nullable CaptionTrackInterface track) {

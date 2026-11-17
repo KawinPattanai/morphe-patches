@@ -292,7 +292,19 @@ public class BaseInAppDownloadsPatch {
 
             String xtags = audioStream.patch_getXtags();
             List<FormatStreamInterface> streams = streamingData.patch_getFormatStreams();
-            for (int itag : otherContainerAudioItags(audioStream.patch_getItag())) {
+            // Itags of the audio streams in the other container with about the same bitrate,
+            // Opus for AAC and AAC for Opus, in the order they are preferred.
+            int[] otherContainerItags = switch (audioStream.patch_getItag()) {
+                case 139 -> new int[]{249, 250};
+                case 140 -> new int[]{251, 250};
+                case 141 -> new int[]{774, 251};
+                case 249 -> new int[]{139};
+                case 250 -> new int[]{139, 140};
+                case 251 -> new int[]{140};
+                case 774 -> new int[]{141, 140};
+                default -> new int[0];
+            };
+            for (int itag : otherContainerItags) {
                 for (FormatStreamInterface stream : streams) {
                     if (stream.patch_getItag() == itag && Objects.equals(xtags, stream.patch_getXtags())) {
                         Logger.printDebug(() -> "Replacing audio itag " + audioStream.patch_getItag()
@@ -309,23 +321,6 @@ public class BaseInAppDownloadsPatch {
             Logger.printException(() -> "selectDownloadAudioStream failure", ex);
             return audioStream;
         }
-    }
-
-    /**
-     * @return Itags of the audio streams in the other container with about the same bitrate,
-     *         Opus for AAC and AAC for Opus, in the order they are preferred.
-     */
-    private static int[] otherContainerAudioItags(int itag) {
-        return switch (itag) {
-            case 139 -> new int[]{249, 250};
-            case 140 -> new int[]{251, 250};
-            case 141 -> new int[]{774, 251};
-            case 249 -> new int[]{139};
-            case 250 -> new int[]{139, 140};
-            case 251 -> new int[]{140};
-            case 774 -> new int[]{141, 140};
-            default -> new int[0];
-        };
     }
 
     private static boolean isWebm(FormatStreamInterface stream) {
@@ -368,7 +363,15 @@ public class BaseInAppDownloadsPatch {
             String picked = stream == null
                     ? "no stream"
                     : qualityOf(stream) + "p (" + describe(stream) + ")";
-            return quality + "p streams " + describeStreams(qualityStreams)
+            StringBuilder builder = new StringBuilder("[");
+            for (FormatStreamInterface qualityStream : qualityStreams) {
+                if (builder.length() > 1) {
+                    builder.append(", ");
+                }
+                builder.append(describe(qualityStream));
+            }
+            String streamsDescription = builder.append(']').toString();
+            return quality + "p streams " + streamsDescription
                     + " are ruled out by the device or server checks. The app picked " + picked;
         });
 
@@ -376,7 +379,32 @@ public class BaseInAppDownloadsPatch {
             return stream;
         }
 
-        FormatStreamInterface forcedStream = preferredStream(qualityStreams, stream);
+        // The stream with the codec the app picked, or else the first codec of FORCED_STREAM_CODECS.
+        // Streams that are not HDR come first.
+        List<String> codecs = new ArrayList<>();
+        if (stream != null) {
+            String pickedCodec = codecOf(stream);
+            int end = pickedCodec.indexOf('.');
+            codecs.add(end < 0 ? pickedCodec : pickedCodec.substring(0, end));
+        }
+        codecs.addAll(List.of(FORCED_STREAM_CODECS));
+
+        FormatStreamInterface preferredStream = null;
+        findPreferredStream:
+        for (boolean allowHdr : new boolean[]{false, true}) {
+            for (String codecPrefix : codecs) {
+                for (FormatStreamInterface candidateStream : qualityStreams) {
+                    String codec = codecOf(candidateStream);
+                    // 10-bit HDR codecs, which more devices cannot decode.
+                    if (codec.startsWith(codecPrefix) && (allowHdr || !(codec.startsWith("vp9.2") || codec.startsWith("vp09.02")
+                            || (codec.startsWith("av01") && codec.contains(".10"))))) {
+                        preferredStream = candidateStream;
+                        break findPreferredStream;
+                    }
+                }
+            }
+        }
+        final FormatStreamInterface forcedStream = preferredStream != null ? preferredStream : qualityStreams.get(0);
         Logger.printDebug(() -> "Forcing " + quality + "p stream: " + describe(forcedStream));
         return forcedStream;
     }
@@ -411,56 +439,9 @@ public class BaseInAppDownloadsPatch {
         return end < 0 ? mimeType.substring(start) : mimeType.substring(start, end);
     }
 
-    /**
-     * @return If the codec is a 10-bit HDR codec, which more devices cannot decode.
-     */
-    private static boolean isHdrCodec(String codec) {
-        return codec.startsWith("vp9.2") || codec.startsWith("vp09.02")
-                || (codec.startsWith("av01") && codec.contains(".10"));
-    }
-
-    /**
-     * @param pickedStream Stream the app picked, whose codec is tried first.
-     * @return The stream with the codec the app picked, or else the first codec of
-     *         {@link #FORCED_STREAM_CODECS}. Streams that are not HDR come first.
-     */
-    private static FormatStreamInterface preferredStream(List<FormatStreamInterface> streams,
-                                                         @Nullable FormatStreamInterface pickedStream) {
-        List<String> codecs = new ArrayList<>();
-        if (pickedStream != null) {
-            String pickedCodec = codecOf(pickedStream);
-            int end = pickedCodec.indexOf('.');
-            codecs.add(end < 0 ? pickedCodec : pickedCodec.substring(0, end));
-        }
-        codecs.addAll(List.of(FORCED_STREAM_CODECS));
-
-        for (boolean allowHdr : new boolean[]{false, true}) {
-            for (String codecPrefix : codecs) {
-                for (FormatStreamInterface stream : streams) {
-                    String codec = codecOf(stream);
-                    if (codec.startsWith(codecPrefix) && (allowHdr || !isHdrCodec(codec))) {
-                        return stream;
-                    }
-                }
-            }
-        }
-        return streams.get(0);
-    }
-
     private static String describe(FormatStreamInterface stream) {
         return "itag " + stream.patch_getItag() + " " + stream.patch_getWidth() + "x"
                 + stream.patch_getHeight() + " " + codecOf(stream);
-    }
-
-    private static String describeStreams(List<FormatStreamInterface> streams) {
-        StringBuilder builder = new StringBuilder("[");
-        for (FormatStreamInterface stream : streams) {
-            if (builder.length() > 1) {
-                builder.append(", ");
-            }
-            builder.append(describe(stream));
-        }
-        return builder.append(']').toString();
     }
 
     /**
@@ -607,7 +588,17 @@ public class BaseInAppDownloadsPatch {
             // such as the player config. The response of the other client is used instead,
             // and only the offline state token and player config are kept from the declined response.
             OfflinePlayerResponse.Builder builder = OfflinePlayerResponse.parseFrom(streams.streamingData()).toBuilder();
-            builder.setStreamingData(savableStreamingData(builder.getStreamingData()))
+            OfflineStreamingData declinedStreamingData = builder.getStreamingData();
+            OfflineStreamingData.Builder streamingDataBuilder = declinedStreamingData.toBuilder();
+            for (int i = 0, count = streamingDataBuilder.getAdaptiveFormatsCount(); i < count; i++) {
+                OfflineStreamFormat format = streamingDataBuilder.getAdaptiveFormats(i);
+                String mimeType = format.getMimeType();
+                if (!mimeType.isEmpty() && !mimeType.startsWith(UNSAVABLE_AUDIO_MIME_TYPE_PREFIX)) {
+                    streamingDataBuilder.setAdaptiveFormats(i, format.toBuilder().setOfflineEligible(true));
+                }
+            }
+            OfflineStreamingData savableStreamingData = streamingDataBuilder.build();
+            builder.setStreamingData(savableStreamingData)
                     .setOfflineState(playableOfflineState(original.getOfflineState().getToken()));
             if (builder.hasCaptions()) {
                 OfflineCaptions captions = builder.getCaptions();
@@ -642,9 +633,17 @@ public class BaseInAppDownloadsPatch {
 
             SponsorBlockOfflineStorage.fetchAndSaveSegments(videoId);
 
-            Logger.printDebug(() -> "Replaced declined offline player response of: " + videoId
-                    + " savable formats: " + countSavableFormats(builder.getStreamingData())
-                    + " of: " + builder.getStreamingData().getAdaptiveFormatsCount());
+            Logger.printDebug(() -> {
+                int savableFormats = 0;
+                for (OfflineStreamFormat format : builder.getStreamingData().getAdaptiveFormatsList()) {
+                    if (format.getOfflineEligible()) {
+                        savableFormats++;
+                    }
+                }
+                return "Replaced declined offline player response of: " + videoId
+                        + " savable formats: " + savableFormats
+                        + " of: " + builder.getStreamingData().getAdaptiveFormatsCount();
+            });
             return builder.build().toByteArray();
         } catch (Exception ex) {
             Logger.printException(() -> "replaceDeclinedOfflinePlayerResponse failure", ex);
@@ -827,27 +826,5 @@ public class BaseInAppDownloadsPatch {
 
     protected static boolean isLocked(OfflineFormat format) {
         return format.getAvailability() == OfflineFormatAvailability.OFFLINE_FORMAT_AVAILABILITY_PREMIUM_LOCKED;
-    }
-
-    protected static int countSavableFormats(OfflineStreamingData streamingData) {
-        int count = 0;
-        for (OfflineStreamFormat format : streamingData.getAdaptiveFormatsList()) {
-            if (format.getOfflineEligible()) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    protected static OfflineStreamingData savableStreamingData(OfflineStreamingData streamingData) {
-        OfflineStreamingData.Builder builder = streamingData.toBuilder();
-        for (int i = 0, count = builder.getAdaptiveFormatsCount(); i < count; i++) {
-            OfflineStreamFormat format = builder.getAdaptiveFormats(i);
-            String mimeType = format.getMimeType();
-            if (!mimeType.isEmpty() && !mimeType.startsWith(UNSAVABLE_AUDIO_MIME_TYPE_PREFIX)) {
-                builder.setAdaptiveFormats(i, format.toBuilder().setOfflineEligible(true));
-            }
-        }
-        return builder.build();
     }
 }

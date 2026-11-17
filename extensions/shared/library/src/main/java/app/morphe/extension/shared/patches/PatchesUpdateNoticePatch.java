@@ -177,8 +177,149 @@ public final class PatchesUpdateNoticePatch {
 
             Utils.runOnBackgroundThread(() -> {
                 try {
-                    UpdateInfo info = fetchUpdateInfo(installedVersion, includeDevReleases);
-                    if (info == null) return;
+                    // The app changes of all releases newer than the installed patches.
+                    // Nothing is shown if there is no newer release with changes for the app.
+                    final int[] installed = parseVersion(installedVersion);
+                    if (installed == null) {
+                        Logger.printDebug(() -> "Unknown installed patches version: " + installedVersion);
+                        return;
+                    }
+
+                    final UpdateInfo info;
+                    HttpURLConnection connection = Requester.openConnection(
+                            includeDevReleases ? DEV_CHANGELOG_URL : STABLE_CHANGELOG_URL);
+                    try {
+                        connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+                        connection.setReadTimeout(READ_TIMEOUT_MS);
+                        Logger.printDebug(() -> "Fetching patches changelog from: " + connection.getURL());
+
+                        final int responseCode = connection.getResponseCode();
+                        if (responseCode != Requester.HTTP_STATUS_CODE_SUCCESS) {
+                            throw new IOException("Failed to get patches changelog. Response code: " + responseCode);
+                        }
+
+                        // The changelog is large, but only its start is read.
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                                connection.getInputStream(), StandardCharsets.UTF_8))) {
+                            // Releases are listed newest first. The changes of the newer releases are read
+                            // until the stable release the installed patches are based on.
+                            // A stable release lists again all changes of its dev releases.
+                            // So if dev patches are installed, the changes of the installed
+                            // and older dev releases are read too, and are not shown.
+                            final String appScope = getChangelogScope();
+
+                            // Changes by commit, so a change listed by both a stable and a dev release is used once.
+                            Map<String, String> features = new LinkedHashMap<>();
+                            Map<String, String> fixes = new LinkedHashMap<>();
+                            Map<String, String> other = new LinkedHashMap<>();
+                            Set<String> installedChanges = new HashSet<>();
+
+                            String latestVersion = null;
+                            boolean skipRelease = true;
+                            boolean installedRelease = false;
+                            Map<String, String> section = other;
+
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                Matcher header = RELEASE_HEADER.matcher(line);
+                                if (header.find()) {
+                                    final int[] version = parseVersion(header.group(1));
+                                    section = other;
+                                    skipRelease = version == null;
+                                    if (version == null) continue;
+
+                                    final boolean stable = version[3] == Integer.MAX_VALUE;
+                                    final int comparison = compareVersions(version, installed);
+                                    if (stable && comparison <= 0) break;
+
+                                    installedRelease = comparison <= 0;
+                                    if (!installedRelease && latestVersion == null) {
+                                        // Dev releases newer than the latest stable release
+                                        // are not shown if not enabled.
+                                        skipRelease = !stable && !includeDevReleases;
+                                        if (!skipRelease) latestVersion = header.group(1);
+                                    }
+                                    continue;
+                                }
+
+                                if (skipRelease) continue;
+                                line = line.trim();
+
+                                if (line.startsWith("### ")) {
+                                    if (line.contains("Features")) {
+                                        section = features;
+                                    } else if (line.contains("Bug Fixes")) {
+                                        section = fixes;
+                                    } else {
+                                        section = other;
+                                    }
+                                    continue;
+                                }
+
+                                Matcher entry = SCOPED_ENTRY.matcher(line);
+                                if (!entry.matches()) continue;
+
+                                String scope = Objects.requireNonNull(entry.group(1));
+                                String patchName = null;
+                                final int patchSeparator = scope.indexOf(SCOPE_PATCH_SEPARATOR);
+                                if (patchSeparator >= 0) {
+                                    patchName = scope.substring(patchSeparator + SCOPE_PATCH_SEPARATOR.length());
+                                    scope = scope.substring(0, patchSeparator);
+                                }
+
+                                // If the apps of a scope include the app,
+                                // such as "YouTube" in "YouTube / YouTube Music".
+                                // Scopes of patches that are not specific to an app, such as "Settings", do not match.
+                                boolean isAppScope;
+                                isAppScope: {
+                                    for (String app : SCOPE_APP_SEPARATOR.split(scope.trim())) {
+                                        if (app.equals(appScope)) {
+                                            isAppScope = true;
+                                            break isAppScope;
+                                        }
+                                    }
+                                    isAppScope = false;
+                                }
+                                if (!isAppScope) continue;
+
+                                //noinspection ConstantConditions
+                                String text = MARKDOWN_LINKS.matcher(entry.group(2)).replaceAll("")
+                                        .replace("`", "")
+                                        .trim();
+                                if (text.isEmpty()) continue;
+
+                                String change = patchName == null
+                                        ? text
+                                        : patchName.trim() + ": " + text;
+                                Matcher commit = COMMIT_LINK.matcher(line);
+                                String key = commit.find() ? commit.group(1) : change;
+
+                                if (installedRelease) {
+                                    installedChanges.add(key);
+                                } else {
+                                    section.putIfAbsent(key, change);
+                                }
+                            }
+
+                            if (latestVersion == null) {
+                                Logger.printDebug(() -> "No newer patches. Installed: " + installedVersion);
+                                return;
+                            }
+
+                            info = new UpdateInfo(latestVersion, installedVersion);
+                            addChanges(info.features, features, installedChanges);
+                            addChanges(info.fixes, fixes, installedChanges);
+                            addChanges(info.other, other, installedChanges);
+
+                            if (info.changeCount() == 0) {
+                                Logger.printDebug(() -> "No newer patches with " + appScope
+                                        + " changes. Installed: " + installedVersion);
+                                return;
+                            }
+                        }
+                    } finally {
+                        connection.disconnect();
+                    }
 
                     if (info.latestVersion.equals(SharedSettings.PATCHES_UPDATE_NOTICE_DISMISSED_VERSION.get())) {
                         Logger.printDebug(() -> "Patches update " + info.latestVersion + " was dismissed");
@@ -192,151 +333,6 @@ public final class PatchesUpdateNoticePatch {
             });
         } catch (Exception ex) {
             Logger.printException(() -> "showNoticeIfNeeded failure", ex);
-        }
-    }
-
-    /**
-     * @return The app changes of all releases newer than the installed patches,
-     *         or null if there is no newer release with changes for the app.
-     */
-    @Nullable
-    private static UpdateInfo fetchUpdateInfo(String installedVersion, boolean includeDevReleases) throws IOException {
-        final int[] installed = parseVersion(installedVersion);
-        if (installed == null) {
-            Logger.printDebug(() -> "Unknown installed patches version: " + installedVersion);
-            return null;
-        }
-
-        HttpURLConnection connection = Requester.openConnection(
-                includeDevReleases ? DEV_CHANGELOG_URL : STABLE_CHANGELOG_URL);
-        try {
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
-            Logger.printDebug(() -> "Fetching patches changelog from: " + connection.getURL());
-
-            final int responseCode = connection.getResponseCode();
-            if (responseCode != Requester.HTTP_STATUS_CODE_SUCCESS) {
-                throw new IOException("Failed to get patches changelog. Response code: " + responseCode);
-            }
-
-            // The changelog is large, but only its start is read.
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                    connection.getInputStream(), StandardCharsets.UTF_8))) {
-                // Releases are listed newest first. The changes of the newer releases are read
-                // until the stable release the installed patches are based on.
-                // A stable release lists again all changes of its dev releases. So if dev patches are installed,
-                // the changes of the installed and older dev releases are read too, and are not shown.
-                final String appScope = getChangelogScope();
-
-                // Changes by commit, so a change listed by both a stable and a dev release is used once.
-                Map<String, String> features = new LinkedHashMap<>();
-                Map<String, String> fixes = new LinkedHashMap<>();
-                Map<String, String> other = new LinkedHashMap<>();
-                Set<String> installedChanges = new HashSet<>();
-
-                String latestVersion = null;
-                boolean skipRelease = true;
-                boolean installedRelease = false;
-                Map<String, String> section = other;
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    Matcher header = RELEASE_HEADER.matcher(line);
-                    if (header.find()) {
-                        final int[] version = parseVersion(header.group(1));
-                        section = other;
-                        skipRelease = version == null;
-                        if (version == null) continue;
-
-                        final boolean stable = version[3] == Integer.MAX_VALUE;
-                        final int comparison = compareVersions(version, installed);
-                        if (stable && comparison <= 0) break;
-
-                        installedRelease = comparison <= 0;
-                        if (!installedRelease && latestVersion == null) {
-                            // Dev releases newer than the latest stable release are not shown if not enabled.
-                            skipRelease = !stable && !includeDevReleases;
-                            if (!skipRelease) latestVersion = header.group(1);
-                        }
-                        continue;
-                    }
-
-                    if (skipRelease) continue;
-                    line = line.trim();
-
-                    if (line.startsWith("### ")) {
-                        if (line.contains("Features")) {
-                            section = features;
-                        } else if (line.contains("Bug Fixes")) {
-                            section = fixes;
-                        } else {
-                            section = other;
-                        }
-                        continue;
-                    }
-
-                    Matcher entry = SCOPED_ENTRY.matcher(line);
-                    if (!entry.matches()) continue;
-
-                    String scope = Objects.requireNonNull(entry.group(1));
-                    String patchName = null;
-                    final int patchSeparator = scope.indexOf(SCOPE_PATCH_SEPARATOR);
-                    if (patchSeparator >= 0) {
-                        patchName = scope.substring(patchSeparator + SCOPE_PATCH_SEPARATOR.length());
-                        scope = scope.substring(0, patchSeparator);
-                    }
-
-                    // If the apps of a scope include the app, such as "YouTube" in "YouTube / YouTube Music".
-                    // Scopes of patches that are not specific to an app, such as "Settings", do not match.
-                    boolean isAppScope;
-                    isAppScope: {
-                        for (String app : SCOPE_APP_SEPARATOR.split(scope.trim())) {
-                            if (app.equals(appScope)) {
-                                isAppScope = true;
-                                break isAppScope;
-                            }
-                        }
-                        isAppScope = false;
-                    }
-                    if (!isAppScope) continue;
-
-                    //noinspection ConstantConditions
-                    String text = MARKDOWN_LINKS.matcher(entry.group(2)).replaceAll("")
-                            .replace("`", "")
-                            .trim();
-                    if (text.isEmpty()) continue;
-
-                    String change = patchName == null
-                            ? text
-                            : patchName.trim() + ": " + text;
-                    Matcher commit = COMMIT_LINK.matcher(line);
-                    String key = commit.find() ? commit.group(1) : change;
-
-                    if (installedRelease) {
-                        installedChanges.add(key);
-                    } else {
-                        section.putIfAbsent(key, change);
-                    }
-                }
-
-                if (latestVersion == null) {
-                    Logger.printDebug(() -> "No newer patches. Installed: " + installedVersion);
-                    return null;
-                }
-
-                UpdateInfo info = new UpdateInfo(latestVersion, installedVersion);
-                addChanges(info.features, features, installedChanges);
-                addChanges(info.fixes, fixes, installedChanges);
-                addChanges(info.other, other, installedChanges);
-
-                if (info.changeCount() == 0) {
-                    Logger.printDebug(() -> "No newer patches with " + appScope + " changes. Installed: " + installedVersion);
-                    return null;
-                }
-                return info;
-            }
-        } finally {
-            connection.disconnect();
         }
     }
 

@@ -337,24 +337,6 @@ public abstract class OAuth2Preference extends Preference implements Preference.
         });
     }
 
-    // Check in-app browser availability.
-    @Nullable
-    private String getDefaultCustomTabsBrowser(Context context) {
-        Intent activityIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("http://"));
-        Intent serviceIntent = new Intent("android.support.customtabs.action.CustomTabsService");
-        PackageManager packageManager = context.getPackageManager();
-        ResolveInfo resolveInfo = packageManager.resolveActivity(activityIntent, 0);
-        if (resolveInfo != null) {
-            String packageName = resolveInfo.activityInfo.packageName;
-            serviceIntent.setPackage(packageName);
-            if (packageManager.resolveService(serviceIntent, 0) != null) {
-                return packageName;
-            }
-        }
-
-        return null;
-    }
-
     private void openInBrowser(Context context, String userCode, String verificationUrl) {
         // Automatically fetch the auth token after the user returns.
         ((Application) getContext().getApplicationContext()).registerActivityLifecycleCallbacks(
@@ -368,7 +350,24 @@ public abstract class OAuth2Preference extends Preference implements Preference.
             Intent intent = baseIntent.cloneFilter();
             intent.putExtra("android.support.customtabs.extra.SESSION", (Bundle) null);
             intent.putExtra("android.support.customtabs.extra.TITLE_VISIBILITY", 1);
-            String packageName = getDefaultCustomTabsBrowser(context);
+            // Check in-app browser availability.
+            String packageName;
+            getDefaultCustomTabsBrowser: {
+                Intent activityIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("http://"));
+                Intent serviceIntent = new Intent("android.support.customtabs.action.CustomTabsService");
+                PackageManager packageManager = context.getPackageManager();
+                ResolveInfo resolveInfo = packageManager.resolveActivity(activityIntent, 0);
+                if (resolveInfo != null) {
+                    String browserPackageName = resolveInfo.activityInfo.packageName;
+                    serviceIntent.setPackage(browserPackageName);
+                    if (packageManager.resolveService(serviceIntent, 0) != null) {
+                        packageName = browserPackageName;
+                        break getDefaultCustomTabsBrowser;
+                    }
+                }
+
+                packageName = null;
+            }
             if (packageName != null) {
                 intent.setPackage(packageName);
             }

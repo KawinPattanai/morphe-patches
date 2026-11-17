@@ -419,28 +419,6 @@ public class ReturnYouTubeDislikeAPI {
         return null;
     }
 
-    /**
-     * Must call off main thread, as this will make a network call if user is not yet registered.
-     *
-     * @return ReturnYouTubeDislike user ID. If user registration has never happened
-     * and the network call fails, this returns NULL.
-     */
-    @Nullable
-    private static String getUserID() {
-        Utils.verifyOffMainThread();
-
-        String userID = SharedYouTubeSettings.RYD_USER_ID.get();
-        if (!userID.isEmpty()) {
-            return userID;
-        }
-
-        userID = registerAsNewUser();
-        if (userID != null) {
-            SharedYouTubeSettings.RYD_USER_ID.save(userID);
-        }
-        return userID;
-    }
-
     @SuppressWarnings("UnusedReturnValue")
     public static boolean sendVote(String videoId, ReturnYouTubeDislike.Vote vote) {
         Utils.verifyOffMainThread();
@@ -448,7 +426,23 @@ public class ReturnYouTubeDislikeAPI {
         Objects.requireNonNull(vote);
 
         try {
-            String userID = getUserID();
+            // Must call off main thread, as this will make a network call if user is not yet registered.
+            // ReturnYouTubeDislike user ID. If user registration has never happened
+            // and the network call fails, this returns NULL.
+            String userID;
+            getUserID: {
+                Utils.verifyOffMainThread();
+
+                userID = SharedYouTubeSettings.RYD_USER_ID.get();
+                if (!userID.isEmpty()) {
+                    break getUserID;
+                }
+
+                userID = registerAsNewUser();
+                if (userID != null) {
+                    SharedYouTubeSettings.RYD_USER_ID.save(userID);
+                }
+            }
             if (userID == null) return false;
 
             if (checkIfRateLimitInEffect("sendVote")) {

@@ -84,7 +84,7 @@ final class OriginalDescription {
         // is not found in the original description.
         List<String> originalTexts;
         splitAtAttachments: {
-            List<String> texts = new ArrayList<>();
+            originalTexts = new ArrayList<>();
             int textStart = 0;
             boolean previousIsText = false;
 
@@ -137,16 +137,15 @@ final class OriginalDescription {
                     if (textEnd > textStart && originalDescription.charAt(textEnd - 1) == '\n') {
                         textEnd--;
                     }
-                    texts.add(originalDescription.substring(textStart, textEnd));
+                    originalTexts.add(originalDescription.substring(textStart, textEnd));
                 }
                 textStart = link[1];
                 previousIsText = false;
             }
 
             if (previousIsText) {
-                texts.add(originalDescription.substring(textStart));
+                originalTexts.add(originalDescription.substring(textStart));
             }
-            originalTexts = texts;
         }
         if (originalTexts == null) {
             // The shown description is not a translation of the original description,
@@ -269,7 +268,41 @@ final class OriginalDescription {
         }
 
         final int translatedLength = translatedText.length();
-        List<Anchor> anchors = findAnchors(text, content, translatedLength);
+        // The runs grouped by range, ordered by start and then by the longest range.
+        Map<Long, Anchor> anchorsByRange = new LinkedHashMap<>();
+        for (ProtoNode run : new ArrayList<>(text)) {
+            List<ProtoNode> runFields = run.children;
+            if (run == content || runFields == null) {
+                continue;
+            }
+            // The range of the run is the start and length fields of the run or of the closest sub message.
+            List<ProtoNode> rangeMessage = findRangeMessage(runFields);
+            if (rangeMessage == null) {
+                continue; // Not a run.
+            }
+            ProtoNode startNode = ProtoNode.field(rangeMessage, RANGE_START_FIELD);
+            ProtoNode lengthNode = ProtoNode.field(rangeMessage, RANGE_LENGTH_FIELD);
+            Long rangeStart = startNode == null ? null : startNode.getVarint();
+            Long rangeLength = lengthNode == null ? Long.valueOf(0) : lengthNode.getVarint();
+            if (rangeStart == null || rangeLength == null
+                    || rangeStart > Integer.MAX_VALUE || rangeLength > Integer.MAX_VALUE) {
+                continue; // Not a run.
+            }
+            final int start = rangeStart.intValue();
+            final int end = (int) (rangeStart + rangeLength);
+            if (start < 0 || end < start || end > translatedLength) {
+                run.remove();
+                continue;
+            }
+            anchorsByRange.computeIfAbsent(((long) start << 32) | end, key -> new Anchor(start, end))
+                    .runs.add(run);
+        }
+
+        List<Anchor> sorted = new ArrayList<>(anchorsByRange.values());
+        sorted.sort((a, b) -> a.start != b.start
+                ? Integer.compare(a.start, b.start)
+                : Integer.compare(b.end, a.end));
+        List<Anchor> anchors = sorted;
 
         // Runs are shown as in the translated text, such as shortened links and social icons.
         StringBuilder restored = new StringBuilder();
@@ -297,7 +330,35 @@ final class OriginalDescription {
             }
 
             for (ProtoNode run : anchorRuns) {
-                for (String url : findUrls(run.children)) {
+                // The urls of the run, as shown: without the scheme, "www." and the last "/".
+                List<String> urls = new ArrayList<>();
+                for (ProtoNode node : ProtoNode.textNodes(run.children)) {
+                    Uri uri = Uri.parse(node.getText());
+                    String host = uri.getHost();
+                    if (host == null) {
+                        continue;
+                    }
+                    // Redirects include the url as a query parameter.
+                    String redirectUrl = uri.getQueryParameter("q");
+                    if (redirectUrl != null) {
+                        uri = Uri.parse(redirectUrl);
+                        host = uri.getHost();
+                        if (host == null) {
+                            continue;
+                        }
+                    }
+
+                    String url = uri.toString();
+                    url = url.substring(url.indexOf(host));
+                    if (url.startsWith("www.")) {
+                        url = url.substring("www.".length());
+                    }
+                    if (url.endsWith("/")) {
+                        url = url.substring(0, url.length() - 1);
+                    }
+                    urls.add(url);
+                }
+                for (String url : urls) {
                     int index = originalText.indexOf(url, originalIndex);
                     if (index < 0 || index >= foundStart) {
                         continue;
@@ -361,81 +422,6 @@ final class OriginalDescription {
         }
         content.setText(restored.toString());
         return true;
-    }
-
-    /**
-     * @return The runs grouped by range, ordered by start and then by the longest range.
-     */
-    private static List<Anchor> findAnchors(List<ProtoNode> text, ProtoNode content, int textLength) {
-        Map<Long, Anchor> anchors = new LinkedHashMap<>();
-        for (ProtoNode run : new ArrayList<>(text)) {
-            List<ProtoNode> runFields = run.children;
-            if (run == content || runFields == null) {
-                continue;
-            }
-            // The range of the run is the start and length fields of the run or of the closest sub message.
-            List<ProtoNode> rangeMessage = findRangeMessage(runFields);
-            if (rangeMessage == null) {
-                continue; // Not a run.
-            }
-            ProtoNode startNode = ProtoNode.field(rangeMessage, RANGE_START_FIELD);
-            ProtoNode lengthNode = ProtoNode.field(rangeMessage, RANGE_LENGTH_FIELD);
-            Long rangeStart = startNode == null ? null : startNode.getVarint();
-            Long rangeLength = lengthNode == null ? Long.valueOf(0) : lengthNode.getVarint();
-            if (rangeStart == null || rangeLength == null
-                    || rangeStart > Integer.MAX_VALUE || rangeLength > Integer.MAX_VALUE) {
-                continue; // Not a run.
-            }
-            final int start = rangeStart.intValue();
-            final int end = (int) (rangeStart + rangeLength);
-            if (start < 0 || end < start || end > textLength) {
-                run.remove();
-                continue;
-            }
-            anchors.computeIfAbsent(((long) start << 32) | end, key -> new Anchor(start, end))
-                    .runs.add(run);
-        }
-
-        List<Anchor> sorted = new ArrayList<>(anchors.values());
-        sorted.sort((a, b) -> a.start != b.start
-                ? Integer.compare(a.start, b.start)
-                : Integer.compare(b.end, a.end));
-        return sorted;
-    }
-
-    /**
-     * @return The urls of the run without the scheme, the 'www.' host prefix and the trailing slash,
-     *         as the description can include the url with or without any of them.
-     */
-    private static List<String> findUrls(List<ProtoNode> run) {
-        List<String> urls = new ArrayList<>();
-        for (ProtoNode node : ProtoNode.textNodes(run)) {
-            Uri uri = Uri.parse(node.getText());
-            String host = uri.getHost();
-            if (host == null) {
-                continue;
-            }
-            // Redirects include the url as a query parameter.
-            String redirectUrl = uri.getQueryParameter("q");
-            if (redirectUrl != null) {
-                uri = Uri.parse(redirectUrl);
-                host = uri.getHost();
-                if (host == null) {
-                    continue;
-                }
-            }
-
-            String url = uri.toString();
-            url = url.substring(url.indexOf(host));
-            if (url.startsWith("www.")) {
-                url = url.substring("www.".length());
-            }
-            if (url.endsWith("/")) {
-                url = url.substring(0, url.length() - 1);
-            }
-            urls.add(url);
-        }
-        return urls;
     }
 
     @Nullable

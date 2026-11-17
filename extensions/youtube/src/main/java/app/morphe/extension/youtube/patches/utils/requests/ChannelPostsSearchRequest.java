@@ -327,7 +327,28 @@ public final class ChannelPostsSearchRequest {
             }
 
             // The tabs of the response tell the params of the posts tab, if the ones sent were not taken.
-            String postsTabParams = findPostsTabParams(json);
+            // The params of the posts tab, empty if the tab has none,
+            // or null if the channel has no posts tab.
+            final String postsTabParams;
+            JSONArray channelTabs = findTabs(json);
+            if (channelTabs == null) {
+                // Not a tab list, such as a page that is only the posts.
+                postsTabParams = "";
+            } else {
+                String postsTabBrowseParams = null;
+                for (int i = 0, length = channelTabs.length(); i < length; i++) {
+                    JSONObject tab = channelTabs.optJSONObject(i);
+                    JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
+                    if (tabRenderer == null || !isPostsTab(tabRenderer)) continue;
+
+                    JSONObject endpoint = tabRenderer.optJSONObject("endpoint");
+                    JSONObject browse = endpoint == null ? null : endpoint.optJSONObject("browseEndpoint");
+                    // The params of a tab are url encoded, such as "%3D" for "=".
+                    postsTabBrowseParams = browse == null ? "" : Uri.decode(browse.optString("params"));
+                    break;
+                }
+                postsTabParams = postsTabBrowseParams;
+            }
             if (postsTabParams == null) {
                 Logger.printDebug(() -> "Channel has no posts tab: " + channelId);
                 callback.onPostsPage(matches, parseChannelName(json), true);
@@ -413,30 +434,6 @@ public final class ChannelPostsSearchRequest {
         }
     }
 
-    /**
-     * @return The params of the posts tab, empty if the tab has none,
-     *         or null if the channel has no posts tab.
-     */
-    @Nullable
-    private static String findPostsTabParams(JSONObject json) {
-        JSONArray tabs = findTabs(json);
-        if (tabs == null) {
-            // Not a tab list, such as a page that is only the posts.
-            return "";
-        }
-        for (int i = 0, length = tabs.length(); i < length; i++) {
-            JSONObject tab = tabs.optJSONObject(i);
-            JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
-            if (tabRenderer == null || !isPostsTab(tabRenderer)) continue;
-
-            JSONObject endpoint = tabRenderer.optJSONObject("endpoint");
-            JSONObject browse = endpoint == null ? null : endpoint.optJSONObject("browseEndpoint");
-            // The params of a tab are url encoded, such as "%3D" for "=".
-            return browse == null ? "" : Uri.decode(browse.optString("params"));
-        }
-        return null;
-    }
-
     private static boolean isPostsTab(JSONObject tabRenderer) {
         JSONObject endpoint = tabRenderer.optJSONObject("endpoint");
         if (endpoint == null) return false;
@@ -463,7 +460,21 @@ public final class ChannelPostsSearchRequest {
         if (json instanceof JSONObject object) {
             JSONObject continuation = object.optJSONObject("continuationItemRenderer");
             if (continuation != null) {
-                String found = commandToken(continuation);
+                String found;
+                commandToken: {
+                    JSONObject endpoint = continuation.optJSONObject("continuationEndpoint");
+                    if (endpoint == null) {
+                        found = null;
+                        break commandToken;
+                    }
+                    JSONObject command = endpoint.optJSONObject("continuationCommand");
+                    if (command == null) {
+                        found = null;
+                        break commandToken;
+                    }
+                    String continuationToken = command.optString("token");
+                    found = continuationToken.isEmpty() ? null : continuationToken;
+                }
                 if (found != null) token = found;
             }
             Iterator<String> keys = object.keys();
@@ -491,16 +502,6 @@ public final class ChannelPostsSearchRequest {
             }
         }
         return token;
-    }
-
-    @Nullable
-    private static String commandToken(JSONObject continuationItemRenderer) {
-        JSONObject endpoint = continuationItemRenderer.optJSONObject("continuationEndpoint");
-        if (endpoint == null) return null;
-        JSONObject command = endpoint.optJSONObject("continuationCommand");
-        if (command == null) return null;
-        String token = command.optString("token");
-        return token.isEmpty() ? null : token;
     }
 
     private static String parseChannelName(JSONObject json) {

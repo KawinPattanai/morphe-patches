@@ -209,7 +209,13 @@ final class TTSEngine {
                     }
                     String ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'"
                             + " xml:lang='" + speakLang + "'>"
-                            + "<voice name='" + voice + "'>" + escapeXml(text) + "</voice></speak>";
+                            + "<voice name='" + voice + "'>"
+                            + text.replace("&", "&amp;")
+                                    .replace("<", "&lt;")
+                                    .replace(">", "&gt;")
+                                    .replace("'", "&apos;")
+                                    .replace("\"", "&quot;")
+                            + "</voice></speak>";
 
                     // Ensure we have a valid connection.
                     ensureConnected();
@@ -797,13 +803,5 @@ final class TTSEngine {
         byte[] b = new byte[n];
         new SecureRandom().nextBytes(b);
         return b;
-    }
-
-    private static String escapeXml(String text) {
-        return text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("'", "&apos;")
-                .replace("\"", "&quot;");
     }
 }

@@ -1199,7 +1199,47 @@ public final class ChannelSearchPatch {
         for (ChannelSearchResult result : results) {
             View row = existingViews.get(result.videoId);
             if (row == null) {
-                row = createResultRow(activity, result);
+                LinearLayout resultRow = createResultRowContainer(activity);
+                ImageView thumbnail = new ImageView(activity);
+                thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                thumbnail.setClipToOutline(true);
+                thumbnail.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
+                                THUMBNAIL_CORNER_RADIUS);
+                    }
+                });
+                LinearLayout.LayoutParams thumbnailParams =
+                        new LinearLayout.LayoutParams(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
+                thumbnailParams.setMarginEnd(Dim.dp12);
+                thumbnail.setLayoutParams(thumbnailParams);
+                loadThumbnail(thumbnail, result.thumbnailUrl);
+                resultRow.addView(thumbnail);
+                LinearLayout text = new LinearLayout(activity);
+                text.setOrientation(LinearLayout.VERTICAL);
+                text.setLayoutParams(new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+                TextView title = new TextView(activity);
+                title.setText(result.title);
+                RestoreOriginalTitlesPatch.restoreSearchResultTitle(title, result.videoId);
+                title.setTextColor(ThemeUtils.getAppForegroundColor());
+                title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                title.setMaxLines(2);
+                text.addView(title);
+
+                if (!result.metadata.isEmpty()) {
+                    TextView metadata = new TextView(activity);
+                    metadata.setText(result.metadata);
+                    metadata.setTextColor(ThemeUtils.getAppForegroundColor());
+                    metadata.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    metadata.setAlpha(0.7f);
+                    metadata.setSingleLine();
+                    text.addView(metadata);
+                }
+                resultRow.addView(text);
+                row = resultRow;
                 row.setTag(result.videoId);
                 String videoId = result.videoId;
                 row.setOnClickListener(view -> {
@@ -1223,50 +1263,6 @@ public final class ChannelSearchPatch {
         params.setMargins(0, 0, 0, Dim.dp4);
         divider.setLayoutParams(params);
         return divider;
-    }
-
-    private static View createResultRow(Activity activity, ChannelSearchResult result) {
-        LinearLayout row = createResultRowContainer(activity);
-        ImageView thumbnail = new ImageView(activity);
-        thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumbnail.setClipToOutline(true);
-        thumbnail.setOutlineProvider(new ViewOutlineProvider() {
-            @Override
-            public void getOutline(View view, Outline outline) {
-                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
-                        THUMBNAIL_CORNER_RADIUS);
-            }
-        });
-        LinearLayout.LayoutParams thumbnailParams =
-                new LinearLayout.LayoutParams(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
-        thumbnailParams.setMarginEnd(Dim.dp12);
-        thumbnail.setLayoutParams(thumbnailParams);
-        loadThumbnail(thumbnail, result.thumbnailUrl);
-        row.addView(thumbnail);
-        LinearLayout text = new LinearLayout(activity);
-        text.setOrientation(LinearLayout.VERTICAL);
-        text.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView title = new TextView(activity);
-        title.setText(result.title);
-        RestoreOriginalTitlesPatch.restoreSearchResultTitle(title, result.videoId);
-        title.setTextColor(ThemeUtils.getAppForegroundColor());
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        title.setMaxLines(2);
-        text.addView(title);
-
-        if (!result.metadata.isEmpty()) {
-            TextView metadata = new TextView(activity);
-            metadata.setText(result.metadata);
-            metadata.setTextColor(ThemeUtils.getAppForegroundColor());
-            metadata.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            metadata.setAlpha(0.7f);
-            metadata.setSingleLine();
-            text.addView(metadata);
-        }
-        row.addView(text);
-        return row;
     }
 
     private static LinearLayout createResultRowContainer(Activity activity) {

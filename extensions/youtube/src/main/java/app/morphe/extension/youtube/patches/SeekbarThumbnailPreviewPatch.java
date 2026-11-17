@@ -189,42 +189,6 @@ public class SeekbarThumbnailPreviewPatch {
         );
     }
 
-    private static TextView createTimestampPreview(Context context) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = Dim.dp4;
-
-        TextView timestampPreview = new TextView(context);
-        timestampPreview.setTextColor(Color.WHITE);
-        timestampPreview.setTextSize(10);
-        timestampPreview.setPadding(Dim.dp6, Dim.dp2, Dim.dp6, Dim.dp2);
-        timestampPreview.setBackground(labelBackground());
-        timestampPreview.setLayoutParams(params);
-
-        return timestampPreview;
-    }
-
-    private static TextView createChapterPreview(Context context) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = Dim.dp4;
-
-        TextView chapterPreview = new TextView(context);
-        chapterPreview.setTextColor(Color.WHITE);
-        chapterPreview.setTextSize(10);
-        chapterPreview.setPadding(Dim.dp6, Dim.dp2, Dim.dp6, Dim.dp2);
-        chapterPreview.setMaxWidth(THUMBNAIL_PREVIEW_LONG_SIDE);
-        chapterPreview.setSingleLine(true);
-        chapterPreview.setEllipsize(TextUtils.TruncateAt.END);
-        chapterPreview.setGravity(Gravity.CENTER_HORIZONTAL);
-        chapterPreview.setBackground(labelBackground());
-        chapterPreview.setLayoutParams(params);
-
-        return chapterPreview;
-    }
-
     private static String formatSeekTime(int totalSeconds) {
         final int hours = totalSeconds / 3600;
         final int minutes = (totalSeconds % 3600) / 60;
@@ -324,7 +288,17 @@ public class SeekbarThumbnailPreviewPatch {
                 previewFrame.addView(thumbnailPreview);
                 containerLayout.addView(previewFrame);
 
-                TextView timestampPreview = createTimestampPreview(context);
+                LinearLayout.LayoutParams timestampParams = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                timestampParams.topMargin = Dim.dp4;
+
+                TextView timestampPreview = new TextView(context);
+                timestampPreview.setTextColor(Color.WHITE);
+                timestampPreview.setTextSize(10);
+                timestampPreview.setPadding(Dim.dp6, Dim.dp2, Dim.dp6, Dim.dp2);
+                timestampPreview.setBackground(labelBackground());
+                timestampPreview.setLayoutParams(timestampParams);
                 containerLayout.addView(timestampPreview);
 
                 FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
@@ -348,7 +322,21 @@ public class SeekbarThumbnailPreviewPatch {
                 heatMapPeakPoint.setLayoutParams(params);
                 previewFrame.addView(heatMapPeakPoint);
 
-                TextView chapterPreview = createChapterPreview(context);
+                LinearLayout.LayoutParams chapterParams = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                chapterParams.topMargin = Dim.dp4;
+
+                TextView chapterPreview = new TextView(context);
+                chapterPreview.setTextColor(Color.WHITE);
+                chapterPreview.setTextSize(10);
+                chapterPreview.setPadding(Dim.dp6, Dim.dp2, Dim.dp6, Dim.dp2);
+                chapterPreview.setMaxWidth(THUMBNAIL_PREVIEW_LONG_SIDE);
+                chapterPreview.setSingleLine(true);
+                chapterPreview.setEllipsize(TextUtils.TruncateAt.END);
+                chapterPreview.setGravity(Gravity.CENTER_HORIZONTAL);
+                chapterPreview.setBackground(labelBackground());
+                chapterPreview.setLayoutParams(chapterParams);
                 containerLayout.addView(chapterPreview);
 
                 PopupWindow thumbnailPreviewPopup = new PopupWindow(

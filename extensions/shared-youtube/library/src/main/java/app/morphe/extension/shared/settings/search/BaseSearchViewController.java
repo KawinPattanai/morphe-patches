@@ -142,20 +142,7 @@ public abstract class BaseSearchViewController {
         this.isShowingSearchHistory = false;
 
         // Initialize components
-        initializeSearchView();
-        initializeOverlayContainer();
-        searchHistoryManager = new SearchHistoryManager(activity, overlayContainer, query -> {
-            searchView.setQuery(query, true);
-            hideSearchHistory();
-        });
-        setupToolbarMenu();
-        setupListeners();
-    }
-
-    /**
-     * Initializes the search view with proper configurations, such as background, query hint, and RTL support.
-     */
-    private void initializeSearchView() {
+        // Initializes the search view with proper configurations, such as background, query hint, and RTL support.
         // Retrieve SearchView and container from XML.
         searchView = activity.findViewById(ID_MORPHE_SEARCH_VIEW);
         EditText searchEditText = searchView.findViewById(ResourceUtils.getIdentifierOrThrow(
@@ -189,30 +176,7 @@ public abstract class BaseSearchViewController {
             searchView.setTextDirection(View.TEXT_DIRECTION_RTL);
             searchView.setTextAlignment(View.TEXT_ALIGNMENT_INHERIT);
         }
-    }
-
-    /**
-     * Sets the cursor color (for Android 10+ devices).
-     */
-    @RequiresApi(api = Build.VERSION_CODES.Q)
-    private void setCursorColor(EditText editText) {
-        // Get the cursor color based on the current theme.
-        final int cursorColor = Utils.isDarkModeEnabled() ? Color.WHITE : Color.BLACK;
-
-        // Create cursor drawable.
-        GradientDrawable cursorDrawable = new GradientDrawable();
-        cursorDrawable.setShape(GradientDrawable.RECTANGLE);
-        cursorDrawable.setSize(Dim.dp2, -1); // Width: 2dp, Height: match text height.
-        cursorDrawable.setColor(cursorColor);
-
-        // Set cursor drawable.
-        editText.setTextCursorDrawable(cursorDrawable);
-    }
-
-    /**
-     * Initializes the overlay container for displaying search results and history.
-     */
-    private void initializeOverlayContainer() {
+        // Initializes the overlay container for displaying search results and history.
         // Create overlay container for search results and history.
         overlayContainer = new FrameLayout(activity);
         overlayContainer.setVisibility(View.GONE);
@@ -249,31 +213,18 @@ public abstract class BaseSearchViewController {
             overlayParams.gravity = Gravity.TOP;
             mainContainer.addView(overlayContainer, overlayParams);
         }
-    }
-
-    // Abstract interface for preference fragments.
-    public interface BasePreferenceFragment {
-        PreferenceScreen getPreferenceScreenForSearch();
-        View getView();
-        Activity getActivity();
-    }
-
-    /**
-     * Sets up the toolbar menu for the search action.
-     */
-    protected void setupToolbarMenu() {
+        searchHistoryManager = new SearchHistoryManager(activity, overlayContainer, query -> {
+            searchView.setQuery(query, true);
+            hideSearchHistory();
+        });
+        // Sets up the toolbar menu for the search action.
         searchMenuItem = ToolbarPreferenceFragment.addToolbarButton(toolbar,
                 "morphe_settings_search_icon", str("morphe_settings_search_hint"), () -> {
                     if (!isSearchActive) {
                         openSearch();
                     }
                 });
-    }
-
-    /**
-     * Configures listeners for the search view and toolbar navigation.
-     */
-    protected void setupListeners() {
+        // Configures listeners for the search view and toolbar navigation.
         searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
             @Override
             public boolean onQueryTextSubmit(String query) {
@@ -393,6 +344,31 @@ public abstract class BaseSearchViewController {
                 BaseActivityHook.closeSettings(activity);
             }
         });
+    }
+
+    /**
+     * Sets the cursor color (for Android 10+ devices).
+     */
+    @RequiresApi(api = Build.VERSION_CODES.Q)
+    private void setCursorColor(EditText editText) {
+        // Get the cursor color based on the current theme.
+        final int cursorColor = Utils.isDarkModeEnabled() ? Color.WHITE : Color.BLACK;
+
+        // Create cursor drawable.
+        GradientDrawable cursorDrawable = new GradientDrawable();
+        cursorDrawable.setShape(GradientDrawable.RECTANGLE);
+        cursorDrawable.setSize(Dim.dp2, -1); // Width: 2dp, Height: match text height.
+        cursorDrawable.setColor(cursorColor);
+
+        // Set cursor drawable.
+        editText.setTextCursorDrawable(cursorDrawable);
+    }
+
+    // Abstract interface for preference fragments.
+    public interface BasePreferenceFragment {
+        PreferenceScreen getPreferenceScreenForSearch();
+        View getView();
+        Activity getActivity();
     }
 
     /**

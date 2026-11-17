@@ -675,16 +675,235 @@ public final class RestoreOriginalTitlesPatch {
             if (identifier != null) {
                 final boolean isShortsDescription = identifier.startsWith(SHORTS_DESCRIPTION_IDENTIFIER);
                 if (isShortsDescription || identifier.startsWith(DESCRIPTION_IDENTIFIER)) {
-                    return RESTORE_ORIGINAL && restoreDescription(root, textNodes, isShortsDescription)
-                            ? ProtoNode.write(root) : bytes;
+                    if (!RESTORE_ORIGINAL) {
+                        return bytes;
+                    }
+                    // Replaces the description. A Short has a single text with its runs
+                    // instead of a list of segments.
+                    String videoId = openedVideoId;
+                    if (videoId == null) {
+                        return bytes;
+                    }
+
+                    // Links of the description are redirects that include the video id.
+                    for (ProtoNode node : textNodes) {
+                        Uri uri = Uri.parse(node.getText());
+                        if (DESCRIPTION_REDIRECT_PATH.equals(uri.getPath()) && uri.getHost() != null
+                                && !videoId.equals(uri.getQueryParameter("v"))) {
+                            return bytes;
+                        }
+                    }
+
+                    String originalDescription = OriginalDescriptionRequest.fetchRequestIfNeeded(videoId)
+                            .getDescriptionIfFetched();
+                    if (originalDescription == null) {
+                        Logger.printDebug(() -> "Original description is not yet available for: " + videoId);
+                        return bytes;
+                    }
+                    if (!isShortsDescription) {
+                        return OriginalDescription.restore(root, originalDescription) ? ProtoNode.write(root) : bytes;
+                    }
+
+                    ProtoNode description = findShortsDescription(root, null);
+                    if (description == null || description.decodeUtf8().equals(originalDescription)) {
+                        return bytes;
+                    }
+
+                    // The description panel does not include the video id, and the opened video can change before
+                    // the panel is parsed. The keys of the hashtags and links of the description can include the
+                    // video id, and the hashtags are not translated, so they must be the same in the original description.
+                    // If the description is of the video.
+                    boolean isShortsDescriptionOfVideo;
+                    isShortsDescriptionOfVideo: {
+                        String shownDescription = description.decodeUtf8();
+                        Set<String> keyVideoIds = new HashSet<>();
+                        for (ProtoNode node : textNodes) {
+                            String text = node.getText();
+                            if (!ENTITY_KEY_PATTERN.matcher(text).matches()) {
+                                continue;
+                            }
+                            try {
+                                byte[] decoded = Base64.decode(text.replace("%3D", ""),
+                                        Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                                Matcher matcher = KEY_VIDEO_ID_PATTERN.matcher(new String(decoded, StandardCharsets.ISO_8859_1));
+                                while (matcher.find()) {
+                                    keyVideoIds.add(matcher.group(1));
+                                }
+                            } catch (IllegalArgumentException ignored) {
+                                // Not base64.
+                            }
+                        }
+                        if (!keyVideoIds.isEmpty() && !keyVideoIds.contains(videoId)) {
+                            Logger.printDebug(() -> "Description of Short is of other videos: " + keyVideoIds + " opened: " + videoId);
+                            isShortsDescriptionOfVideo = false;
+                            break isShortsDescriptionOfVideo;
+                        }
+
+                        Set<String> originalHashtags = new HashSet<>();
+                        Matcher originalMatcher = HASHTAG_PATTERN.matcher(originalDescription.toLowerCase(Locale.ROOT));
+                        while (originalMatcher.find()) {
+                            originalHashtags.add(originalMatcher.group());
+                        }
+                        Matcher shownMatcher = HASHTAG_PATTERN.matcher(shownDescription.toLowerCase(Locale.ROOT));
+                        while (shownMatcher.find()) {
+                            if (!originalHashtags.contains(shownMatcher.group())) {
+                                final String hashtag = shownMatcher.group();
+                                Logger.printDebug(() -> "Description of Short has hashtag not in the original: " + hashtag);
+                                isShortsDescriptionOfVideo = false;
+                                break isShortsDescriptionOfVideo;
+                            }
+                        }
+                        isShortsDescriptionOfVideo = true;
+                    }
+                    if (!isShortsDescriptionOfVideo) {
+                        return bytes;
+                    }
+                    OriginalDescription.restore(description, originalDescription);
+                    Logger.printDebug(() -> "Restored description of Short: " + videoId);
+                    return ProtoNode.write(root);
                 }
                 if (identifier.startsWith(CHANNEL_HEADER_IDENTIFIER)) {
-                    return RESTORE_ORIGINAL && restoreChannelHeader(textNodes)
-                            ? ProtoNode.write(root) : bytes;
+                    if (!RESTORE_ORIGINAL) {
+                        return bytes;
+                    }
+                    // Replaces the description preview of the channel header, and its accessibility label.
+                    // If the original description is not yet fetched, the preview is replaced
+                    // by the text hook when the header is laid out again.
+                    // The preview is the first line of the description, and the preview message includes
+                    // the accessibility label of the preview, which includes the start of the preview and other texts.
+                    // The label is used to find the preview, as the label and the preview texts are localized.
+                    ProtoNode preview = null;
+                    ProtoNode label = null;
+                    int longestPrefix = MIN_TITLE_LENGTH - 1;
+                    for (ProtoNode node : textNodes) {
+                        String text = node.getText().trim();
+                        ProtoNode previewText = node.getParent();
+                        ProtoNode previewMessage = previewText == null ? null : previewText.getParent();
+                        // Keys can also be included at the start of other texts of the preview message.
+                        if (!isLabelCandidate(text) || ENTITY_KEY_PATTERN.matcher(text).matches()
+                                || previewMessage == null || previewMessage.children == null) {
+                            continue;
+                        }
+                        for (ProtoNode labelNode : ProtoNode.textNodes(previewMessage.children)) {
+                            String labelText = labelNode.getText();
+                            final int prefixLength = previewPrefixLength(labelText, text);
+                            // The label also includes other texts, such as 'Description' and 'Tap to read more'.
+                            // Copies of the same text, such as copies of the label, are not a preview and its label.
+                            if (prefixLength > longestPrefix && prefixLength < labelText.trim().length()) {
+                                preview = node;
+                                label = labelNode;
+                                longestPrefix = prefixLength;
+                            }
+                        }
+                    }
+                    if (preview == null) {
+                        Logger.printDebug(() -> "Channel description preview not found");
+                        return bytes;
+                    }
+
+                    // The preview message includes the truncation text and the command that opens
+                    // the description panel of the channel.
+                    ProtoNode previewMessage = preview.getParent().getParent();
+                    List<ProtoNode> previewTextNodes = previewMessage == null || previewMessage.children == null
+                            ? textNodes
+                            : ProtoNode.textNodes(previewMessage.children);
+
+                    String channelId = null;
+                    for (List<ProtoNode> nodes : List.of(previewTextNodes, textNodes)) {
+                        for (ProtoNode node : nodes) {
+                            if (CHANNEL_ID_PATTERN.matcher(node.getText()).matches()) {
+                                channelId = node.getText();
+                                break;
+                            }
+                        }
+                        if (channelId != null) {
+                            break;
+                        }
+                    }
+                    if (channelId == null) {
+                        return bytes;
+                    }
+
+                    // The preview ends with the localized truncation text that opens the description panel,
+                    // such as '...more', which is also a text of the preview message.
+                    // The truncation text is the longest other text of the preview message that ends the preview.
+                    String shownPreview = preview.getText();
+                    int truncationLength = 0;
+                    for (ProtoNode node : previewTextNodes) {
+                        String text = node.getText();
+                        final int textLength = text.length();
+                        if (node != preview && textLength < shownPreview.length() && textLength > truncationLength
+                                && shownPreview.endsWith(text) && !text.isBlank()) {
+                            truncationLength = textLength;
+                        }
+                    }
+                    String translatedPreview = shownPreview.substring(0, shownPreview.length() - truncationLength).trim();
+
+                    openedChannelId = channelId;
+                    openedChannelPreview = translatedPreview;
+                    translatedChannelPreviews.put(shownPreview.trim(), new ChannelPreview(channelId, translatedPreview));
+                    maxTranslatedChannelPreviewLength.accumulateAndGet(shownPreview.length(), Math::max);
+
+                    String originalPreview = getOriginalChannelPreview(channelId);
+                    if (originalPreview == null) {
+                        relayoutWhenFetched(OriginalChannelDescriptionRequest.fetch(channelId));
+                        return bytes;
+                    }
+                    if (originalPreview.equals(translatedPreview)) {
+                        return bytes;
+                    }
+
+                    OriginalDescription.restore(preview, shownPreview.replace(translatedPreview, originalPreview));
+
+                    // Replaces the start of the preview in the accessibility label,
+                    // which can be truncated, such as 'Description. First line of the descr... Tap to read more.'
+                    String labelText = label.getText();
+                    final int prefixLength = previewPrefixLength(labelText, translatedPreview);
+                    if (prefixLength > 0) {
+                        final int prefixStart = labelText.indexOf(translatedPreview.substring(0, prefixLength));
+                        final int originalPreviewLength = originalPreview.length();
+                        int restoredLength = prefixLength == translatedPreview.length()
+                                ? originalPreviewLength
+                                : Math.min(prefixLength, originalPreviewLength);
+                        if (restoredLength < originalPreviewLength
+                                && Character.isHighSurrogate(originalPreview.charAt(restoredLength - 1))) {
+                            restoredLength--;
+                        }
+                        label.setText(labelText.substring(0, prefixStart)
+                                + originalPreview.substring(0, restoredLength)
+                                + labelText.substring(prefixStart + prefixLength));
+                    }
+
+                    final String restoredChannelId = channelId;
+                    Logger.printDebug(() -> "Restored description preview of channel: " + restoredChannelId);
+                    return ProtoNode.write(root);
                 }
                 if (identifier.startsWith(CHANNEL_ABOUT_IDENTIFIER)) {
-                    return RESTORE_ORIGINAL && restoreChannelAbout(root)
-                            ? ProtoNode.write(root) : bytes;
+                    if (!RESTORE_ORIGINAL) {
+                        return bytes;
+                    }
+                    // Replaces the description of the panel opened from the channel header,
+                    // which starts with the translated preview of the header.
+                    String channelId = openedChannelId;
+                    String translatedPreview = openedChannelPreview;
+                    if (channelId == null || translatedPreview == null) {
+                        return bytes;
+                    }
+
+                    String originalDescription = OriginalChannelDescriptionRequest.getIfAvailable(channelId);
+                    if (originalDescription == null) {
+                        Logger.printDebug(() -> "Original description is not yet available for channel: " + channelId);
+                        return bytes;
+                    }
+
+                    ProtoNode description = findContentStartingWith(root, translatedPreview);
+                    if (description == null || description.decodeUtf8().trim().equals(originalDescription)) {
+                        return bytes;
+                    }
+
+                    OriginalDescription.restore(description, originalDescription);
+                    Logger.printDebug(() -> "Restored description of channel: " + channelId);
+                    return ProtoNode.write(root);
                 }
             }
 
@@ -703,7 +922,33 @@ public final class RestoreOriginalTitlesPatch {
                     modified |= restoreVideoTitle(root, videoId, false, component);
                 }
             }
-            modified |= restoreLinkedVideoTitles(textNodes, component);
+            // The link of a Short to a related video includes the video id as a text, and not in a thumbnail
+            // or in a key, so the video of the element is the Short. The texts of the link are the video id,
+            // the title and the accessibility id of the link, in this order and in the same message.
+            // Other texts of the element can look like a video id, such as 'shortswatch',
+            // so the texts are found by their order and not by their pattern only.
+            for (int i = 2, size = textNodes.size(); i < size; i++) {
+                ProtoNode linkNode = textNodes.get(i);
+                if (!SHORTS_VIDEO_LINK_ID.equals(linkNode.getText())) {
+                    continue;
+                }
+                ProtoNode titleNode = textNodes.get(i - 1);
+                String title = removeTitleMarker(titleNode.getText()).trim();
+                // Keys can be between the video id and the title.
+                ProtoNode videoIdNode = null;
+                for (int j = i - 2; j >= Math.max(0, i - 1 - LINK_MAX_TEXTS_BEFORE_TITLE); j--) {
+                    ProtoNode candidate = textNodes.get(j);
+                    if (VideoInformation.isVideoId(candidate.getText().trim())) {
+                        videoIdNode = candidate;
+                        break;
+                    }
+                }
+                if (videoIdNode != null && isLabelCandidate(title)
+                        && isNearby(linkNode, titleNode) && isNearby(linkNode, videoIdNode)) {
+                    modified |= restoreTitle(Arrays.asList(videoIdNode, titleNode, linkNode),
+                            Collections.singleton(title), videoIdNode.getText().trim(), component, null, () -> title, null);
+                }
+            }
 
             // Replaces titles seen before in other elements, such as the player overlay title
             // that does not include the video id but shows the same title as the watch page.
@@ -1344,96 +1589,6 @@ public final class RestoreOriginalTitlesPatch {
     }
 
     /**
-     * @param isShortsDescription If the description is of a Short, which is a single text with its runs
-     *                            instead of a list of segments.
-     * @return If the description was replaced.
-     */
-    private static boolean restoreDescription(List<ProtoNode> root, List<ProtoNode> textNodes,
-                                              boolean isShortsDescription) {
-        String videoId = openedVideoId;
-        if (videoId == null) {
-            return false;
-        }
-
-        // Links of the description are redirects that include the video id.
-        for (ProtoNode node : textNodes) {
-            Uri uri = Uri.parse(node.getText());
-            if (DESCRIPTION_REDIRECT_PATH.equals(uri.getPath()) && uri.getHost() != null
-                    && !videoId.equals(uri.getQueryParameter("v"))) {
-                return false;
-            }
-        }
-
-        String originalDescription = OriginalDescriptionRequest.fetchRequestIfNeeded(videoId)
-                .getDescriptionIfFetched();
-        if (originalDescription == null) {
-            Logger.printDebug(() -> "Original description is not yet available for: " + videoId);
-            return false;
-        }
-        if (!isShortsDescription) {
-            return OriginalDescription.restore(root, originalDescription);
-        }
-
-        ProtoNode description = findShortsDescription(root, null);
-        if (description == null || description.decodeUtf8().equals(originalDescription)) {
-            return false;
-        }
-
-        // The description panel does not include the video id, and the opened video can change before
-        // the panel is parsed. The keys of the hashtags and links of the description can include the
-        // video id, and the hashtags are not translated, so they must be the same in the original description.
-        // If the description is of the video.
-        boolean isShortsDescriptionOfVideo;
-        isShortsDescriptionOfVideo: {
-            String shownDescription = description.decodeUtf8();
-            Set<String> keyVideoIds = new HashSet<>();
-            for (ProtoNode node : textNodes) {
-                String text = node.getText();
-                if (!ENTITY_KEY_PATTERN.matcher(text).matches()) {
-                    continue;
-                }
-                try {
-                    byte[] decoded = Base64.decode(text.replace("%3D", ""),
-                            Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
-                    Matcher matcher = KEY_VIDEO_ID_PATTERN.matcher(new String(decoded, StandardCharsets.ISO_8859_1));
-                    while (matcher.find()) {
-                        keyVideoIds.add(matcher.group(1));
-                    }
-                } catch (IllegalArgumentException ignored) {
-                    // Not base64.
-                }
-            }
-            if (!keyVideoIds.isEmpty() && !keyVideoIds.contains(videoId)) {
-                Logger.printDebug(() -> "Description of Short is of other videos: " + keyVideoIds + " opened: " + videoId);
-                isShortsDescriptionOfVideo = false;
-                break isShortsDescriptionOfVideo;
-            }
-
-            Set<String> originalHashtags = new HashSet<>();
-            Matcher originalMatcher = HASHTAG_PATTERN.matcher(originalDescription.toLowerCase(Locale.ROOT));
-            while (originalMatcher.find()) {
-                originalHashtags.add(originalMatcher.group());
-            }
-            Matcher shownMatcher = HASHTAG_PATTERN.matcher(shownDescription.toLowerCase(Locale.ROOT));
-            while (shownMatcher.find()) {
-                if (!originalHashtags.contains(shownMatcher.group())) {
-                    final String hashtag = shownMatcher.group();
-                    Logger.printDebug(() -> "Description of Short has hashtag not in the original: " + hashtag);
-                    isShortsDescriptionOfVideo = false;
-                    break isShortsDescriptionOfVideo;
-                }
-            }
-            isShortsDescriptionOfVideo = true;
-        }
-        if (!isShortsDescriptionOfVideo) {
-            return false;
-        }
-        OriginalDescription.restore(description, originalDescription);
-        Logger.printDebug(() -> "Restored description of Short: " + videoId);
-        return true;
-    }
-
-    /**
      * The description of a Short is the content of a text, and the other texts of the element
      * are keys, identifiers and names. Paths of the fields depend on the app version.
      *
@@ -1475,124 +1630,6 @@ public final class RestoreOriginalTitlesPatch {
     }
 
     /**
-     * Replaces the description preview of the channel header, and its accessibility label.
-     * If the original description is not yet fetched, the preview is replaced
-     * by the text hook when the header is laid out again.
-     *
-     * @return If the preview was replaced.
-     */
-    private static boolean restoreChannelHeader(List<ProtoNode> textNodes) {
-        // The preview is the first line of the description, and the preview message includes
-        // the accessibility label of the preview, which includes the start of the preview and other texts.
-        // The label is used to find the preview, as the label and the preview texts are localized.
-        ProtoNode preview = null;
-        ProtoNode label = null;
-        int longestPrefix = MIN_TITLE_LENGTH - 1;
-        for (ProtoNode node : textNodes) {
-            String text = node.getText().trim();
-            ProtoNode previewText = node.getParent();
-            ProtoNode previewMessage = previewText == null ? null : previewText.getParent();
-            // Keys can also be included at the start of other texts of the preview message.
-            if (!isLabelCandidate(text) || ENTITY_KEY_PATTERN.matcher(text).matches()
-                    || previewMessage == null || previewMessage.children == null) {
-                continue;
-            }
-            for (ProtoNode labelNode : ProtoNode.textNodes(previewMessage.children)) {
-                String labelText = labelNode.getText();
-                final int prefixLength = previewPrefixLength(labelText, text);
-                // The label also includes other texts, such as 'Description' and 'Tap to read more'.
-                // Copies of the same text, such as copies of the label, are not a preview and its label.
-                if (prefixLength > longestPrefix && prefixLength < labelText.trim().length()) {
-                    preview = node;
-                    label = labelNode;
-                    longestPrefix = prefixLength;
-                }
-            }
-        }
-        if (preview == null) {
-            Logger.printDebug(() -> "Channel description preview not found");
-            return false;
-        }
-
-        // The preview message includes the truncation text and the command that opens
-        // the description panel of the channel.
-        ProtoNode previewMessage = preview.getParent().getParent();
-        List<ProtoNode> previewTextNodes = previewMessage == null || previewMessage.children == null
-                ? textNodes
-                : ProtoNode.textNodes(previewMessage.children);
-
-        String channelId = null;
-        for (List<ProtoNode> nodes : List.of(previewTextNodes, textNodes)) {
-            for (ProtoNode node : nodes) {
-                if (CHANNEL_ID_PATTERN.matcher(node.getText()).matches()) {
-                    channelId = node.getText();
-                    break;
-                }
-            }
-            if (channelId != null) {
-                break;
-            }
-        }
-        if (channelId == null) {
-            return false;
-        }
-
-        // The preview ends with the localized truncation text that opens the description panel,
-        // such as '...more', which is also a text of the preview message.
-        // The truncation text is the longest other text of the preview message that ends the preview.
-        String shownPreview = preview.getText();
-        int truncationLength = 0;
-        for (ProtoNode node : previewTextNodes) {
-            String text = node.getText();
-            final int textLength = text.length();
-            if (node != preview && textLength < shownPreview.length() && textLength > truncationLength
-                    && shownPreview.endsWith(text) && !text.isBlank()) {
-                truncationLength = textLength;
-            }
-        }
-        String translatedPreview = shownPreview.substring(0, shownPreview.length() - truncationLength).trim();
-
-        openedChannelId = channelId;
-        openedChannelPreview = translatedPreview;
-        translatedChannelPreviews.put(shownPreview.trim(), new ChannelPreview(channelId, translatedPreview));
-        maxTranslatedChannelPreviewLength.accumulateAndGet(shownPreview.length(), Math::max);
-
-        String originalPreview = getOriginalChannelPreview(channelId);
-        if (originalPreview == null) {
-            relayoutWhenFetched(OriginalChannelDescriptionRequest.fetch(channelId));
-            return false;
-        }
-        if (originalPreview.equals(translatedPreview)) {
-            return false;
-        }
-
-        OriginalDescription.restore(preview, shownPreview.replace(translatedPreview, originalPreview));
-
-        // Replaces the start of the preview in the accessibility label,
-        // which can be truncated, such as 'Description. First line of the descr... Tap to read more.'
-        String labelText = label.getText();
-        final int prefixLength = previewPrefixLength(labelText, translatedPreview);
-        if (prefixLength > 0) {
-            final int prefixStart = labelText.indexOf(translatedPreview.substring(0, prefixLength));
-            final int originalPreviewLength = originalPreview.length();
-            int restoredLength = prefixLength == translatedPreview.length()
-                    ? originalPreviewLength
-                    : Math.min(prefixLength, originalPreviewLength);
-            if (restoredLength < originalPreviewLength
-                    && Character.isHighSurrogate(originalPreview.charAt(restoredLength - 1))) {
-                restoredLength--;
-            }
-            label.setText(labelText.substring(0, prefixStart)
-                    + originalPreview.substring(0, restoredLength)
-                    + labelText.substring(prefixStart + prefixLength));
-        }
-
-        final String restoredChannelId = channelId;
-        Logger.printDebug(() -> "Restored description preview of channel: " + restoredChannelId);
-        return true;
-    }
-
-    /**
      * @return The length of the start of the preview that the label includes,
      *         or 0 if the label does not include the start of the preview.
      */
@@ -1613,35 +1650,6 @@ public final class RestoreOriginalTitlesPatch {
             length++;
         }
         return length;
-    }
-
-    /**
-     * Replaces the description of the panel opened from the channel header,
-     * which starts with the translated preview of the header.
-     *
-     * @return If the description was replaced.
-     */
-    private static boolean restoreChannelAbout(List<ProtoNode> root) {
-        String channelId = openedChannelId;
-        String translatedPreview = openedChannelPreview;
-        if (channelId == null || translatedPreview == null) {
-            return false;
-        }
-
-        String originalDescription = OriginalChannelDescriptionRequest.getIfAvailable(channelId);
-        if (originalDescription == null) {
-            Logger.printDebug(() -> "Original description is not yet available for channel: " + channelId);
-            return false;
-        }
-
-        ProtoNode description = findContentStartingWith(root, translatedPreview);
-        if (description == null || description.decodeUtf8().trim().equals(originalDescription)) {
-            return false;
-        }
-
-        OriginalDescription.restore(description, originalDescription);
-        Logger.printDebug(() -> "Restored description of channel: " + channelId);
-        return true;
     }
 
     /**
@@ -2788,42 +2796,6 @@ public final class RestoreOriginalTitlesPatch {
             }
         }
         return videoId;
-    }
-
-    /**
-     * The link of a Short to a related video includes the video id as a text, and not in a thumbnail
-     * or in a key, so the video of the element is the Short. The texts of the link are the video id,
-     * the title and the accessibility id of the link, in this order and in the same message.
-     * Other texts of the element can look like a video id, such as 'shortswatch',
-     * so the texts are found by their order and not by their pattern only.
-     *
-     * @return If any title was replaced.
-     */
-    private static boolean restoreLinkedVideoTitles(List<ProtoNode> textNodes, String component) {
-        boolean modified = false;
-        for (int i = 2, size = textNodes.size(); i < size; i++) {
-            ProtoNode linkNode = textNodes.get(i);
-            if (!SHORTS_VIDEO_LINK_ID.equals(linkNode.getText())) {
-                continue;
-            }
-            ProtoNode titleNode = textNodes.get(i - 1);
-            String title = removeTitleMarker(titleNode.getText()).trim();
-            // Keys can be between the video id and the title.
-            ProtoNode videoIdNode = null;
-            for (int j = i - 2; j >= Math.max(0, i - 1 - LINK_MAX_TEXTS_BEFORE_TITLE); j--) {
-                ProtoNode candidate = textNodes.get(j);
-                if (VideoInformation.isVideoId(candidate.getText().trim())) {
-                    videoIdNode = candidate;
-                    break;
-                }
-            }
-            if (videoIdNode != null && isLabelCandidate(title)
-                    && isNearby(linkNode, titleNode) && isNearby(linkNode, videoIdNode)) {
-                modified |= restoreTitle(Arrays.asList(videoIdNode, titleNode, linkNode),
-                        Collections.singleton(title), videoIdNode.getText().trim(), component, null, () -> title, null);
-            }
-        }
-        return modified;
     }
 
     /**

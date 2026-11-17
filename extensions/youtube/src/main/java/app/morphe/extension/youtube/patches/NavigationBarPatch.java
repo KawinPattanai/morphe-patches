@@ -409,32 +409,25 @@ public final class NavigationBarPatch {
             accountFeedBehindNavigationBar = accountValue;
         }
 
+        // The pages are laid out behind the navigation bar only if the bar tells them they can be seen
+        // through it: from Android 12 with its blurred background, otherwise with the translucent style.
+        // With the feed behind the navigation bar flag, the lists get the navigation bar height as bottom
+        // padding, so without them the pages end above the navigation bar and the padding is an empty band
+        // above it (https://github.com/MorpheApp/morphe-patches/issues/4797).
+        // The account can get the feed behind flag without them, such as with the feature flags
+        // of an older app version (Spoof app version).
+        // The other navigation bar styles turn on the background or the style themselves.
         final boolean feedBehind = PAGES_BEHIND_GLASS_NAVIGATION_BAR
-                || (isNavigationBarBehindSystemButtons(accountValue) && canPagesBeBehindDefaultNavigationBar());
+                || (isNavigationBarBehindSystemButtons(accountValue)
+                && (NAVIGATION_BAR_STYLE != NavigationBarStyle.DEFAULT
+                || accountTranslucentBackground != Boolean.FALSE
+                || accountTranslucentStyle != Boolean.FALSE));
         if (firstRead) {
             Logger.printDebug(() -> "Feed behind navigation bar: " + feedBehind + " (account: " + original
                     + ", translucent background: " + accountTranslucentBackground
                     + ", translucent style: " + accountTranslucentStyle + ")");
         }
         return feedBehind;
-    }
-
-    /**
-     * The pages are laid out behind the navigation bar only if the bar tells them they can be seen
-     * through it: from Android 12 with its blurred background, otherwise with the translucent style.
-     * With the feed behind the navigation bar flag, the lists get the navigation bar height as bottom
-     * padding, so without them the pages end above the navigation bar and the padding is an empty band
-     * above it (<a href="https://github.com/MorpheApp/morphe-patches/issues/4797">...</a>).
-     * The account can get the feed behind flag without them, such as with the feature flags
-     * of an older app version (Spoof app version).
-     * The other navigation bar styles turn on the background or the style themselves.
-     *
-     * @return False only if the account got neither the blurred background nor the translucent style.
-     */
-    private static boolean canPagesBeBehindDefaultNavigationBar() {
-        return NAVIGATION_BAR_STYLE != NavigationBarStyle.DEFAULT
-                || accountTranslucentBackground != Boolean.FALSE
-                || accountTranslucentStyle != Boolean.FALSE;
     }
 
     /**

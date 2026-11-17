@@ -141,23 +141,6 @@ public final class SeekbarColorPatch {
         return colorValue;
     }
 
-    private static String colorArrayToHex(int[] colors) {
-        final int length = colors.length;
-        StringBuilder builder = new StringBuilder(length * 12);
-        builder.append("[");
-
-        int i = 0;
-        for (int color : colors) {
-            builder.append(String.format("#%X", color));
-            if (++i < length) {
-                builder.append(", ");
-            }
-        }
-
-        builder.append("]");
-        return builder.toString();
-    }
-
     /**
      * Injection point.
      * 19.49+
@@ -187,8 +170,23 @@ public final class SeekbarColorPatch {
                         : customSeekbarColorGradient;
             }
 
-            Logger.printDebug(() -> "Ignoring gradient colors: " + colorArrayToHex(colors)
-                    + " positions: " + Arrays.toString(positions));
+            Logger.printDebug(() -> {
+                final int length = colors.length;
+                StringBuilder builder = new StringBuilder(length * 12);
+                builder.append("[");
+
+                int i = 0;
+                for (int color : colors) {
+                    builder.append(String.format("#%X", color));
+                    if (++i < length) {
+                        builder.append(", ");
+                    }
+                }
+
+                builder.append("]");
+                return "Ignoring gradient colors: " + builder
+                        + " positions: " + Arrays.toString(positions);
+            });
         }
 
         return colors;

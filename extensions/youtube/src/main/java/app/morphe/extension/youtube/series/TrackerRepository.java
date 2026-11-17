@@ -807,7 +807,15 @@ public final class TrackerRepository extends SQLiteOpenHelper {
                 for (Series value : library()) current.put(value.id(), value);
                 for (Series before : undo.navigationBefore) {
                     Series expected = after.get(before.id()), actual = current.get(before.id());
-                    if (expected == null || actual == null || !sameNavigation(expected, actual))
+                    if (expected == null || actual == null
+                            || !expected.epoch().equals(actual.epoch())
+                            || expected.revision() != actual.revision()
+                            || !expected.cursorId().equals(actual.cursorId())
+                            || expected.cursorOrdinal() != actual.cursorOrdinal()
+                            || expected.cursorRevision() != actual.cursorRevision()
+                            || !expected.bookmarkId().equals(actual.bookmarkId())
+                            || expected.startHere() != actual.startHere()
+                            || expected.activity() != actual.activity())
                         continue;
                     db.execSQL(
                             "UPDATE series SET cursor_id=?,cursor_ordinal=?,cursor_revision=?,"
@@ -836,17 +844,6 @@ public final class TrackerRepository extends SQLiteOpenHelper {
         } finally {
             db.endTransaction();
         }
-    }
-
-    private static boolean sameNavigation(Series a, Series b) {
-        return a.epoch().equals(b.epoch())
-                && a.revision() == b.revision()
-                && a.cursorId().equals(b.cursorId())
-                && a.cursorOrdinal() == b.cursorOrdinal()
-                && a.cursorRevision() == b.cursorRevision()
-                && a.bookmarkId().equals(b.bookmarkId())
-                && a.startHere() == b.startHere()
-                && a.activity() == b.activity();
     }
 
     Undo startHereWithUndo(Series series, Episode episode, long now) {

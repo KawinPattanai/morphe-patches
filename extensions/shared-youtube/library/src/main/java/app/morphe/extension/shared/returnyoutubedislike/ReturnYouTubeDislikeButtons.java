@@ -145,19 +145,6 @@ public final class ReturnYouTubeDislikeButtons {
     }
 
     /**
-     * The count of the segmented button is drawn by the layout engine and not by the text view
-     * beside it, so its color cannot be changed. YouTube uses the color of that view, while
-     * YouTube Music uses the app foreground color because its view can report black incorrectly.
-     */
-    private static int oldBarCountColor(View host) {
-        if (useAppForegroundForSegmentedCount) {
-            return ThemeUtils.getAppForegroundColor();
-        }
-        TextView text = barTextOf(barOf(host), 0);
-        return text == null ? ThemeUtils.getAppForegroundColor() : text.getCurrentTextColor();
-    }
-
-    /**
      * @return The first text of the bar, which is the count YouTube shows for the likes.
      */
     @Nullable
@@ -522,55 +509,6 @@ public final class ReturnYouTubeDislikeButtons {
         });
     }
 
-    /**
-     * Reads the like count from a label such as "like this video along with 2,589 other people".
-     *
-     * @return The count, {@link #LIKES_HIDDEN} if the label has no number (hidden by the creator),
-     *         or {@link #LIKES_UNKNOWN} if the number is not a whole count, such as a compact "2,5K".
-     */
-    private static long parseLabelCount(String label) {
-        final int length = label.length();
-        int index = 0;
-        while (index < length && !Character.isDigit(label.charAt(index))) {
-            index++;
-        }
-        if (index == length) {
-            return LIKES_HIDDEN;
-        }
-
-        long count = 0;
-        int digitsSinceSeparator = 0;
-        boolean hasSeparator = false;
-        for (; index < length; index++) {
-            final char c = label.charAt(index);
-            if (Character.isDigit(c)) {
-                if (count > Long.MAX_VALUE / 10) {
-                    return LIKES_UNKNOWN;
-                }
-                count = count * 10 + Character.digit(c, 10);
-                digitsSinceSeparator++;
-                continue;
-            }
-            // Swiss style grouping uses either apostrophe.
-            final boolean isSeparator = c == ',' || c == '.' || c == '\'' || c == '’'
-                    || Character.isSpaceChar(c);
-            if (!isSeparator || index + 1 >= length || !Character.isDigit(label.charAt(index + 1))) {
-                break;
-            }
-            // Grouping separators always split groups of three, anything else is a decimal.
-            if (hasSeparator && digitsSinceSeparator != 3) {
-                return LIKES_UNKNOWN;
-            }
-            hasSeparator = true;
-            digitsSinceSeparator = 0;
-        }
-
-        if (hasSeparator && digitsSinceSeparator != 3) {
-            return LIKES_UNKNOWN;
-        }
-        return count;
-    }
-
     private static final int MAX_BAR_PARENTS = 5;
     private static final int MAX_BAR_DEPTH = 6;
 
@@ -669,7 +607,54 @@ public final class ReturnYouTubeDislikeButtons {
         void setButton(String label, boolean isLike) {
             this.label = label;
             this.isLike = isLike;
-            youTubeLikes = isLike ? parseLabelCount(label) : LIKES_UNKNOWN;
+            youTubeLikes = LIKES_UNKNOWN;
+            // Reads the like count from a label such as "like this video along with 2,589 other people":
+            // LIKES_HIDDEN if the label has no number (hidden by the creator),
+            // or LIKES_UNKNOWN if the number is not a whole count, such as a compact "2,5K".
+            parseLabelCount:
+            if (isLike) {
+                final int length = label.length();
+                int index = 0;
+                while (index < length && !Character.isDigit(label.charAt(index))) {
+                    index++;
+                }
+                if (index == length) {
+                    youTubeLikes = LIKES_HIDDEN;
+                    break parseLabelCount;
+                }
+
+                long count = 0;
+                int digitsSinceSeparator = 0;
+                boolean hasSeparator = false;
+                for (; index < length; index++) {
+                    final char c = label.charAt(index);
+                    if (Character.isDigit(c)) {
+                        if (count > Long.MAX_VALUE / 10) {
+                            break parseLabelCount;
+                        }
+                        count = count * 10 + Character.digit(c, 10);
+                        digitsSinceSeparator++;
+                        continue;
+                    }
+                    // Swiss style grouping uses either apostrophe.
+                    final boolean isSeparator = c == ',' || c == '.' || c == '\'' || c == '’'
+                            || Character.isSpaceChar(c);
+                    if (!isSeparator || index + 1 >= length || !Character.isDigit(label.charAt(index + 1))) {
+                        break;
+                    }
+                    // Grouping separators always split groups of three, anything else is a decimal.
+                    if (hasSeparator && digitsSinceSeparator != 3) {
+                        break parseLabelCount;
+                    }
+                    hasSeparator = true;
+                    digitsSinceSeparator = 0;
+                }
+
+                if (hasSeparator && digitsSinceSeparator != 3) {
+                    break parseLabelCount;
+                }
+                youTubeLikes = count;
+            }
             hasOwnLabel = null;
             spokenLabel = null;
             likeButtonSearched = false;
@@ -777,9 +762,13 @@ public final class ReturnYouTubeDislikeButtons {
             paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
                     beside ? oldBarCountTextSizeSp : ICON_BUTTON_COUNT_TEXT_SIZE_SP,
                     host.getResources().getDisplayMetrics()));
-            final int color = beside
-                    ? oldBarCountColor(host)
-                    : ThemeUtils.getAppForegroundColor();
+            // The count of the segmented button is drawn by the layout engine and not by the text view
+            // beside it, so its color cannot be changed. YouTube uses the color of that view, while
+            // YouTube Music uses the app foreground color because its view can report black incorrectly.
+            TextView barText = beside && !useAppForegroundForSegmentedCount ? barTextOf(barOf(host), 0) : null;
+            final int color = barText == null
+                    ? ThemeUtils.getAppForegroundColor()
+                    : barText.getCurrentTextColor();
             paint.setColor(color);
             paint.setAlpha(Color.alpha(color) * alpha / 255);
 

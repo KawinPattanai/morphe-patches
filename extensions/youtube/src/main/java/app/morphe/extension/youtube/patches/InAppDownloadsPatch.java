@@ -492,9 +492,49 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
                         break withPlaylistDownloadButton;
                     }
 
+                    // The Download button the server gives to the playlist page header of Premium accounts,
+                    // which saves the playlist or removes it if it's saved.
+                    final String downloadPlaylistId = playlistId;
+                    Logger.printDebug(() -> "Adding download button to playlist: " + downloadPlaylistId);
+
+                    OfflinePlaylistEndpoint endpoint = OfflinePlaylistEndpoint.newBuilder()
+                            .setPlaylistId(playlistId)
+                            .setAction(OfflinePlaylistAction.OFFLINE_PLAYLIST_ACTION_INFER_AUTOMATICALLY)
+                            .setOfflineability(offlineability(List.of()))
+                            .build();
+                    // Texts of the app, which all supported app versions have.
+                    String downloadableText = ResourceUtils.getString("accessibility_playlist_download");
+                    String inProgressText = ResourceUtils.getString("offline_button_progress_text");
+                    String completedText = ResourceUtils.getString("offline_button_complete_text");
+                    ByteString downloadStatusEntityId = PlaylistDownloadStatusEntityId.newBuilder()
+                            .setPlaylistId(playlistId)
+                            .setType(PLAYLIST_DOWNLOAD_STATUS_ENTITY_ID_TYPE)
+                            .build()
+                            .toByteString();
+
+                    PlaylistDownloadButtonViewModel button = PlaylistDownloadButtonViewModel.newBuilder()
+                            .setPlaylistId(playlistId)
+                            .setDownloadableText(downloadableText)
+                            .setInProgressText(inProgressText)
+                            .setCompletedText(completedText)
+                            .setDownloadableA11YText(downloadableText)
+                            .setInProgressA11YText(inProgressText)
+                            .setCompletedA11YText(completedText)
+                            .setDownloadStatusKey(entityKey(DOWNLOAD_STATUS_ENTITY_TYPE, downloadStatusEntityId))
+                            .setGenerationStatusKey(entityKey(GENERATION_STATUS_ENTITY_TYPE,
+                                    ByteString.copyFromUtf8(PLAYLIST_GENERATION_STATUS_ENTITY_ID)))
+                            .setLayout(DownloadButtonLayout.DOWNLOAD_BUTTON_LAYOUT_PLAYLIST_HEADER)
+                            .setIconColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
+                            .setTextColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
+                            .setButtonSize(DownloadButtonSize.DOWNLOAD_BUTTON_SIZE_DEFAULT)
+                            .setButtonStyle(DownloadButtonStyle.DOWNLOAD_BUTTON_STYLE_OVERLAY)
+                            .setOnTapCommand(ButtonCommand.newBuilder().setInnertubeCommand(
+                                    OfflineCommand.newBuilder().setOfflinePlaylistEndpoint(endpoint)))
+                            .setIdentifier(PLAYLIST_DOWNLOAD_BUTTON_IDENTIFIER)
+                            .build();
                     actions = originalActions.toBuilder()
                             .setActionsRows(playlistRowIndex, rows.get(playlistRowIndex).toBuilder()
-                                    .addActions(playlistDownloadButton(playlistId)))
+                                    .addActions(FlexibleAction.newBuilder().setDownloadButtonViewModel(button).build()))
                             .build();
                 }
                 if (actions != null) {
@@ -507,51 +547,6 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
         }
 
         return bytes;
-    }
-
-    /**
-     * @return The Download button the server gives to the playlist page header of Premium accounts,
-     *         which saves the playlist or removes it if it's saved.
-     */
-    private static FlexibleAction playlistDownloadButton(String playlistId) {
-        Logger.printDebug(() -> "Adding download button to playlist: " + playlistId);
-
-        OfflinePlaylistEndpoint endpoint = OfflinePlaylistEndpoint.newBuilder()
-                .setPlaylistId(playlistId)
-                .setAction(OfflinePlaylistAction.OFFLINE_PLAYLIST_ACTION_INFER_AUTOMATICALLY)
-                .setOfflineability(offlineability(List.of()))
-                .build();
-        // Texts of the app, which all supported app versions have.
-        String downloadableText = ResourceUtils.getString("accessibility_playlist_download");
-        String inProgressText = ResourceUtils.getString("offline_button_progress_text");
-        String completedText = ResourceUtils.getString("offline_button_complete_text");
-        ByteString downloadStatusEntityId = PlaylistDownloadStatusEntityId.newBuilder()
-                .setPlaylistId(playlistId)
-                .setType(PLAYLIST_DOWNLOAD_STATUS_ENTITY_ID_TYPE)
-                .build()
-                .toByteString();
-
-        PlaylistDownloadButtonViewModel button = PlaylistDownloadButtonViewModel.newBuilder()
-                .setPlaylistId(playlistId)
-                .setDownloadableText(downloadableText)
-                .setInProgressText(inProgressText)
-                .setCompletedText(completedText)
-                .setDownloadableA11YText(downloadableText)
-                .setInProgressA11YText(inProgressText)
-                .setCompletedA11YText(completedText)
-                .setDownloadStatusKey(entityKey(DOWNLOAD_STATUS_ENTITY_TYPE, downloadStatusEntityId))
-                .setGenerationStatusKey(entityKey(GENERATION_STATUS_ENTITY_TYPE,
-                        ByteString.copyFromUtf8(PLAYLIST_GENERATION_STATUS_ENTITY_ID)))
-                .setLayout(DownloadButtonLayout.DOWNLOAD_BUTTON_LAYOUT_PLAYLIST_HEADER)
-                .setIconColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
-                .setTextColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
-                .setButtonSize(DownloadButtonSize.DOWNLOAD_BUTTON_SIZE_DEFAULT)
-                .setButtonStyle(DownloadButtonStyle.DOWNLOAD_BUTTON_STYLE_OVERLAY)
-                .setOnTapCommand(ButtonCommand.newBuilder().setInnertubeCommand(
-                        OfflineCommand.newBuilder().setOfflinePlaylistEndpoint(endpoint)))
-                .setIdentifier(PLAYLIST_DOWNLOAD_BUTTON_IDENTIFIER)
-                .build();
-        return FlexibleAction.newBuilder().setDownloadButtonViewModel(button).build();
     }
 
     /**

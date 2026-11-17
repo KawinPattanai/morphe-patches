@@ -103,7 +103,78 @@ public final class ChannelUploadsRequest {
         }
 
         Utils.runOnBackgroundThread(() -> {
-            Uploads uploads = fetchUploads(channelId, query, locale, isCancelled, callback);
+            // Titles can be translated to the language of the app, and a search is often in English,
+            // so an upload matches if either its title in the language of the app or in English does.
+            // The view counts are parsed from the English uploads, as their format depends on the language.
+            Uploads uploads;
+            fetchUploads: {
+                Utils.verifyOffMainThread();
+
+                final long startTime = System.currentTimeMillis();
+                List<String> queryWords = normalizedWords(query);
+                List<ChannelSearchResult> uploadResults = new ArrayList<>();
+                List<ChannelSearchResult> matches = new ArrayList<>();
+                Map<String, Integer> positions = new HashMap<>();
+
+                Map<String, String> englishTitles = new ConcurrentHashMap<>();
+                Map<String, Long> roundedViewCounts = new ConcurrentHashMap<>();
+                final boolean isEnglish = "en".equals(locale.getLanguage());
+                Future<Boolean> englishFuture = isEnglish ? null
+                        : Utils.submitOnBackgroundThread(() -> listUploads(channelId, Locale.US, roundedViewCounts,
+                                isCancelled, page -> {
+                                    for (ChannelSearchResult upload : page) {
+                                        englishTitles.put(upload.videoId, upload.title);
+                                    }
+                                }));
+
+                try {
+                    final boolean isListed = listUploads(channelId, locale, isEnglish ? roundedViewCounts : null,
+                            isCancelled, page -> {
+                        boolean foundMatches = false;
+                        for (ChannelSearchResult upload : page) {
+                            if (positions.containsKey(upload.videoId)) continue;
+
+                            positions.put(upload.videoId, positions.size());
+                            uploadResults.add(upload);
+                            if (matches(upload, queryWords, englishTitles)) {
+                                matches.add(upload);
+                                foundMatches = true;
+                            }
+                        }
+                        if (foundMatches) {
+                            callback.onUploads(new Uploads(new ArrayList<>(matches), new HashMap<>(positions),
+                                    new HashMap<>(roundedViewCounts)), false);
+                        }
+                    });
+                    if (!isListed || isCancelled.getAsBoolean()) {
+                        uploads = null;
+                        break fetchUploads;
+                    }
+
+                    if (englishFuture != null) {
+                        try {
+                            englishFuture.get();
+                        } catch (Exception ex) {
+                            Logger.printInfo(() -> "English channel uploads failed", ex);
+                        }
+                        // Uploads listed before their English title can match it now.
+                        matches.clear();
+                        for (ChannelSearchResult upload : uploadResults) {
+                            if (matches(upload, queryWords, englishTitles)) {
+                                matches.add(upload);
+                            }
+                        }
+                    }
+                    uploads = new Uploads(matches, positions, roundedViewCounts);
+                    break fetchUploads;
+                } catch (Exception ex) {
+                    Logger.printException(() -> "Channel uploads failed", ex);
+                } finally {
+                    Logger.printDebug(() -> "Fetched channel uploads: " + positions.size() + " matching: " + query
+                            + ", items=" + matches.size() + " took: " + (System.currentTimeMillis() - startTime) + "ms");
+                }
+                uploads = null;
+            }
             if (uploads == null) {
                 callback.onUploads(new Uploads(), true);
             } else if (!isCancelled.getAsBoolean()) {
@@ -111,80 +182,6 @@ public final class ChannelUploadsRequest {
                 callback.onUploads(uploads, true);
             }
         });
-    }
-
-    /**
-     * Titles can be translated to the language of the app, and a search is often in English,
-     * so an upload matches if either its title in the language of the app or in English does.
-     * The view counts are parsed from the English uploads, as their format depends on the language.
-     */
-    @Nullable
-    private static Uploads fetchUploads(String channelId, String query, Locale locale,
-                                        BooleanSupplier isCancelled, Callback callback) {
-        Utils.verifyOffMainThread();
-
-        final long startTime = System.currentTimeMillis();
-        List<String> queryWords = normalizedWords(query);
-        List<ChannelSearchResult> uploads = new ArrayList<>();
-        List<ChannelSearchResult> matches = new ArrayList<>();
-        Map<String, Integer> positions = new HashMap<>();
-
-        Map<String, String> englishTitles = new ConcurrentHashMap<>();
-        Map<String, Long> roundedViewCounts = new ConcurrentHashMap<>();
-        final boolean isEnglish = "en".equals(locale.getLanguage());
-        Future<Boolean> englishFuture = isEnglish ? null
-                : Utils.submitOnBackgroundThread(() -> listUploads(channelId, Locale.US, roundedViewCounts,
-                        isCancelled, page -> {
-                            for (ChannelSearchResult upload : page) {
-                                englishTitles.put(upload.videoId, upload.title);
-                            }
-                        }));
-
-        try {
-            final boolean isListed = listUploads(channelId, locale, isEnglish ? roundedViewCounts : null,
-                    isCancelled, page -> {
-                boolean foundMatches = false;
-                for (ChannelSearchResult upload : page) {
-                    if (positions.containsKey(upload.videoId)) continue;
-
-                    positions.put(upload.videoId, positions.size());
-                    uploads.add(upload);
-                    if (matches(upload, queryWords, englishTitles)) {
-                        matches.add(upload);
-                        foundMatches = true;
-                    }
-                }
-                if (foundMatches) {
-                    callback.onUploads(new Uploads(new ArrayList<>(matches), new HashMap<>(positions),
-                            new HashMap<>(roundedViewCounts)), false);
-                }
-            });
-            if (!isListed || isCancelled.getAsBoolean()) {
-                return null;
-            }
-
-            if (englishFuture != null) {
-                try {
-                    englishFuture.get();
-                } catch (Exception ex) {
-                    Logger.printInfo(() -> "English channel uploads failed", ex);
-                }
-                // Uploads listed before their English title can match it now.
-                matches.clear();
-                for (ChannelSearchResult upload : uploads) {
-                    if (matches(upload, queryWords, englishTitles)) {
-                        matches.add(upload);
-                    }
-                }
-            }
-            return new Uploads(matches, positions, roundedViewCounts);
-        } catch (Exception ex) {
-            Logger.printException(() -> "Channel uploads failed", ex);
-        } finally {
-            Logger.printDebug(() -> "Fetched channel uploads: " + positions.size() + " matching: " + query
-                    + ", items=" + matches.size() + " took: " + (System.currentTimeMillis() - startTime) + "ms");
-        }
-        return null;
     }
 
     private static boolean matches(ChannelSearchResult upload, List<String> queryWords,
@@ -208,7 +205,21 @@ public final class ChannelUploadsRequest {
                                        BooleanSupplier isCancelled, Consumer<List<ChannelSearchResult>> onPage) {
         JSONObject json = ChannelSearchRoutes.fetch(ChannelSearchRoutes.CHANNEL_SEARCH,
                 ChannelSearchRoutes.createUploadsBody(channelId, locale));
-        JSONArray items = json == null ? null : playlistItems(json);
+        JSONArray items = null;
+        JSONObject contents = json == null ? null : json.optJSONObject("contents");
+        JSONObject twoColumn = contents == null ? null
+                : contents.optJSONObject("twoColumnBrowseResultsRenderer");
+        JSONArray tabs = twoColumn == null ? null : twoColumn.optJSONArray("tabs");
+        JSONObject tab = tabs == null ? null : tabs.optJSONObject(0);
+        JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
+        JSONObject content = tabRenderer == null ? null : tabRenderer.optJSONObject("content");
+        JSONObject sectionList = content == null ? null : content.optJSONObject("sectionListRenderer");
+        JSONArray sections = sectionList == null ? null : sectionList.optJSONArray("contents");
+        for (int i = 0, length = sections == null ? 0 : sections.length(); i < length && items == null; i++) {
+            JSONObject section = sections.optJSONObject(i);
+            JSONObject itemSection = section == null ? null : section.optJSONObject("itemSectionRenderer");
+            items = itemSection == null ? null : itemSection.optJSONArray("contents");
+        }
         if (items == null) {
             return false;
         }
@@ -249,7 +260,26 @@ public final class ChannelUploadsRequest {
 
                     JSONObject contentImage = lockup.optJSONObject("contentImage");
                     JSONObject thumbnail = contentImage == null ? null : contentImage.optJSONObject("thumbnailViewModel");
-                    List<String> details = parseDetails(lockupMetadata);
+                    // The view count and the age of the upload, as shown under the title.
+                    // The first row is the channel name, which is left out.
+                    List<String> details = new ArrayList<>();
+                    JSONObject detailsMetadata = lockupMetadata.optJSONObject("metadata");
+                    JSONObject contentMetadata = detailsMetadata == null ? null
+                            : detailsMetadata.optJSONObject("contentMetadataViewModel");
+                    JSONArray rows = contentMetadata == null ? null : contentMetadata.optJSONArray("metadataRows");
+                    for (int rowIndex = 1, rowCount = rows == null ? 0 : rows.length(); rowIndex < rowCount; rowIndex++) {
+                        JSONObject row = rows.optJSONObject(rowIndex);
+                        JSONArray parts = row == null ? null : row.optJSONArray("metadataParts");
+                        if (parts == null) continue;
+
+                        for (int j = 0, partsLength = parts.length(); j < partsLength; j++) {
+                            JSONObject part = parts.optJSONObject(j);
+                            String text = part == null ? "" : textContent(part.optJSONObject("text"));
+                            if (!text.isEmpty()) {
+                                details.add(text);
+                            }
+                        }
+                    }
                     if (roundedViewCounts != null && !details.isEmpty() && details.get(0).contains("view")) {
                         roundedViewCounts.put(videoId, ChannelSearchRequest.parseViewCount("", details.get(0)));
                     }
@@ -274,32 +304,6 @@ public final class ChannelUploadsRequest {
                 return true;
             }
         }
-    }
-
-    @Nullable
-    private static JSONArray playlistItems(JSONObject json) {
-        JSONObject contents = json.optJSONObject("contents");
-        JSONObject twoColumn = contents == null ? null
-                : contents.optJSONObject("twoColumnBrowseResultsRenderer");
-        JSONArray tabs = twoColumn == null ? null : twoColumn.optJSONArray("tabs");
-        JSONObject tab = tabs == null ? null : tabs.optJSONObject(0);
-        JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
-        JSONObject content = tabRenderer == null ? null : tabRenderer.optJSONObject("content");
-        JSONObject sectionList = content == null ? null : content.optJSONObject("sectionListRenderer");
-        JSONArray sections = sectionList == null ? null : sectionList.optJSONArray("contents");
-        if (sections == null) {
-            return null;
-        }
-
-        for (int i = 0, length = sections.length(); i < length; i++) {
-            JSONObject section = sections.optJSONObject(i);
-            JSONObject itemSection = section == null ? null : section.optJSONObject("itemSectionRenderer");
-            JSONArray items = itemSection == null ? null : itemSection.optJSONArray("contents");
-            if (items != null) {
-                return items;
-            }
-        }
-        return null;
     }
 
     @Nullable
@@ -355,35 +359,6 @@ public final class ChannelUploadsRequest {
             }
         }
         return "";
-    }
-
-    /**
-     * @return The view count and the age of the upload, as shown under the title.
-     *         The first row is the channel name, which is left out.
-     */
-    private static List<String> parseDetails(JSONObject lockupMetadata) {
-        List<String> details = new ArrayList<>();
-        JSONObject metadata = lockupMetadata.optJSONObject("metadata");
-        JSONObject contentMetadata = metadata == null ? null : metadata.optJSONObject("contentMetadataViewModel");
-        JSONArray rows = contentMetadata == null ? null : contentMetadata.optJSONArray("metadataRows");
-        if (rows == null) {
-            return details;
-        }
-
-        for (int i = 1, length = rows.length(); i < length; i++) {
-            JSONObject row = rows.optJSONObject(i);
-            JSONArray parts = row == null ? null : row.optJSONArray("metadataParts");
-            if (parts == null) continue;
-
-            for (int j = 0, partsLength = parts.length(); j < partsLength; j++) {
-                JSONObject part = parts.optJSONObject(j);
-                String text = part == null ? "" : textContent(part.optJSONObject("text"));
-                if (!text.isEmpty()) {
-                    details.add(text);
-                }
-            }
-        }
-        return details;
     }
 
     private static String textContent(@Nullable JSONObject text) {

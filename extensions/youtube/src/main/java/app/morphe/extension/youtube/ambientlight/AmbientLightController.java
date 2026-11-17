@@ -693,7 +693,20 @@ public final class AmbientLightController {
         final int right = left + player.getWidth();
         final int bottom = top + player.getHeight();
         // While the page scrolls, the player gets shorter and crops the video, which keeps its size.
-        int[] videoBounds = videoInWindow(video);
+        int[] videoLocation = new int[2];
+        video.getLocationInWindow(videoLocation);
+        // Zooming the video scales a parent of the surface, and the surface keeps its size.
+        float scaleX = 1f;
+        float scaleY = 1f;
+        Object view = video;
+        while (view instanceof View scaled) {
+            scaleX *= scaled.getScaleX();
+            scaleY *= scaled.getScaleY();
+            view = scaled.getParent();
+        }
+        int[] videoBounds = new int[]{videoLocation[0], videoLocation[1],
+                videoLocation[0] + Math.round(video.getWidth() * scaleX),
+                videoLocation[1] + Math.round(video.getHeight() * scaleY)};
         videoBounds[0] = Math.max(videoBounds[0], left);
         videoBounds[1] = Math.max(videoBounds[1], top);
         videoBounds[2] = Math.min(videoBounds[2], right);
@@ -854,23 +867,6 @@ public final class AmbientLightController {
         scheduleTick();
     }
 
-    private static int[] videoInWindow(View video) {
-        int[] location = new int[2];
-        video.getLocationInWindow(location);
-        // Zooming the video scales a parent of the surface, and the surface keeps its size.
-        float scaleX = 1f;
-        float scaleY = 1f;
-        Object view = video;
-        while (view instanceof View scaled) {
-            scaleX *= scaled.getScaleX();
-            scaleY *= scaled.getScaleY();
-            view = scaled.getParent();
-        }
-        return new int[]{location[0], location[1],
-                location[0] + Math.round(video.getWidth() * scaleX),
-                location[1] + Math.round(video.getHeight() * scaleY)};
-    }
-
     private static void addRect(List<int[]> rects, int left, int top, int right, int bottom) {
         if (right - left >= MIN_RECT_SIZE && bottom - top >= MIN_RECT_SIZE) {
             rects.add(new int[]{left, top, right, bottom});
@@ -964,7 +960,11 @@ public final class AmbientLightController {
             final boolean failing = failures >= CAPTURE_FAILURES_BEFORE_BACKOFF;
             if (failing && !playing) return;
             // The surface that is read is not shown, so the video can be on another surface by now.
-            if (video.getAlpha() == 0 || (failing && failures % CAPTURE_FAILURES_BEFORE_BACKOFF == 0)) findVideoAgain();
+            if (video.getAlpha() == 0 || (failing && failures % CAPTURE_FAILURES_BEFORE_BACKOFF == 0)) {
+                // YouTube can replace the video surface while the old one stays attached.
+                ViewGroup overlay = overlayRef.get();
+                if (overlay != null && overlay.isAttachedToWindow() && findPlayer(overlay)) updateLayout();
+            }
 
             final long interval = failing ? FAILED_CAPTURE_INTERVAL_MS
                     : stillCaptures.get() >= STILL_CAPTURES_BEFORE_SLOWDOWN ? STILL_CAPTURE_INTERVAL_MS : CAPTURE_INTERVAL_MS;
@@ -1035,14 +1035,6 @@ public final class AmbientLightController {
     private static void onCaptureFailed() {
         captureFailures.incrementAndGet();
         captureInFlight = false;
-    }
-
-    /**
-     * YouTube can replace the video surface while the old one stays attached.
-     */
-    private static void findVideoAgain() {
-        ViewGroup overlay = overlayRef.get();
-        if (overlay != null && overlay.isAttachedToWindow() && findPlayer(overlay)) updateLayout();
     }
 
     /**
@@ -1187,7 +1179,25 @@ public final class AmbientLightController {
                 float[] shown = encodedLight;
                 encodedLight = presentedLight;
                 presentedLight = shown;
-                updateLightBitmap(height);
+                // The bitmap has more than 8 bits per channel, as even a blur over dozens
+                // of pixels leaves visible color blotches once the light is rounded to 8 bits.
+                // The window can still be drawing the last bitmap.
+                final int index = nextLightBitmap;
+                nextLightBitmap = 1 - index;
+                Bitmap lightBitmap = lightBitmaps[index];
+                if (lightBitmap == null || lightBitmap.getHeight() != height) {
+                    lightBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGBA_F16);
+                    lightBitmaps[index] = lightBitmap;
+                }
+                if (halfFloats.length != width * height * BITMAP_CHANNELS) {
+                    halfFloats = new short[width * height * BITMAP_CHANNELS];
+                    AmbientLightMath.fillAlpha(halfFloats);
+                }
+                AmbientLightMath.toHalfFloats(presentedLight, halfFloats);
+                lightBitmap.copyPixelsFromBuffer(ShortBuffer.wrap(halfFloats));
+                // A shader keeps the pixels the bitmap had when the shader was created.
+                lightPaint.setShader(new BitmapShader(lightBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+                newestLightBitmap = lightBitmap;
             }
             litLayout = current;
             if (present(current)) {
@@ -1199,31 +1209,6 @@ public final class AmbientLightController {
         } catch (Exception ex) {
             Logger.printException(() -> "process failure", ex);
         }
-    }
-
-    /**
-     * Worker thread. The bitmap has more than 8 bits per channel, as even a blur over dozens
-     * of pixels leaves visible color blotches once the light is rounded to 8 bits.
-     */
-    private static void updateLightBitmap(int height) {
-        final int width = LIGHT_COLUMNS;
-        // The window can still be drawing the last bitmap.
-        final int index = nextLightBitmap;
-        nextLightBitmap = 1 - index;
-        Bitmap bitmap = lightBitmaps[index];
-        if (bitmap == null || bitmap.getHeight() != height) {
-            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGBA_F16);
-            lightBitmaps[index] = bitmap;
-        }
-        if (halfFloats.length != width * height * BITMAP_CHANNELS) {
-            halfFloats = new short[width * height * BITMAP_CHANNELS];
-            AmbientLightMath.fillAlpha(halfFloats);
-        }
-        AmbientLightMath.toHalfFloats(presentedLight, halfFloats);
-        bitmap.copyPixelsFromBuffer(ShortBuffer.wrap(halfFloats));
-        // A shader keeps the pixels the bitmap had when the shader was created.
-        lightPaint.setShader(new BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
-        newestLightBitmap = bitmap;
     }
 
     /**
@@ -1627,18 +1612,6 @@ public final class AmbientLightController {
     }
 
     /**
-     * On some devices the player holds two surfaces of the same size, and YouTube shows only one
-     * of them. The other one is fully transparent and never gets a picture.
-     *
-     * @return If the surface is a better match for the video than the best one found so far.
-     */
-    private static boolean isBetterSurface(View surface, long area, View best) {
-        final boolean shown = surface.getAlpha() > 0;
-        if (shown != best.getAlpha() > 0) return shown;
-        return area > (long) best.getWidth() * best.getHeight();
-    }
-
-    /**
      * @return If the player that was found before is still on screen.
      */
     private static boolean playerIsShown() {
@@ -1657,8 +1630,17 @@ public final class AmbientLightController {
             final boolean contains = x >= location[0] && x <= location[0] + view.getWidth()
                     && y >= location[1] && y <= location[1] + view.getHeight();
             final long area = (long) view.getWidth() * view.getHeight();
-            if (contains && area > 0 && (best == null || isBetterSurface(view, area, best))) {
-                best = view;
+            if (contains && area > 0) {
+                if (best == null) {
+                    best = view;
+                } else {
+                    // On some devices the player holds two surfaces of the same size, and YouTube shows only one
+                    // of them. The other one is fully transparent and never gets a picture.
+                    final boolean shown = view.getAlpha() > 0;
+                    if (shown != best.getAlpha() > 0 ? shown : area > (long) best.getWidth() * best.getHeight()) {
+                        best = view;
+                    }
+                }
             }
         }
         if (view instanceof ViewGroup group) {

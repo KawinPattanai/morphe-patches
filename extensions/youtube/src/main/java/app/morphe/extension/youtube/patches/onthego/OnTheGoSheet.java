@@ -493,7 +493,28 @@ final class OnTheGoSheet {
 
             @Override
             public void onViewDetachedFromWindow(@NonNull View view) {
-                onPanelRemoved(root);
+                // The panel is closed, or the activity is closed.
+                if (!showing) {
+                    return;
+                }
+                showing = false;
+                try {
+                    OnTheGoPatch.setOnTheGoActive(false);
+                } catch (Exception ex) {
+                    Logger.printException(() -> "Could not turn off On-the-go media controls", ex);
+                }
+                handler.removeCallbacks(updater);
+                root.removeOnLayoutChangeListener(rootLayoutListener);
+                PlayerType.getOnChange().removeObserver(playerTypeObserver);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    unregisterBackCallback();
+                }
+                if (customThumb instanceof Animatable animatable) {
+                    animatable.stop();
+                }
+                if (current != null && current.get() == OnTheGoSheet.this) {
+                    current = null;
+                }
             }
         });
         root.addView(panel, new FrameLayout.LayoutParams(
@@ -546,33 +567,6 @@ final class OnTheGoSheet {
         panel.animate().cancel();
         if (panel.getParent() instanceof ViewGroup parent) {
             parent.removeView(panel);
-        }
-    }
-
-    /**
-     * Called when the panel is closed, or when the activity is closed.
-     */
-    private void onPanelRemoved(ViewGroup root) {
-        if (!showing) {
-            return;
-        }
-        showing = false;
-        try {
-            OnTheGoPatch.setOnTheGoActive(false);
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not turn off On-the-go media controls", ex);
-        }
-        handler.removeCallbacks(updater);
-        root.removeOnLayoutChangeListener(rootLayoutListener);
-        PlayerType.getOnChange().removeObserver(playerTypeObserver);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            unregisterBackCallback();
-        }
-        if (customThumb instanceof Animatable animatable) {
-            animatable.stop();
-        }
-        if (current != null && current.get() == this) {
-            current = null;
         }
     }
 

@@ -482,7 +482,29 @@ public final class MwebSiteSession {
             Utils.runOnMainThread(() -> {
                 Page page = null;
                 try {
-                    page = takePage();
+                    // Main thread only.
+                    mainHandler.removeCallbacks(closeIdlePages);
+                    Page takenPage;
+                    synchronized (freePages) {
+                        // The renderer is shared by all pages, so pages that are not used can be gone as well.
+                        while ((takenPage = freePages.poll()) != null && takenPage.rendererGone) {
+                            takenPage.close();
+                        }
+                    }
+                    if (takenPage == null) {
+                        Page warmUp = warmUpPage.get();
+                        if (warmUp != null && !warmUp.rendererGone && warmUpPage.compareAndSet(warmUp, null)) {
+                            // The page made while the app starts, which loads the video in its player
+                            // even if BotGuard has not made its first PoToken yet.
+                            takenPage = warmUp;
+                        }
+                    }
+                    if (takenPage == null) {
+                        Logger.printDebug(() -> "Website session: making a new page");
+                        takenPage = new Page(generation.get());
+                    }
+                    takenPage.attachToCurrentActivity();
+                    page = takenPage;
                     pageLoadFuture.complete(new PageLoad(page, page.load(videoId)));
                 } catch (Exception ex) {
                     if (page != null) {
@@ -533,34 +555,6 @@ public final class MwebSiteSession {
             }
             Logger.printDebug(() -> "Website session: opening another page for " + videoId);
         }
-    }
-
-    /**
-     * Main thread only.
-     */
-    private static Page takePage() {
-        mainHandler.removeCallbacks(closeIdlePages);
-        Page page;
-        synchronized (freePages) {
-            // The renderer is shared by all pages, so pages that are not used can be gone as well.
-            while ((page = freePages.poll()) != null && page.rendererGone) {
-                page.close();
-            }
-        }
-        if (page == null) {
-            Page warmUp = warmUpPage.get();
-            if (warmUp != null && !warmUp.rendererGone && warmUpPage.compareAndSet(warmUp, null)) {
-                // The page made while the app starts, which loads the video in its player
-                // even if BotGuard has not made its first PoToken yet.
-                page = warmUp;
-            }
-        }
-        if (page == null) {
-            Logger.printDebug(() -> "Website session: making a new page");
-            page = new Page(generation.get());
-        }
-        page.attachToCurrentActivity();
-        return page;
     }
 
     /**

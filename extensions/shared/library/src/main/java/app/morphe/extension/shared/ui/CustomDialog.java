@@ -148,131 +148,77 @@ public class CustomDialog {
 
         // Create main layout.
         mainLayout = createMainLayout();
-        addTitle(title);
-        addContent(message, editText);
-        addButtons(okButtonText, onOkClick, onCancelClick, neutralButtonText,
-                onNeutralClick, dismissDialogOnNeutralClick, accentOkButton);
+        // Adds a title to the dialog if provided.
+        if (!Utils.isEmpty(title)) {
+            TextView titleView = new TextView(context);
+            titleView.setText(title);
+            titleView.setTypeface(Typeface.DEFAULT_BOLD);
+            titleView.setTextSize(18);
+            titleView.setTextColor(ThemeUtils.getDialogTitleColor());
+            titleView.setGravity(Gravity.CENTER);
 
-        // Set dialog content and window attributes.
-        dialog.setContentView(mainLayout);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            Utils.setDialogWindowParameters(window, Gravity.CENTER, 0, 90, false);
-        }
-    }
-
-    /**
-     * Creates the main layout for the dialog with vertical orientation and rounded corners.
-     *
-     * @return The configured LinearLayout for the dialog.
-     */
-    private LinearLayout createMainLayout() {
-        LinearLayout layout = new LinearLayout(context);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(Dim.dp24, Dim.dp16, Dim.dp24, Dim.dp24);
-        layout.setBackground(createRoundedBackground(28, ThemeUtils.getDialogBackgroundColor()));
-
-        return layout;
-    }
-
-    /**
-     * Adds a title to the dialog if provided.
-     *
-     * @param title The title text to display.
-     */
-    private void addTitle(CharSequence title) {
-        if (Utils.isEmpty(title)) return;
-
-        TextView titleView = new TextView(context);
-        titleView.setText(title);
-        titleView.setTypeface(Typeface.DEFAULT_BOLD);
-        titleView.setTextSize(18);
-        titleView.setTextColor(ThemeUtils.getDialogTitleColor());
-        titleView.setGravity(Gravity.CENTER);
-
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.setMargins(0, 0, 0, Dim.dp16);
-        titleView.setLayoutParams(params);
-
-        mainLayout.addView(titleView);
-    }
-
-    /**
-     * Adds a message or EditText to the dialog within a ScrollView.
-     *
-     * @param message  The message text to display (supports Spanned for HTML), or null if replaced by EditText.
-     * @param editText The EditText to include, or null if no EditText is needed.
-     */
-    private void addContent(CharSequence message, @Nullable EditText editText) {
-        // Create content container (message/EditText) inside a ScrollView only if message or editText is provided.
-        if (message == null && editText == null) return;
-
-        ScrollView scrollView = new ScrollView(context);
-        // Disable the vertical scrollbar.
-        scrollView.setVerticalScrollBarEnabled(false);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-
-        LinearLayout contentContainer = new LinearLayout(context);
-        contentContainer.setOrientation(LinearLayout.VERTICAL);
-        scrollView.addView(contentContainer);
-
-        // EditText (if provided).
-        if (editText != null) {
-            scrollView.setBackground(createRoundedBackground(10, ThemeUtils.getEditTextBackground()));
-            scrollView.setPadding(Dim.dp8, Dim.dp8, Dim.dp8, Dim.dp8);
-            scrollView.setClipToOutline(true);
-
-            // Remove EditText from its current parent, if any.
-            ViewGroup parent = (ViewGroup) editText.getParent();
-            if (parent != null) parent.removeView(editText);
-            // Style the EditText to match the dialog theme.
-            editText.setTextColor(ThemeUtils.getDialogTextColor());
-            editText.setBackgroundColor(Color.TRANSPARENT);
-            editText.setPadding(0, 0, 0, 0);
-            contentContainer.addView(editText, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
-            // Message (if not replaced by EditText).
-        } else {
-            TextView messageView = new TextView(context);
-            // Supports Spanned (HTML).
-            messageView.setText(message);
-            messageView.setTextSize(16);
-            messageView.setTextColor(ThemeUtils.getDialogTextColor());
-            // Enable HTML link clicking if the message contains links.
-            if (message instanceof Spanned) {
-                messageView.setMovementMethod(LinkMovementMethod.getInstance());
-            }
-            contentContainer.addView(messageView, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.setMargins(0, 0, 0, Dim.dp16);
+            titleView.setLayoutParams(params);
+
+            mainLayout.addView(titleView);
         }
+        // Adds a message or EditText to the dialog within a ScrollView.
+        // Create content container (message/EditText) inside a ScrollView only if message or editText is provided.
+        if (message != null || editText != null) {
+            ScrollView scrollView = new ScrollView(context);
+            // Disable the vertical scrollbar.
+            scrollView.setVerticalScrollBarEnabled(false);
+            scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
 
-        // Weight to take available space.
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1.0f);
-        scrollView.setLayoutParams(params);
-        // Add ScrollView to main layout only if content exist.
-        mainLayout.addView(scrollView);
-    }
+            LinearLayout contentContainer = new LinearLayout(context);
+            contentContainer.setOrientation(LinearLayout.VERTICAL);
+            scrollView.addView(contentContainer);
 
-    /**
-     * Adds buttons to the dialog, arranging them dynamically based on their widths.
-     *
-     * @param okButtonText                OK button text, or null to use the default "OK" string.
-     * @param onOkClick                   Action for the OK button click.
-     * @param onCancelClick               Action for the Cancel button click, or null if no Cancel button.
-     * @param neutralButtonText           Neutral button text, or null if no Neutral button.
-     * @param onNeutralClick              Action for the Neutral button click, or null if no Neutral button.
-     * @param dismissDialogOnNeutralClick If the dialog should dismiss on Neutral button click.
-     */
-    private void addButtons(CharSequence okButtonText, Runnable onOkClick, Runnable onCancelClick,
-                            @Nullable CharSequence neutralButtonText, @Nullable Runnable onNeutralClick,
-                            boolean dismissDialogOnNeutralClick, boolean accentOkButton) {
+            // EditText (if provided).
+            if (editText != null) {
+                scrollView.setBackground(createRoundedBackground(10, ThemeUtils.getEditTextBackground()));
+                scrollView.setPadding(Dim.dp8, Dim.dp8, Dim.dp8, Dim.dp8);
+                scrollView.setClipToOutline(true);
+
+                // Remove EditText from its current parent, if any.
+                ViewGroup parent = (ViewGroup) editText.getParent();
+                if (parent != null) parent.removeView(editText);
+                // Style the EditText to match the dialog theme.
+                editText.setTextColor(ThemeUtils.getDialogTextColor());
+                editText.setBackgroundColor(Color.TRANSPARENT);
+                editText.setPadding(0, 0, 0, 0);
+                contentContainer.addView(editText, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
+                // Message (if not replaced by EditText).
+            } else {
+                TextView messageView = new TextView(context);
+                // Supports Spanned (HTML).
+                messageView.setText(message);
+                messageView.setTextSize(16);
+                messageView.setTextColor(ThemeUtils.getDialogTextColor());
+                // Enable HTML link clicking if the message contains links.
+                if (message instanceof Spanned) {
+                    messageView.setMovementMethod(LinkMovementMethod.getInstance());
+                }
+                contentContainer.addView(messageView, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+
+            // Weight to take available space.
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1.0f);
+            scrollView.setLayoutParams(params);
+            // Add ScrollView to main layout only if content exist.
+            mainLayout.addView(scrollView);
+        }
+        // Adds buttons to the dialog, arranging them dynamically based on their widths.
         // Button container.
         LinearLayout buttonContainer = new LinearLayout(context);
         buttonContainer.setOrientation(LinearLayout.VERTICAL);
@@ -400,6 +346,27 @@ public class CustomDialog {
             }
         }
         mainLayout.addView(buttonContainer);
+
+        // Set dialog content and window attributes.
+        dialog.setContentView(mainLayout);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            Utils.setDialogWindowParameters(window, Gravity.CENTER, 0, 90, false);
+        }
+    }
+
+    /**
+     * Creates the main layout for the dialog with vertical orientation and rounded corners.
+     *
+     * @return The configured LinearLayout for the dialog.
+     */
+    private LinearLayout createMainLayout() {
+        LinearLayout layout = new LinearLayout(context);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(Dim.dp24, Dim.dp16, Dim.dp24, Dim.dp24);
+        layout.setBackground(createRoundedBackground(28, ThemeUtils.getDialogBackgroundColor()));
+
+        return layout;
     }
 
     /**

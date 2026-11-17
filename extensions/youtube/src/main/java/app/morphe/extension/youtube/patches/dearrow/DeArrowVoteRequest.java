@@ -120,44 +120,37 @@ final class DeArrowVoteRequest {
         }
 
         JSONObject json = Requester.parseJSONObjectAndDisconnect(connection);
-        return new Branding(parseTitles(json.optJSONArray("titles")),
-                parseThumbnails(json.optJSONArray("thumbnails")));
-    }
-
-    private static List<TitleSubmission> parseTitles(@Nullable JSONArray titles) throws JSONException {
-        if (titles == null) {
-            return Collections.emptyList();
-        }
-        final int length = titles.length();
-        List<TitleSubmission> submissions = new ArrayList<>(length);
-        for (int i = 0; i < length; i++) {
-            JSONObject title = titles.getJSONObject(i);
-            String text = title.optString("title");
-            if (!text.isEmpty()) {
-                submissions.add(new TitleSubmission(text, title.optBoolean("original"),
-                        title.optInt("votes"), title.optBoolean("locked")));
+        List<TitleSubmission> titleSubmissions = Collections.emptyList();
+        JSONArray titles = json.optJSONArray("titles");
+        if (titles != null) {
+            final int length = titles.length();
+            titleSubmissions = new ArrayList<>(length);
+            for (int i = 0; i < length; i++) {
+                JSONObject title = titles.getJSONObject(i);
+                String text = title.optString("title");
+                if (!text.isEmpty()) {
+                    titleSubmissions.add(new TitleSubmission(text, title.optBoolean("original"),
+                            title.optInt("votes"), title.optBoolean("locked")));
+                }
             }
         }
-        return submissions;
-    }
-
-    private static List<ThumbnailSubmission> parseThumbnails(@Nullable JSONArray thumbnails) throws JSONException {
-        if (thumbnails == null) {
-            return Collections.emptyList();
-        }
-        final int length = thumbnails.length();
-        List<ThumbnailSubmission> submissions = new ArrayList<>(length);
-        for (int i = 0; i < length; i++) {
-            JSONObject thumbnail = thumbnails.getJSONObject(i);
-            final boolean original = thumbnail.optBoolean("original");
-            final double timestamp = thumbnail.optDouble("timestamp");
-            // A thumbnail that is not the original always has a time.
-            if (original || !Double.isNaN(timestamp)) {
-                submissions.add(new ThumbnailSubmission(timestamp, original,
-                        thumbnail.optInt("votes"), thumbnail.optBoolean("locked")));
+        List<ThumbnailSubmission> thumbnailSubmissions = Collections.emptyList();
+        JSONArray thumbnails = json.optJSONArray("thumbnails");
+        if (thumbnails != null) {
+            final int length = thumbnails.length();
+            thumbnailSubmissions = new ArrayList<>(length);
+            for (int i = 0; i < length; i++) {
+                JSONObject thumbnail = thumbnails.getJSONObject(i);
+                final boolean original = thumbnail.optBoolean("original");
+                final double timestamp = thumbnail.optDouble("timestamp");
+                // A thumbnail that is not the original always has a time.
+                if (original || !Double.isNaN(timestamp)) {
+                    thumbnailSubmissions.add(new ThumbnailSubmission(timestamp, original,
+                            thumbnail.optInt("votes"), thumbnail.optBoolean("locked")));
+                }
             }
         }
-        return submissions;
+        return new Branding(titleSubmissions, thumbnailSubmissions);
     }
 
     /**

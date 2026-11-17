@@ -494,7 +494,19 @@ public class ThemeColorPatch {
             }
             splashScreenThemeApplied = true;
 
-            final int index = splashScreenThemeIndex(isDarkTheme());
+            // The index of the theme that draws the splash screen of the selected color.
+            // A color the user picked is not known while patching and has no theme of its own, so the
+            // palette is used for it, which has one for every value it can be quantized to.
+            final boolean darkTheme = isDarkTheme();
+            ThemeColor themeColor = darkTheme
+                    ? SharedYouTubeSettings.THEME_COLOR_DARK.get()
+                    : SharedYouTubeSettings.THEME_COLOR_LIGHT.get();
+            final int index = themeColor.isCustom()
+                    ? (darkTheme ? DARK_INDEX_OFFSET : LIGHT_INDEX_OFFSET) + PALETTE_INDEX_OFFSET
+                            + get8BitColorIndex(darkTheme
+                                    ? SharedYouTubeSettings.THEME_COLOR_DARK_CUSTOM
+                                    : SharedYouTubeSettings.THEME_COLOR_LIGHT_CUSTOM, darkTheme)
+                    : (darkTheme ? darkConfigValue : lightConfigValue);
             final int themeId = ResourceUtils.getIdentifier(
                     ResourceType.STYLE, SPLASH_THEME_NAME + index);
 
@@ -518,29 +530,6 @@ public class ThemeColorPatch {
         return index < 0
                 ? 0
                 : ResourceUtils.getIdentifier(ResourceType.STYLE, SPLASH_THEME_NAME + index);
-    }
-
-    /**
-     * The index of the theme that draws the splash screen of the selected color.
-     * <p>
-     * A color the user picked is not known while patching and has no theme of its own, so the
-     * palette is used for it, which has one for every value it can be quantized to.
-     */
-    private static int splashScreenThemeIndex(boolean dark) {
-        ThemeColor color = dark
-                ? SharedYouTubeSettings.THEME_COLOR_DARK.get()
-                : SharedYouTubeSettings.THEME_COLOR_LIGHT.get();
-
-        if (!color.isCustom()) {
-            return dark ? darkConfigValue : lightConfigValue;
-        }
-
-        StringSetting setting = dark
-                ? SharedYouTubeSettings.THEME_COLOR_DARK_CUSTOM
-                : SharedYouTubeSettings.THEME_COLOR_LIGHT_CUSTOM;
-
-        return (dark ? DARK_INDEX_OFFSET : LIGHT_INDEX_OFFSET)
-                + PALETTE_INDEX_OFFSET + get8BitColorIndex(setting, dark);
     }
 
     /**
@@ -818,7 +807,24 @@ public class ThemeColorPatch {
 
     private static int get8BitColorIndex(StringSetting colorSetting, boolean dark) {
         final int color = customColor(colorSetting);
-        float[] targetLab = rgbToOklab(color);
+        // The Oklab color of the custom color.
+        double r = linearizeSrgb(((color >> 16) & 0xFF) / 255.0);
+        double g = linearizeSrgb(((color >> 8) & 0xFF) / 255.0);
+        double b = linearizeSrgb((color & 0xFF) / 255.0);
+
+        final double lCone = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+        final double mCone = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+        final double sCone = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+
+        final double lCubeRoot = Math.cbrt(lCone);
+        final double mCubeRoot = Math.cbrt(mCone);
+        final double sCubeRoot = Math.cbrt(sCone);
+
+        float[] targetLab = new float[]{
+                (float) (0.2104542553 * lCubeRoot + 0.7936177850 * mCubeRoot - 0.0040720468 * sCubeRoot),
+                (float) (1.9779984951 * lCubeRoot - 2.4285922050 * mCubeRoot + 0.4505937099 * sCubeRoot),
+                (float) (0.0259040371 * lCubeRoot + 0.7827717662 * mCubeRoot - 0.8086757660 * sCubeRoot)
+        };
 
         float[] lLevels = dark ? PALETTE_L_LEVELS_DARK : PALETTE_L_LEVELS_LIGHT;
 
@@ -850,26 +856,6 @@ public class ThemeColorPatch {
         }
 
         return bestIndex;
-    }
-
-    private static float[] rgbToOklab(int color) {
-        double r = linearizeSrgb(((color >> 16) & 0xFF) / 255.0);
-        double g = linearizeSrgb(((color >> 8) & 0xFF) / 255.0);
-        double b = linearizeSrgb((color & 0xFF) / 255.0);
-
-        final double l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
-        final double m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
-        final double s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
-
-        final double lCubeRoot = Math.cbrt(l);
-        final double mCubeRoot = Math.cbrt(m);
-        final double sCubeRoot = Math.cbrt(s);
-
-        return new float[]{
-                (float) (0.2104542553 * lCubeRoot + 0.7936177850 * mCubeRoot - 0.0040720468 * sCubeRoot),
-                (float) (1.9779984951 * lCubeRoot - 2.4285922050 * mCubeRoot + 0.4505937099 * sCubeRoot),
-                (float) (0.0259040371 * lCubeRoot + 0.7827717662 * mCubeRoot - 0.8086757660 * sCubeRoot)
-        };
     }
 
     private static double linearizeSrgb(double value) {

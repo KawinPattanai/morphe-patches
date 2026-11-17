@@ -387,8 +387,16 @@ public final class LiveChatTranslatePatch {
 
             final int configHash = configHash();
             RowResult cached = rowResults.get(text);
-            if (cached != null && cached.configHash() == configHash && !isResolvedPending(cached.text())) {
-                return cached.text();
+            if (cached != null && cached.configHash() == configHash) {
+                CharSequence cachedText = cached.text();
+                boolean resolvedPending = false;
+                if (cachedText instanceof Spanned spanned) {
+                    PendingChatSpan[] spans = spanned.getSpans(0, spanned.length(), PendingChatSpan.class);
+                    resolvedPending = spans.length > 0 && spans[0].isResolved();
+                }
+                if (!resolvedPending) {
+                    return cachedText;
+                }
             }
 
             CharSequence result = loadRow(text, configHash);
@@ -401,14 +409,6 @@ public final class LiveChatTranslatePatch {
             Logger.printException(() -> "onLithoTextLoaded failure", ex);
             return text;
         }
-    }
-
-    private static boolean isResolvedPending(CharSequence text) {
-        if (text instanceof Spanned spanned) {
-            PendingChatSpan[] spans = spanned.getSpans(0, spanned.length(), PendingChatSpan.class);
-            return spans.length > 0 && spans[0].isResolved();
-        }
-        return false;
     }
 
     /**
@@ -431,11 +431,104 @@ public final class LiveChatTranslatePatch {
         final String message;
         if (rowSpan == null) {
             originalText = text;
-            messageStart = text instanceof Spanned spanned ? findMessageStart(spanned) : 0;
+            // Finds where the message starts in a row, which is the author name in a medium font,
+            // then badges and spacers as ReplacementSpans, then the message in a regular font.
+            // The message can end with custom emojis, which are not covered by the font span of the words.
+            // The start is -1 if the row has no message.
+            if (text instanceof Spanned row) {
+                findMessageStart: {
+                    final int length = row.length();
+
+                    int authorEnd = -1;
+                    int regularStart = -1;
+                    int plainStart = -1;
+                    for (TypefaceSpan typeface : row.getSpans(0, length, TypefaceSpan.class)) {
+                        final int start = row.getSpanStart(typeface);
+                        final int end = row.getSpanEnd(typeface);
+                        final String family = typeface.getFamily();
+                        final boolean isRegular = family != null && family.contains("regular");
+                        // Rows with custom emojis use the plain font family instead of the regular one.
+                        final boolean isPlain = "sans-serif".equals(family);
+
+                        if (start == 0) {
+                            // The whole text is the message, such as in a Super Chat card
+                            // where the author name and the amount are separate components.
+                            if (isRegular || isPlain) {
+                                messageStart = 0;
+                                break findMessageStart;
+                            }
+                            if (end < length && end > authorEnd) {
+                                authorEnd = end;
+                            }
+                        } else if (isRegular) {
+                            if (regularStart < 0 || start < regularStart) {
+                                regularStart = start;
+                            }
+                        } else if (isPlain && plainStart < 0) {
+                            plainStart = start;
+                        }
+                    }
+
+                    final int bodyStart = regularStart > 0 ? regularStart : plainStart;
+                    if (bodyStart <= 0 && authorEnd <= 0) {
+                        // No author and message structure, such as gift and membership notices.
+                        messageStart = hasWords(row) ? 0 : -1;
+                        break findMessageStart;
+                    }
+
+                    final ReplacementSpan[] decorations = row.getSpans(0, length, ReplacementSpan.class);
+                    int decoratedStart = bodyStart > 0 ? bodyStart : authorEnd;
+                    while (decoratedStart < length) {
+                        final int decorationEnd = findReplacementEnd(row, decorations, decoratedStart);
+                        if (decorationEnd > decoratedStart) {
+                            decoratedStart = decorationEnd;
+                        } else if (row.charAt(decoratedStart) == ' ') {
+                            decoratedStart++;
+                        } else {
+                            break;
+                        }
+                    }
+                    // An author without a message after it must not be translated as if it were the message.
+                    messageStart = decoratedStart < length ? decoratedStart : -1;
+                }
+            } else {
+                messageStart = 0;
+            }
             if (messageStart < 0) {
                 return text;
             }
-            message = extractMessage(text, messageStart);
+            // The words of the message, without custom emojis that are drawn with
+            // ReplacementSpans, emote shortcodes and Unicode emojis.
+            extractMessage: {
+                final String fullMessage = text.subSequence(messageStart, text.length()).toString();
+                if (!(text instanceof Spanned spanned)) {
+                    message = stripEmojis(fullMessage);
+                    break extractMessage;
+                }
+
+                final int length = text.length();
+                final ReplacementSpan[] emojis = spanned.getSpans(messageStart, length, ReplacementSpan.class);
+                if (emojis.length == 0) {
+                    message = stripEmojis(fullMessage);
+                    break extractMessage;
+                }
+
+                StringBuilder words = new StringBuilder(length - messageStart);
+                int i = messageStart;
+                while (i < length) {
+                    final int emojiEnd = findReplacementEnd(spanned, emojis, i);
+                    if (emojiEnd > i) {
+                        // A space keeps the words around the emoji apart.
+                        words.append(' ');
+                        i = emojiEnd;
+                    } else {
+                        words.append(text.charAt(i++));
+                    }
+                }
+                final String stripped = stripEmojis(words.toString());
+                // Emoji spans can cover more than the emoji. If they cover everything, the words are in the text.
+                message = hasLetter(stripped) ? stripped : stripEmojis(fullMessage);
+            }
             boolean shouldTranslate;
             shouldTranslate: {
                 boolean isKnownMessage = messageStart > 0;
@@ -559,56 +652,6 @@ public final class LiveChatTranslatePatch {
     }
 
     /**
-     * Finds where the message starts in a row, which is the author name in a medium font,
-     * then badges and spacers as {@link ReplacementSpan}s, then the message in a regular font.
-     * The message can end with custom emojis, which are not covered by the font span of the words.
-     *
-     * @return The start of the message, or -1 if the row has no message.
-     */
-    private static int findMessageStart(Spanned row) {
-        final int length = row.length();
-
-        int authorEnd = -1;
-        int regularStart = -1;
-        int plainStart = -1;
-        for (TypefaceSpan typeface : row.getSpans(0, length, TypefaceSpan.class)) {
-            final int start = row.getSpanStart(typeface);
-            final int end = row.getSpanEnd(typeface);
-            final String family = typeface.getFamily();
-            final boolean isRegular = family != null && family.contains("regular");
-            // Rows with custom emojis use the plain font family instead of the regular one.
-            final boolean isPlain = "sans-serif".equals(family);
-
-            if (start == 0) {
-                // The whole text is the message, such as in a Super Chat card
-                // where the author name and the amount are separate components.
-                if (isRegular || isPlain) {
-                    return 0;
-                }
-                if (end < length && end > authorEnd) {
-                    authorEnd = end;
-                }
-            } else if (isRegular) {
-                if (regularStart < 0 || start < regularStart) {
-                    regularStart = start;
-                }
-            } else if (isPlain && plainStart < 0) {
-                plainStart = start;
-            }
-        }
-
-        final int bodyStart = regularStart > 0 ? regularStart : plainStart;
-        if (bodyStart <= 0 && authorEnd <= 0) {
-            // No author and message structure, such as gift and membership notices.
-            return hasWords(row) ? 0 : -1;
-        }
-
-        final int messageStart = skipLeadingDecorations(row, bodyStart > 0 ? bodyStart : authorEnd);
-        // An author without a message after it must not be translated as if it were the message.
-        return messageStart < length ? messageStart : -1;
-    }
-
-    /**
      * @return If a row without an author and message structure is a notice or a message,
      *         and not a lone author name or badge.
      */
@@ -628,23 +671,6 @@ public final class LiveChatTranslatePatch {
                 || EMOTE_SHORTCODE.matcher(row).find();
     }
 
-    private static int skipLeadingDecorations(Spanned row, int start) {
-        final int length = row.length();
-        final ReplacementSpan[] decorations = row.getSpans(0, length, ReplacementSpan.class);
-        int position = start;
-        while (position < length) {
-            final int decorationEnd = findReplacementEnd(row, decorations, position);
-            if (decorationEnd > position) {
-                position = decorationEnd;
-            } else if (row.charAt(position) == ' ') {
-                position++;
-            } else {
-                break;
-            }
-        }
-        return position;
-    }
-
     /**
      * @return The end of the spans that cover the position, or -1 if none do.
      */
@@ -656,39 +682,6 @@ public final class LiveChatTranslatePatch {
             }
         }
         return end;
-    }
-
-    /**
-     * @return The words of the message, without custom emojis that are drawn with
-     *         {@link ReplacementSpan}s, emote shortcodes and Unicode emojis.
-     */
-    private static String extractMessage(CharSequence row, int messageStart) {
-        final String message = row.subSequence(messageStart, row.length()).toString();
-        if (!(row instanceof Spanned spanned)) {
-            return stripEmojis(message);
-        }
-
-        final int length = row.length();
-        final ReplacementSpan[] emojis = spanned.getSpans(messageStart, length, ReplacementSpan.class);
-        if (emojis.length == 0) {
-            return stripEmojis(message);
-        }
-
-        StringBuilder words = new StringBuilder(length - messageStart);
-        int i = messageStart;
-        while (i < length) {
-            final int emojiEnd = findReplacementEnd(spanned, emojis, i);
-            if (emojiEnd > i) {
-                // A space keeps the words around the emoji apart.
-                words.append(' ');
-                i = emojiEnd;
-            } else {
-                words.append(row.charAt(i++));
-            }
-        }
-        final String stripped = stripEmojis(words.toString());
-        // Emoji spans can cover more than the emoji. If they cover everything, the words are in the text.
-        return hasLetter(stripped) ? stripped : stripEmojis(message);
     }
 
     private static String stripEmojis(String text) {
@@ -806,12 +799,28 @@ public final class LiveChatTranslatePatch {
                                     String spanLanguage = span.language;
                                     String spanKey = span.key;
                                     try {
-                                        waitForRequestSlot();
+                                        final long slotCheckTime = System.currentTimeMillis();
+                                        final long requestTime;
+                                        synchronized (requestLock) {
+                                            requestTime = Math.max(slotCheckTime, nextRequestTime);
+                                            nextRequestTime = requestTime + MIN_REQUEST_INTERVAL_MILLISECONDS;
+                                        }
+                                        if (requestTime > slotCheckTime) {
+                                            Thread.sleep(requestTime - slotCheckTime);
+                                        }
                                         final TextTranslator.Translation result = translate(spanMessage, spanLanguage);
                                         final String translation = result.text().trim();
                                         final String detected = result.detectedLanguage();
-                                        final boolean isTranslated = !translation.isEmpty() && !translation.equalsIgnoreCase(spanMessage)
-                                                && (detected == null || !(detected.equalsIgnoreCase(spanLanguage) || isExcludedLanguage(detected)));
+                                        boolean isTranslated = !translation.isEmpty() && !translation.equalsIgnoreCase(spanMessage)
+                                                && (detected == null || !detected.equalsIgnoreCase(spanLanguage));
+                                        if (isTranslated && detected != null) {
+                                            for (String excluded : Settings.LIVE_CHAT_TRANSLATE_EXCLUDE.get().split(",")) {
+                                                if (excluded.trim().equalsIgnoreCase(detected)) {
+                                                    isTranslated = false;
+                                                    break;
+                                                }
+                                            }
+                                        }
                                         translations.put(spanKey, isTranslated ? translation : NOT_TRANSLATED);
                                         backoffMilliseconds = MIN_BACKOFF_MILLISECONDS;
                                         LithoRelayoutPatch.relayoutOutdatedTexts();
@@ -881,27 +890,6 @@ public final class LiveChatTranslatePatch {
             }
         }
         return TextTranslator.translateText(message, language);
-    }
-
-    private static void waitForRequestSlot() throws InterruptedException {
-        final long now = System.currentTimeMillis();
-        final long requestTime;
-        synchronized (requestLock) {
-            requestTime = Math.max(now, nextRequestTime);
-            nextRequestTime = requestTime + MIN_REQUEST_INTERVAL_MILLISECONDS;
-        }
-        if (requestTime > now) {
-            Thread.sleep(requestTime - now);
-        }
-    }
-
-    private static boolean isExcludedLanguage(String language) {
-        for (String excluded : Settings.LIVE_CHAT_TRANSLATE_EXCLUDE.get().split(",")) {
-            if (excluded.trim().equalsIgnoreCase(language)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     // endregion

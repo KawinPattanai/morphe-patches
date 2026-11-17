@@ -347,51 +347,6 @@ public final class OfflineVideoExporter {
     }
 
     /**
-     * @return The folder the user picked, or null to use the default folder.
-     *         If the picked folder can't be used anymore, the default folder is used from now on.
-     */
-    @Nullable
-    private static Uri getPickedFolder(ContentResolver resolver) {
-        String pickedFolder = SharedYouTubeSettings.EXPORT_DOWNLOAD_FOLDER.get();
-        if (pickedFolder.isEmpty()) {
-            return null;
-        }
-
-        Uri tree = Uri.parse(pickedFolder);
-        Uri folder = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
-        // The access to a folder is kept if the folder is deleted, and is missing if the
-        // folder is from imported settings. A documents provider returns no document for a missing folder.
-        boolean isFolderAvailable;
-        try (Cursor cursor = resolver.query(folder,
-                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
-            isFolderAvailable = cursor != null && cursor.moveToFirst();
-        } catch (SecurityException ex) {
-            Logger.printInfo(() -> "No access to export folder: " + folder, ex);
-            isFolderAvailable = false;
-        }
-        if (isFolderAvailable) {
-            return folder;
-        }
-
-        Logger.printInfo(() -> "Export folder is not available: " + tree);
-        // Saving to the default folder creates it again, so it is not reported as missing.
-        if (!isDefaultFolder(tree)) {
-            Utils.showToastLong(str("morphe_export_download_folder_missing", getFolderName()));
-        }
-        setFolder(null);
-        return null;
-    }
-
-    /**
-     * @param tree The tree uri of the folder the user picked.
-     * @return If the folder is the folder used by default.
-     */
-    private static boolean isDefaultFolder(Uri tree) {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                && DocumentsContract.getTreeDocumentId(tree).equalsIgnoreCase(PRIMARY_VOLUME_PREFIX + DEFAULT_FOLDER);
-    }
-
-    /**
      * Before Android 10, the shared folders need a storage permission, so the folder of the app is used.
      */
     private static File getLegacyFolder() {
@@ -530,7 +485,36 @@ public final class OfflineVideoExporter {
                         }
                     }
                     for (File streamsFolder : streamsFolders) {
-                        Map<Integer, String> index = readCacheIndex(new File(streamsFolder, CACHE_INDEX_FILE), key);
+                        // Reads the ExoPlayer cache index, which maps the ids in the span file names to the cache keys.
+                        Map<Integer, String> index = new HashMap<>();
+                        try (DataInputStream input = new DataInputStream(new BufferedInputStream(
+                                new FileInputStream(new File(streamsFolder, CACHE_INDEX_FILE))))) {
+                            final int version = input.readInt();
+                            if (version != CACHE_INDEX_VERSION) {
+                                throw new IOException("Unsupported cache index version: " + version);
+                            }
+
+                            DataInputStream data = input;
+                            if ((input.readInt() & CACHE_INDEX_FLAG_ENCRYPTED) != 0) {
+                                byte[] iv = new byte[AES_BLOCK_SIZE];
+                                input.readFully(iv);
+                                Cipher cipher = Cipher.getInstance(INDEX_CIPHER);
+                                cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
+                                data = new DataInputStream(new CipherInputStream(input, cipher));
+                            }
+
+                            final int count = data.readInt();
+                            for (int i = 0; i < count; i++) {
+                                final int id = data.readInt();
+                                index.put(id, data.readUTF());
+                                // Metadata, such as the redirected url.
+                                final int metadataCount = data.readInt();
+                                for (int m = 0; m < metadataCount; m++) {
+                                    data.readUTF();
+                                    data.readFully(new byte[data.readInt()]);
+                                }
+                            }
+                        }
 
                         int id = -1;
                         String cacheKey = null;
@@ -771,7 +755,42 @@ public final class OfflineVideoExporter {
         static OutputFile create(String name, String extension, String mimeType) throws IOException {
             ContentResolver resolver = Utils.getContext().getContentResolver();
 
-            Uri pickedFolder = getPickedFolder(resolver);
+            // The folder the user picked, or null to use the default folder.
+            // If the picked folder can't be used anymore, the default folder is used from now on.
+            Uri pickedFolder;
+            getPickedFolder: {
+                String folderSetting = SharedYouTubeSettings.EXPORT_DOWNLOAD_FOLDER.get();
+                if (folderSetting.isEmpty()) {
+                    pickedFolder = null;
+                    break getPickedFolder;
+                }
+
+                Uri tree = Uri.parse(folderSetting);
+                Uri folder = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
+                // The access to a folder is kept if the folder is deleted, and is missing if the
+                // folder is from imported settings. A documents provider returns no document for a missing folder.
+                boolean isFolderAvailable;
+                try (Cursor cursor = resolver.query(folder,
+                        new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
+                    isFolderAvailable = cursor != null && cursor.moveToFirst();
+                } catch (SecurityException ex) {
+                    Logger.printInfo(() -> "No access to export folder: " + folder, ex);
+                    isFolderAvailable = false;
+                }
+                if (isFolderAvailable) {
+                    pickedFolder = folder;
+                    break getPickedFolder;
+                }
+
+                Logger.printInfo(() -> "Export folder is not available: " + tree);
+                // Saving to the default folder creates it again, so it is not reported as missing.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !DocumentsContract.getTreeDocumentId(tree)
+                        .equalsIgnoreCase(PRIMARY_VOLUME_PREFIX + DEFAULT_FOLDER)) {
+                    Utils.showToastLong(str("morphe_export_download_folder_missing", getFolderName()));
+                }
+                setFolder(null);
+                pickedFolder = null;
+            }
             if (pickedFolder != null) {
                 // The documents provider adds a number to a name that is taken.
                 Uri uri = DocumentsContract.createDocument(resolver, pickedFolder, mimeType, name + extension);
@@ -1011,41 +1030,6 @@ public final class OfflineVideoExporter {
     // region Cache
 
     /**
-     * Reads the ExoPlayer cache index, which maps the ids in the span file names to the cache keys.
-     */
-    private static Map<Integer, String> readCacheIndex(File file, SecretKeySpec key) throws Exception {
-        try (DataInputStream input = new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) {
-            final int version = input.readInt();
-            if (version != CACHE_INDEX_VERSION) {
-                throw new IOException("Unsupported cache index version: " + version);
-            }
-
-            DataInputStream data = input;
-            if ((input.readInt() & CACHE_INDEX_FLAG_ENCRYPTED) != 0) {
-                byte[] iv = new byte[AES_BLOCK_SIZE];
-                input.readFully(iv);
-                Cipher cipher = Cipher.getInstance(INDEX_CIPHER);
-                cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
-                data = new DataInputStream(new CipherInputStream(input, cipher));
-            }
-
-            Map<Integer, String> index = new HashMap<>();
-            final int count = data.readInt();
-            for (int i = 0; i < count; i++) {
-                final int id = data.readInt();
-                index.put(id, data.readUTF());
-                // Metadata, such as the redirected url.
-                final int metadataCount = data.readInt();
-                for (int m = 0; m < metadataCount; m++) {
-                    data.readUTF();
-                    data.readFully(new byte[data.readInt()]);
-                }
-            }
-            return index;
-        }
-    }
-
-    /**
      * Span files are named "id.position.time.v3.exo" and are in numbered sub folders.
      */
     private static TreeMap<Long, File> getSpans(File streamsFolder, int id) {
@@ -1094,21 +1078,15 @@ public final class OfflineVideoExporter {
 
         StreamSource(SecretKeySpec key, String cacheKey, TreeMap<Long, File> spans, long length) {
             this.key = key;
-            this.nonce = getNonce(cacheKey);
-            this.spans = spans;
-            this.length = length;
-        }
-
-        /**
-         * The FNV-1 hash ExoPlayer uses as the nonce of a cache key.
-         */
-        private static long getNonce(String cacheKey) {
+            // The FNV-1 hash ExoPlayer uses as the nonce of a cache key.
             long hash = 0;
-            for (int i = 0, length = cacheKey.length(); i < length; i++) {
+            for (int i = 0, keyLength = cacheKey.length(); i < keyLength; i++) {
                 hash ^= cacheKey.charAt(i);
                 hash += (hash << 1) + (hash << 4) + (hash << 5) + (hash << 7) + (hash << 8) + (hash << 40);
             }
-            return hash;
+            this.nonce = hash;
+            this.spans = spans;
+            this.length = length;
         }
 
         @Override

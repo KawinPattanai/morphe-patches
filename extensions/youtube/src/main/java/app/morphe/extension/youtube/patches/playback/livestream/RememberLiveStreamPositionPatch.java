@@ -194,7 +194,23 @@ public final class RememberLiveStreamPositionPatch {
                 Logger.printDebug(() -> "Saved pos: " + playbackTimeMs
                         + " len: " + videoLength + " id: " + videoId);
 
-                trimSavedPositions();
+                Map<String, SavedPosition> savedPositions = getSavedPositions();
+
+                while (savedPositions.size() > MAX_SAVED_STREAMS) {
+                    String oldestKey = null;
+                    long oldestTimestamp = Long.MAX_VALUE;
+                    for (Map.Entry<String, SavedPosition> entry : savedPositions.entrySet()) {
+                        if (entry.getValue().timestamp() < oldestTimestamp) {
+                            oldestTimestamp = entry.getValue().timestamp();
+                            oldestKey = entry.getKey();
+                        }
+                    }
+                    if (oldestKey != null) {
+                        savedPositions.remove(oldestKey);
+                    } else {
+                        break;
+                    }
+                }
                 saveSavedPositions();
             }
         } catch (Exception ex) {
@@ -356,26 +372,6 @@ public final class RememberLiveStreamPositionPatch {
         Map<String, SavedPosition> map = getSavedPositions();
         if (map.remove(videoId) != null) {
             saveSavedPositions();
-        }
-    }
-
-    private static void trimSavedPositions() {
-        Map<String, SavedPosition> map = getSavedPositions();
-
-        while (map.size() > MAX_SAVED_STREAMS) {
-            String oldestKey = null;
-            long oldestTimestamp = Long.MAX_VALUE;
-            for (Map.Entry<String, SavedPosition> entry : map.entrySet()) {
-                if (entry.getValue().timestamp() < oldestTimestamp) {
-                    oldestTimestamp = entry.getValue().timestamp();
-                    oldestKey = entry.getKey();
-                }
-            }
-            if (oldestKey != null) {
-                map.remove(oldestKey);
-            } else {
-                break;
-            }
         }
     }
 }

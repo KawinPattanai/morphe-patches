@@ -11,7 +11,6 @@ package app.morphe.extension.shared.spoof.js.nsigsolver.runtime;
 import static app.morphe.extension.shared.Utils.isNotEmpty;
 
 import androidx.annotation.GuardedBy;
-import androidx.annotation.Nullable;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
@@ -223,7 +222,20 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
             }
 
             // Now solve challenges using the wrapper (player is already in JS runtime memory)
-            String stdin = constructWrapperStdin(requests);
+            // Constructs stdin to solve challenges using the wrapper.
+            // The player is already loaded in the JS runtime.
+            List<Map<String, Object>> jsonRequests = new ArrayList<>(requests.size());
+            for (JsChallengeRequest request : requests) {
+                Map<String, Object> reqMap = new HashMap<>();
+                reqMap.put("type", request.type().getValue());
+                reqMap.put("challenges", request.input().challenges());
+                jsonRequests.add(reqMap);
+            }
+
+            Gson wrapperGson = new Gson();
+            Map<String, Object> data = Map.of("requests", jsonRequests);
+            String jsonData = wrapperGson.toJson(data);
+            String stdin = String.format("\nJSON.stringify(jscw(%s));\n", jsonData);
             String stdout = runJsRuntime(stdin);
 
             Gson gson = new Gson();
@@ -291,58 +303,27 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
         return playerJSHash;
     }
 
-    /**
-     * Constructs stdin to solve challenges using the wrapper.
-     * The player is already loaded in the JS runtime.
-     */
-    private String constructWrapperStdin(List<JsChallengeRequest> requests) {
-        List<Map<String, Object>> jsonRequests = new ArrayList<>(requests.size());
-        for (JsChallengeRequest request : requests) {
-            Map<String, Object> reqMap = new HashMap<>();
-            reqMap.put("type", request.type().getValue());
-            reqMap.put("challenges", request.input().challenges());
-            jsonRequests.add(reqMap);
-        }
-
-        Gson gson = new Gson();
-        Map<String, Object> data = Map.of("requests", jsonRequests);
-        String jsonData = gson.toJson(data);
-        return String.format("\nJSON.stringify(jscw(%s));\n", jsonData);
-    }
-
     protected String constructCommonStdin() {
         try {
+            if (libScript == null) {
+                libScript = getScript(ScriptType.LIB);
+            }
+            if (coreScript == null) {
+                coreScript = getScript(ScriptType.CORE);
+            }
+            if (wrapperScript == null) {
+                wrapperScript = getScript(ScriptType.WRAPPER);
+            }
             return String.join("\n",
-                    getLibScript().getCode(),
-                    getCoreScript().getCode(),
-                    getWrapperScript().getCode(),
+                    libScript.getCode(),
+                    coreScript.getCode(),
+                    wrapperScript.getCode(),
                     "\"\";"
             );
         } catch (JsChallengeProviderRejectedRequest ex) {
             Logger.printException(() -> "Failed to construct stdin", ex);
             return "";
         }
-    }
-
-    private Script getLibScript() throws JsChallengeProviderRejectedRequest {
-        if (libScript == null) {
-            libScript = getScript(ScriptType.LIB);
-        }
-        return libScript;
-    }
-
-    private Script getCoreScript() throws JsChallengeProviderRejectedRequest {
-        if (coreScript == null) {
-            coreScript = getScript(ScriptType.CORE);
-        }
-        return coreScript;
-    }
-
-    private Script getWrapperScript() throws JsChallengeProviderRejectedRequest {
-        if (wrapperScript == null) {
-            wrapperScript = getScript(ScriptType.WRAPPER);
-        }
-        return wrapperScript;
     }
 
     private interface ScriptSourceProvider {

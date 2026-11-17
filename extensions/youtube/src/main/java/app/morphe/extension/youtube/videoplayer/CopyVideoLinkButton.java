@@ -83,7 +83,22 @@ public class CopyVideoLinkButton {
                     SharedYouTubeSettings.REPLACE_LINKS_WITH_SHORTENER.get() ? "https://youtu.be/" : "https://www.youtube.com/watch?v=";
             StringBuilder builder = new StringBuilder(videoBaseUrl);
             builder.append(VideoInformation.getVideoId());
-            final long currentVideoTimeInSeconds = appendCurrentVideoTimeInSeconds(withTimestamp, builder);
+            final long currentVideoTimeInSeconds = VideoInformation.getVideoTime() / 1000;
+            if (withTimestamp && currentVideoTimeInSeconds > 0) {
+                final long hour = currentVideoTimeInSeconds / (60 * 60);
+                final long minute = (currentVideoTimeInSeconds / 60) % 60;
+                final long second = currentVideoTimeInSeconds % 60;
+                builder.append(builder.indexOf("?") >= 0 ? "&t=" : "?t=");
+                if (hour > 0) {
+                    builder.append(hour).append("h");
+                }
+                if (minute > 0) {
+                    builder.append(minute).append("m");
+                }
+                if (second > 0) {
+                    builder.append(second).append("s");
+                }
+            }
 
             Utils.setClipboard(builder.toString());
             // Do not show a message if using Android 13+ as it shows its own toast.
@@ -98,25 +113,5 @@ public class CopyVideoLinkButton {
         } catch (Exception e) {
             Logger.printException(() -> "Failed to generate video link", e);
         }
-    }
-
-    private static long appendCurrentVideoTimeInSeconds(boolean withTimestamp, StringBuilder builder) {
-        final long currentVideoTimeInSeconds = VideoInformation.getVideoTime() / 1000;
-        if (withTimestamp && currentVideoTimeInSeconds > 0) {
-            final long hour = currentVideoTimeInSeconds / (60 * 60);
-            final long minute = (currentVideoTimeInSeconds / 60) % 60;
-            final long second = currentVideoTimeInSeconds % 60;
-            builder.append(builder.indexOf("?") >= 0 ? "&t=" : "?t=");
-            if (hour > 0) {
-                builder.append(hour).append("h");
-            }
-            if (minute > 0) {
-                builder.append(minute).append("m");
-            }
-            if (second > 0) {
-                builder.append(second).append("s");
-            }
-        }
-        return currentVideoTimeInSeconds;
     }
 }

@@ -38,10 +38,19 @@ final class InnerTubeRequestBody {
     @Nullable
     static String readVideoId(byte[] body, boolean holdsPlayerRequest) throws IOException {
         // The app compresses some request bodies, and then sends them with a gzip content encoding header.
-        byte[] message = body.length > 1
+        byte[] message = body;
+        if (body.length > 1
                 && (body[0] & 0xFF) == GZIP_MAGIC_FIRST_BYTE
-                && (body[1] & 0xFF) == GZIP_MAGIC_SECOND_BYTE
-                ? decompress(body) : body;
+                && (body[1] & 0xFF) == GZIP_MAGIC_SECOND_BYTE) {
+            try (GZIPInputStream input = new GZIPInputStream(new ByteArrayInputStream(body))) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream(body.length * 4);
+                byte[] buffer = new byte[8192];
+                for (int read; (read = input.read(buffer)) > 0; ) {
+                    output.write(buffer, 0, read);
+                }
+                message = output.toByteArray();
+            }
+        }
         if (holdsPlayerRequest) {
             message = SabrRequestBody.readMessageField(message, PLAYER_REQUEST_FIELD);
             if (message == null) {
@@ -50,16 +59,5 @@ final class InnerTubeRequestBody {
         }
         byte[] videoId = SabrRequestBody.readMessageField(message, VIDEO_ID_FIELD);
         return videoId == null ? null : new String(videoId, StandardCharsets.UTF_8);
-    }
-
-    private static byte[] decompress(byte[] body) throws IOException {
-        try (GZIPInputStream input = new GZIPInputStream(new ByteArrayInputStream(body))) {
-            ByteArrayOutputStream output = new ByteArrayOutputStream(body.length * 4);
-            byte[] buffer = new byte[8192];
-            for (int read; (read = input.read(buffer)) > 0; ) {
-                output.write(buffer, 0, read);
-            }
-            return output.toByteArray();
-        }
     }
 }

@@ -470,19 +470,6 @@ public final class SwipeControlsOverlayLayout extends RelativeLayout implements 
             fillBackgroundPaint.setStyle(Paint.Style.FILL);
         }
 
-        /**
-         * Calculate required width based on content.
-         *
-         * @return Required width to display all elements.
-         */
-        private float calculateRequiredWidth() {
-            textWidth = measureTextWidth(displayText, textPaint);
-
-            return !isMinimalStyle
-                    ? padding + iconSize + padding + progressBarWidth + padding + textWidth + padding
-                    : padding + iconSize + padding + textWidth + padding;
-        }
-
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
@@ -490,7 +477,11 @@ public final class SwipeControlsOverlayLayout extends RelativeLayout implements 
             final int suggestedWidth = MeasureSpec.getSize(widthMeasureSpec);
             final int suggestedHeight = MeasureSpec.getSize(heightMeasureSpec);
 
-            final int requiredWidth = (int) calculateRequiredWidth();
+            // Required width to display all elements, based on the content.
+            textWidth = measureTextWidth(displayText, textPaint);
+            final int requiredWidth = (int) (!isMinimalStyle
+                    ? padding + iconSize + padding + progressBarWidth + padding + textWidth + padding
+                    : padding + iconSize + padding + textWidth + padding);
             final int width = Math.min(Math.max(100, requiredWidth), suggestedWidth);
 
             setMeasuredDimension(width, suggestedHeight);
@@ -600,17 +591,6 @@ public final class SwipeControlsOverlayLayout extends RelativeLayout implements 
             fillBackgroundPaint.setStyle(Paint.Style.FILL);
         }
 
-        /**
-         * Calculate required height based on content.
-         *
-         * @return Required height to display all elements.
-         */
-        private float calculateRequiredHeight() {
-            return !isMinimalStyle
-                    ? padding + iconSize + padding + progressBarHeight + padding + textPaint.getTextSize() + padding
-                    : padding + iconSize + padding + textPaint.getTextSize() + padding;
-        }
-
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
@@ -618,7 +598,10 @@ public final class SwipeControlsOverlayLayout extends RelativeLayout implements 
             final int suggestedWidth = MeasureSpec.getSize(widthMeasureSpec);
             final int suggestedHeight = MeasureSpec.getSize(heightMeasureSpec);
 
-            final int requiredHeight = (int) calculateRequiredHeight();
+            // Required height to display all elements, based on the content.
+            final int requiredHeight = (int) (!isMinimalStyle
+                    ? padding + iconSize + padding + progressBarHeight + padding + textPaint.getTextSize() + padding
+                    : padding + iconSize + padding + textPaint.getTextSize() + padding);
             final int height = Math.min(Math.max(100, requiredHeight), suggestedHeight);
 
             setMeasuredDimension(suggestedWidth, height);

@@ -306,34 +306,34 @@ final class CaptionBlockTranslator implements CaptionSession.Translator {
         return values;
     }
 
-    private void paceGoogle(long deadline, BooleanSupplier active) throws IOException {
-        while (true) {
-            checkActive(active);
-            long wait;
-            synchronized (this) {
-                final long now = clock.millis();
-                googleCreditMs = Math.min(GOOGLE_MAX_CREDIT_MS, googleCreditMs + Math.max(0, now - googleCreditUpdated));
-                googleCreditUpdated = now;
-                if (googleCreditMs >= GOOGLE_REQUEST_COST_MS) {
-                    googleCreditMs -= GOOGLE_REQUEST_COST_MS;
-                    return;
-                }
-                wait = Math.min(GOOGLE_REQUEST_COST_MS - googleCreditMs, remaining(deadline));
-            }
-            try {
-                clock.pause(wait);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw new CancellationException("Caption pacing interrupted");
-            }
-        }
-    }
-
     private String request(Provider provider, String url, String body, long deadline, BooleanSupplier active)
             throws IOException {
         checkActive(active);
         final boolean google = provider == Provider.GOOGLE;
-        if (google) paceGoogle(deadline, active);
+        if (google) {
+            paceGoogle: {
+                while (true) {
+                    checkActive(active);
+                    long wait;
+                    synchronized (this) {
+                        final long now = clock.millis();
+                        googleCreditMs = Math.min(GOOGLE_MAX_CREDIT_MS, googleCreditMs + Math.max(0, now - googleCreditUpdated));
+                        googleCreditUpdated = now;
+                        if (googleCreditMs >= GOOGLE_REQUEST_COST_MS) {
+                            googleCreditMs -= GOOGLE_REQUEST_COST_MS;
+                            break paceGoogle;
+                        }
+                        wait = Math.min(GOOGLE_REQUEST_COST_MS - googleCreditMs, remaining(deadline));
+                    }
+                    try {
+                        clock.pause(wait);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("Caption pacing interrupted");
+                    }
+                }
+            }
+        }
 
         final int remaining = remaining(deadline);
         HttpURLConnection connection = connections.open(url);
@@ -364,7 +364,19 @@ final class CaptionBlockTranslator implements CaptionSession.Translator {
             checkActive(active);
 
             if (status == HttpURLConnection.HTTP_FORBIDDEN || status == 429) {
-                final long seconds = retryAfterSeconds(connection);
+                // The bounded value of the Retry-After header, which is seconds or a date.
+                long retryAfter = DEFAULT_COOLDOWN_SECONDS;
+                String retryAfterValue = connection.getHeaderField("Retry-After");
+                if (retryAfterValue != null && retryAfterValue.matches("[0-9]{1,9}")) {
+                    retryAfter = Long.parseLong(retryAfterValue);
+                } else {
+                    final long retryAt = connection.getHeaderFieldDate("Retry-After", -1);
+                    if (retryAt >= 0) {
+                        final long serverTime = connection.getHeaderFieldDate("Date", System.currentTimeMillis());
+                        retryAfter = Math.max(0, (retryAt - serverTime + 999) / 1000);
+                    }
+                }
+                final long seconds = Math.max(1, Math.min(MAX_COOLDOWN_SECONDS, retryAfter));
                 final long until = clock.millis() + seconds * 1000;
                 if (google) googleCooldownUntil = until;
                 else microsoftCooldownUntil = until;
@@ -414,24 +426,6 @@ final class CaptionBlockTranslator implements CaptionSession.Translator {
             //noinspection StringOperationCanBeSimplified
             return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
         }
-    }
-
-    /**
-     * @return The bounded value of the Retry-After header, which is seconds or a date.
-     */
-    private static long retryAfterSeconds(HttpURLConnection connection) {
-        long seconds = DEFAULT_COOLDOWN_SECONDS;
-        String value = connection.getHeaderField("Retry-After");
-        if (value != null && value.matches("[0-9]{1,9}")) {
-            seconds = Long.parseLong(value);
-        } else {
-            final long retryAt = connection.getHeaderFieldDate("Retry-After", -1);
-            if (retryAt >= 0) {
-                final long serverTime = connection.getHeaderFieldDate("Date", System.currentTimeMillis());
-                seconds = Math.max(0, (retryAt - serverTime + 999) / 1000);
-            }
-        }
-        return Math.max(1, Math.min(MAX_COOLDOWN_SECONDS, seconds));
     }
 
     private static void checkActive(BooleanSupplier active) {

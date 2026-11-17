@@ -261,7 +261,29 @@ public class FeatureFlagsManagerPreference extends Preference {
 
                 searchBox = createSearchBox(context);
                 contentLayout.addView(searchBox);
-                contentLayout.addView(createFilterChips(context));
+                LinearLayout row = new LinearLayout(context);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+
+                for (FlagFilter flagFilter : FlagFilter.values()) {
+                    TextView chip = createChip(context, flagFilter);
+                    chips.put(flagFilter, chip);
+                    row.addView(chip);
+                }
+
+                // Chips can be wider than the dialog once the counts are translated.
+                HorizontalScrollView scrollView = new HorizontalScrollView(context);
+                scrollView.setHorizontalScrollBarEnabled(false);
+                scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                // Fade the chip that is cut off, otherwise nothing shows the row can be scrolled.
+                scrollView.setHorizontalFadingEdgeEnabled(true);
+                scrollView.setFadingEdgeLength(Dim.dp24);
+                scrollView.addView(row);
+
+                LinearLayout.LayoutParams chipsParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                chipsParams.setMargins(0, 0, 0, Dim.dp8);
+                scrollView.setLayoutParams(chipsParams);
+                contentLayout.addView(scrollView);
                 contentLayout.addView(listView, new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
                 // Creates the bottom bar, which shows the state buttons while flags are selected
@@ -280,7 +302,111 @@ public class FeatureFlagsManagerPreference extends Preference {
                 }));
                 actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_COPY_ALL, this::copyFlags));
                 actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_IMPORT_EXPORT,
-                        () -> showImportExportDialog(context)));
+                        () -> {
+                            // Shows a dialog with the current flags as text, which can be shared with
+                            // another device to reproduce the same set of flags.
+                            EditText editText = new EditText(context);
+                            editText.setTextSize(14);
+                            editText.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+                            editText.setSingleLine(false);
+                            List<Long> on = new ArrayList<>();
+                            List<Long> off = new ArrayList<>();
+                            for (Long flag : flagStates.keySet()) {
+                                if (Boolean.TRUE.equals(loggedFlagStates.get(flag))) {
+                                    on.add(flag);
+                                } else {
+                                    off.add(flag);
+                                }
+                            }
+                            String exportText = "app=" + Utils.getAppVersionName()
+                                    + "\nblocked=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.BLOCKED), ',')
+                                    + "\nforced=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.FORCED), ',')
+                                    + "\non=" + EnableDebuggingPatch.serializeFlags(on, ',')
+                                    + "\noff=" + EnableDebuggingPatch.serializeFlags(off, ',');
+                            editText.setText(exportText);
+
+                            Pair<Dialog, LinearLayout> importExportDialogPair = CustomDialog.create(
+                                    context,
+                                    str("morphe_debug_feature_flags_manager_import_export_title"),
+                                    null,
+                                    editText,
+                                    str("morphe_settings_save"),
+                                    () -> {
+                                        // Applies exported text. Lines that are only flag IDs are treated as blocked flags,
+                                        // so the output of the copy button can be pasted as well.
+                                        String importedText = editText.getText().toString();
+                                        try {
+                                            TreeSet<Long> blocked = new TreeSet<>();
+                                            TreeSet<Long> forced = new TreeSet<>();
+
+                                            for (String line : importedText.split("\n")) {
+                                                String trimmed = line.trim();
+                                                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+
+                                                final int separator = trimmed.indexOf('=');
+                                                String key = separator < 0 ? "blocked" : trimmed.substring(0, separator).trim();
+                                                String value = separator < 0 ? trimmed : trimmed.substring(separator + 1);
+
+                                                switch (key) {
+                                                    case "blocked": blocked.addAll(EnableDebuggingPatch.parseFlags(value)); break;
+                                                    case "forced": forced.addAll(EnableDebuggingPatch.parseFlags(value)); break;
+                                                    default: break; // Ignore diagnostic flags (on/off) and metadata (app version).
+                                                }
+                                            }
+
+                                            blocked.removeAll(FLAGS_TO_IGNORE);
+                                            forced.removeAll(FLAGS_TO_IGNORE);
+
+                                            if (blocked.isEmpty() && forced.isEmpty()) {
+                                                Utils.showToastLong(str("morphe_debug_feature_flags_manager_import_failed"));
+                                                return;
+                                            }
+
+                                            SharedYouTubeSettings.DISABLED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(blocked));
+                                            SharedYouTubeSettings.FORCED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(forced));
+
+                                            loadFlagStates();
+
+                                            listView.clearChoices();
+                                            adapter.refresh();
+                                            updateChips();
+                                            updateBottomBar();
+
+                                            Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_success", blocked.size() + forced.size()));
+                                        } catch (Exception ex) {
+                                            Logger.printException(() -> "Could not import feature flags", ex);
+                                        }
+                                    },
+                                    () -> {},
+                                    str("morphe_settings_import_copy"),
+                                    () -> Utils.setClipboard(editText.getText().toString()),
+                                    true
+                            );
+
+                            // Insert the file buttons between the text and the dialog buttons.
+                            Button buttonExport = CustomDialog.createButton(context, null,
+                                    str("morphe_settings_export_file"),
+                                    () -> exportToFile(editText.getText().toString()), false, false);
+                            Button buttonImport = CustomDialog.createButton(context, null,
+                                    str("morphe_settings_import_file"), () -> {
+                                        AbstractPreferenceFragment fragment = AbstractPreferenceFragment.instance.get();
+                                        if (fragment == null) return;
+
+                                        fragment.importTextActivity(text -> {
+                                            if (text == null) {
+                                                Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_failed"));
+                                                return;
+                                            }
+
+                                            editText.setText(text);
+                                            Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_success"));
+                                        });
+                                    }, false, false);
+                            LinearLayout fileButtons = CustomDialog.createButtonRow(context, buttonExport, buttonImport);
+                            importExportDialogPair.second.addView(fileButtons, 2);
+
+                            importExportDialogPair.first.show();
+                        }));
                 actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_BISECT,
                         () -> {
                             // Explains the binary search, then starts it.
@@ -448,33 +574,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         search.setLayoutParams(params);
 
         return search;
-    }
-
-    private View createFilterChips(Context context) {
-        LinearLayout row = new LinearLayout(context);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-
-        for (FlagFilter flagFilter : FlagFilter.values()) {
-            TextView chip = createChip(context, flagFilter);
-            chips.put(flagFilter, chip);
-            row.addView(chip);
-        }
-
-        // Chips can be wider than the dialog once the counts are translated.
-        HorizontalScrollView scrollView = new HorizontalScrollView(context);
-        scrollView.setHorizontalScrollBarEnabled(false);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        // Fade the chip that is cut off, otherwise nothing shows the row can be scrolled.
-        scrollView.setHorizontalFadingEdgeEnabled(true);
-        scrollView.setFadingEdgeLength(Dim.dp24);
-        scrollView.addView(row);
-
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.setMargins(0, 0, 0, Dim.dp8);
-        scrollView.setLayoutParams(params);
-
-        return scrollView;
     }
 
     private TextView createChip(Context context, FlagFilter chipFilter) {
@@ -693,114 +792,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         Utils.showToastShort(str("morphe_debug_feature_flags_manager_toast_copied"));
     }
 
-
-    /**
-     * Shows a dialog with the current flags as text, which can be shared with
-     * another device to reproduce the same set of flags.
-     */
-    private void showImportExportDialog(Context context) {
-        EditText editText = new EditText(context);
-        editText.setTextSize(14);
-        editText.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        editText.setSingleLine(false);
-        List<Long> on = new ArrayList<>();
-        List<Long> off = new ArrayList<>();
-        for (Long flag : flagStates.keySet()) {
-            if (Boolean.TRUE.equals(loggedFlagStates.get(flag))) {
-                on.add(flag);
-            } else {
-                off.add(flag);
-            }
-        }
-        String exportText = "app=" + Utils.getAppVersionName()
-                + "\nblocked=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.BLOCKED), ',')
-                + "\nforced=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.FORCED), ',')
-                + "\non=" + EnableDebuggingPatch.serializeFlags(on, ',')
-                + "\noff=" + EnableDebuggingPatch.serializeFlags(off, ',');
-        editText.setText(exportText);
-
-        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                context,
-                str("morphe_debug_feature_flags_manager_import_export_title"),
-                null,
-                editText,
-                str("morphe_settings_save"),
-                () -> {
-                    // Applies exported text. Lines that are only flag IDs are treated as blocked flags,
-                    // so the output of the copy button can be pasted as well.
-                    String importedText = editText.getText().toString();
-                    try {
-                        TreeSet<Long> blocked = new TreeSet<>();
-                        TreeSet<Long> forced = new TreeSet<>();
-
-                        for (String line : importedText.split("\n")) {
-                            String trimmed = line.trim();
-                            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
-
-                            final int separator = trimmed.indexOf('=');
-                            String key = separator < 0 ? "blocked" : trimmed.substring(0, separator).trim();
-                            String value = separator < 0 ? trimmed : trimmed.substring(separator + 1);
-
-                            switch (key) {
-                                case "blocked": blocked.addAll(EnableDebuggingPatch.parseFlags(value)); break;
-                                case "forced": forced.addAll(EnableDebuggingPatch.parseFlags(value)); break;
-                                default: break; // Ignore diagnostic flags (on/off) and metadata (app version).
-                            }
-                        }
-
-                        blocked.removeAll(FLAGS_TO_IGNORE);
-                        forced.removeAll(FLAGS_TO_IGNORE);
-
-                        if (blocked.isEmpty() && forced.isEmpty()) {
-                            Utils.showToastLong(str("morphe_debug_feature_flags_manager_import_failed"));
-                            return;
-                        }
-
-                        SharedYouTubeSettings.DISABLED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(blocked));
-                        SharedYouTubeSettings.FORCED_FEATURE_FLAGS.save(EnableDebuggingPatch.serializeFlags(forced));
-
-                        loadFlagStates();
-
-                        listView.clearChoices();
-                        adapter.refresh();
-                        updateChips();
-                        updateBottomBar();
-
-                        Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_success", blocked.size() + forced.size()));
-                    } catch (Exception ex) {
-                        Logger.printException(() -> "Could not import feature flags", ex);
-                    }
-                },
-                () -> {},
-                str("morphe_settings_import_copy"),
-                () -> Utils.setClipboard(editText.getText().toString()),
-                true
-        );
-
-        // Insert the file buttons between the text and the dialog buttons.
-        Button buttonExport = CustomDialog.createButton(context, null,
-                str("morphe_settings_export_file"),
-                () -> exportToFile(editText.getText().toString()), false, false);
-        Button buttonImport = CustomDialog.createButton(context, null,
-                str("morphe_settings_import_file"), () -> {
-                    AbstractPreferenceFragment fragment = AbstractPreferenceFragment.instance.get();
-                    if (fragment == null) return;
-
-                    fragment.importTextActivity(text -> {
-                        if (text == null) {
-                            Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_failed"));
-                            return;
-                        }
-
-                        editText.setText(text);
-                        Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_success"));
-                    });
-                }, false, false);
-        LinearLayout fileButtons = CustomDialog.createButtonRow(context, buttonExport, buttonImport);
-        dialogPair.second.addView(fileButtons, 2);
-
-        dialogPair.first.show();
-    }
 
     private void exportToFile(String text) {
         AbstractPreferenceFragment fragment = AbstractPreferenceFragment.instance.get();

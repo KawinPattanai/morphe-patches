@@ -90,7 +90,18 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
             }
 
             if (childPreference instanceof PreferenceScreen) {
-                ScreenInfoCategory screenInfo = removeScreenInfo((PreferenceScreen) childPreference);
+                ScreenInfoCategory foundScreenInfo = null;
+                PreferenceScreen screen = (PreferenceScreen) childPreference;
+                for (int index = 0, preferenceCount = screen.getPreferenceCount(); index < preferenceCount; index++) {
+                    Preference preference = screen.getPreference(index);
+                    if (preference instanceof ScreenInfoCategory info) {
+                        // Removed before search collects the preferences, the text is only for the dialog.
+                        screen.removePreference(preference);
+                        foundScreenInfo = info;
+                        break;
+                    }
+                }
+                final ScreenInfoCategory screenInfo = foundScreenInfo;
 
                 // Recursively set sub preferences.
                 setPreferenceScreenToolbar((PreferenceScreen) childPreference);
@@ -168,19 +179,6 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
                 );
             }
         }
-    }
-
-    @Nullable
-    private static ScreenInfoCategory removeScreenInfo(PreferenceScreen screen) {
-        for (int i = 0, count = screen.getPreferenceCount(); i < count; i++) {
-            Preference preference = screen.getPreference(i);
-            if (preference instanceof ScreenInfoCategory) {
-                // Removed before search collects the preferences, the text is only for the dialog.
-                screen.removePreference(preference);
-                return (ScreenInfoCategory) preference;
-            }
-        }
-        return null;
     }
 
     /**

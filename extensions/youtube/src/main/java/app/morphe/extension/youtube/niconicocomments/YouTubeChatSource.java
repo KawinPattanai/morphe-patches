@@ -125,7 +125,210 @@ final class YouTubeChatSource implements Runnable {
         PageState state = null;
         for (int attempt = 1; attempt <= MAX_CONSECUTIVE_FAILURES && !stopped; attempt++) {
             try {
-                state = fetchPageState();
+                //noinspection CharsetObjectCanBeUsed
+                String watchUrl = YOUTUBE_ORIGIN + "/watch?v="
+                        + URLEncoder.encode(videoId, StandardCharsets.UTF_8.name())
+                        + "&hl=en&bpctr=9999999999&has_verified=1";
+                String html = request(watchUrl, null, null, null);
+
+                JSONObject config = parseYoutubeConfig(html);
+                JSONObject context = config.optJSONObject("INNERTUBE_CONTEXT");
+                String apiKey = config.optString("INNERTUBE_API_KEY", "");
+
+                JSONObject client = context == null ? null : context.optJSONObject("client");
+                String clientVersion = client == null ? "" : client.optString("clientVersion", "");
+                if (clientVersion.isEmpty()) {
+                    clientVersion = config.optString("INNERTUBE_CLIENT_VERSION", "");
+                }
+                if (apiKey.isEmpty() || clientVersion.isEmpty()) {
+                    throw new JSONException("Watch page did not contain an Innertube API key and client version");
+                }
+
+                if (context == null) {
+                    context = new JSONObject();
+                    client = new JSONObject();
+                    client.put("clientName", "WEB");
+                    client.put("clientVersion", clientVersion);
+                    String visitorData = config.optString("VISITOR_DATA", "");
+                    if (!visitorData.isEmpty()) {
+                        client.put("visitorData", visitorData);
+                    }
+                    context.put("client", client);
+                    context.put("request", new JSONObject().put("useSsl", true));
+                }
+
+                JSONObject initialData = parseMarkedObject(html, INITIAL_DATA_MARKERS);
+                if (initialData == null) {
+                    throw new JSONException("Watch page did not contain ytInitialData");
+                }
+
+                JSONObject playerResponse = parseMarkedObject(
+                        html,
+                        "var ytInitialPlayerResponse =",
+                        "ytInitialPlayerResponse ="
+                );
+                JSONObject liveChatRenderer = getObjectPath(
+                        initialData,
+                        "contents",
+                        "twoColumnWatchNextResults",
+                        "conversationBar",
+                        "liveChatRenderer"
+                );
+                Object continuations = liveChatRenderer == null
+                        ? null
+                        : liveChatRenderer.opt("continuations");
+                Continuation replayContinuation = findContinuation(
+                        continuations,
+                        "playerSeekContinuationData",
+                        "liveChatReplayContinuationData"
+                );
+                if (replayContinuation == null) {
+                    JSONObject microformat = playerResponse == null
+                            ? null
+                            : playerResponse.optJSONObject("microformat");
+                    JSONObject playerMicroformat = microformat == null
+                            ? null
+                            : microformat.optJSONObject("playerMicroformatRenderer");
+                    JSONObject liveDetails = playerMicroformat == null
+                            ? null
+                            : playerMicroformat.optJSONObject("liveBroadcastDetails");
+                    boolean isEndedLiveBroadcast = liveDetails != null && !liveDetails.optString("endTimestamp", "").isEmpty();
+                    if (isEndedLiveBroadcast) {
+                        replayContinuation = findContinuation(
+                                initialData,
+                                "playerSeekContinuationData",
+                                "liveChatReplayContinuationData",
+                                "reloadContinuationData"
+                        );
+                    }
+                }
+
+                Continuation pageContinuation = null;
+                boolean pageReplay = false;
+                if (liveChatRenderer != null) {
+                    if (replayContinuation != null) {
+                        try {
+                            Continuation allMessages;
+                            fetchAllMessagesReplayContinuation: {
+                                //noinspection CharsetObjectCanBeUsed
+                                String url = YOUTUBE_ORIGIN + "/live_chat_replay?continuation="
+                                        + URLEncoder.encode(replayContinuation.value, StandardCharsets.UTF_8.name())
+                                        + "&hl=en";
+                                String replayHtml = request(url, null, null, null);
+                                JSONObject replayInitialData = parseMarkedObject(replayHtml, INITIAL_DATA_MARKERS);
+                                if (replayInitialData == null) {
+                                    allMessages = null;
+                                    break fetchAllMessagesReplayContinuation;
+                                }
+
+                                JSONObject liveChat = getLiveChatContinuation(replayInitialData);
+                                if (liveChat == null) {
+                                    liveChat = getObjectPath(
+                                            replayInitialData,
+                                            "contents",
+                                            "twoColumnWatchNextResults",
+                                            "conversationBar",
+                                            "liveChatRenderer"
+                                    );
+                                }
+                                JSONObject header = liveChat == null
+                                        ? null
+                                        : liveChat.optJSONObject("header");
+                                JSONObject headerRenderer = header == null
+                                        ? null
+                                        : header.optJSONObject("liveChatHeaderRenderer");
+                                JSONObject viewSelector = headerRenderer == null
+                                        ? null
+                                        : headerRenderer.optJSONObject("viewSelector");
+                                JSONObject menu = viewSelector == null
+                                        ? null
+                                        : viewSelector.optJSONObject("sortFilterSubMenuRenderer");
+                                JSONArray items = menu == null ? null : menu.optJSONArray("subMenuItems");
+                                if (items == null) {
+                                    allMessages = null;
+                                    break fetchAllMessagesReplayContinuation;
+                                }
+
+                                int selectedTopIndex = -1;
+                                for (int index = 0; index < items.length(); index++) {
+                                    JSONObject item = items.optJSONObject(index);
+                                    if (item == null) {
+                                        continue;
+                                    }
+                                    String text = (extractRendererText(item.opt("title"))
+                                            + " " + extractRendererText(item.opt("accessibility"))
+                                            + " " + extractRendererText(item.opt("subtitle"))).toLowerCase(Locale.ROOT);
+                                    boolean topChat = text.contains("top chat") || text.contains("some messages");
+                                    boolean isAllMessagesItem = !topChat
+                                            && (text.contains("live chat replay") || text.contains("all messages"));
+                                    if (isAllMessagesItem) {
+                                        allMessages = item.optBoolean("selected", false)
+                                                ? null
+                                                : findContinuation(
+                                                        item.opt("continuation"),
+                                                        "reloadContinuationData",
+                                                        "liveChatReplayContinuationData",
+                                                        "playerSeekContinuationData"
+                                                );
+                                        break fetchAllMessagesReplayContinuation;
+                                    }
+                                    if (topChat && item.optBoolean("selected", false)) {
+                                        selectedTopIndex = index;
+                                    }
+                                }
+
+                                if (items.length() == 2 && selectedTopIndex >= 0) {
+                                    JSONObject other = items.optJSONObject(selectedTopIndex == 0 ? 1 : 0);
+                                    allMessages = other == null
+                                            ? null
+                                            : findContinuation(
+                                                    other.opt("continuation"),
+                                                    "reloadContinuationData",
+                                                    "liveChatReplayContinuationData",
+                                                    "playerSeekContinuationData"
+                                            );
+                                    break fetchAllMessagesReplayContinuation;
+                                }
+                                allMessages = null;
+                            }
+                            if (allMessages != null) {
+                                replayContinuation = allMessages;
+                            }
+                        } catch (Exception exception) {
+                            Logger.printInfo(() -> "Could not select the all-messages replay filter", exception);
+                        }
+                        pageContinuation = replayContinuation;
+                        pageReplay = true;
+                    } else {
+                        pageContinuation = findContinuation(
+                                continuations,
+                                "timedContinuationData",
+                                "invalidationContinuationData",
+                                "reloadContinuationData"
+                        );
+                    }
+                }
+
+                String pageCommentsContinuation = showsTimedComments(
+                        pageContinuation != null,
+                        pageReplay,
+                        Settings.NICONICO_COMMENTS_TIMED_COMMENTS.get(),
+                        Settings.NICONICO_COMMENTS_TIMED_COMMENTS_WITH_REPLAY.get()
+                )
+                        ? TimedComments.findCommentsContinuation(initialData)
+                        : null;
+                JSONObject videoDetails = getObjectPath(playerResponse, "videoDetails");
+                long videoLengthMs = videoDetails == null ? 0 : videoDetails.optLong("lengthSeconds") * 1000;
+                state = new PageState(
+                        apiKey,
+                        clientVersion,
+                        context,
+                        pageContinuation,
+                        pageReplay,
+                        getVideoType(playerResponse),
+                        pageCommentsContinuation,
+                        videoLengthMs
+                );
                 break;
             } catch (Exception exception) {
                 String message = "Chat initialization attempt " + attempt + " failed";
@@ -491,134 +694,6 @@ final class YouTubeChatSource implements Runnable {
         }
     }
 
-    private PageState fetchPageState() throws IOException, JSONException {
-        //noinspection CharsetObjectCanBeUsed
-        String watchUrl = YOUTUBE_ORIGIN + "/watch?v="
-                + URLEncoder.encode(videoId, StandardCharsets.UTF_8.name())
-                + "&hl=en&bpctr=9999999999&has_verified=1";
-        String html = request(watchUrl, null, null, null);
-
-        JSONObject config = parseYoutubeConfig(html);
-        JSONObject context = config.optJSONObject("INNERTUBE_CONTEXT");
-        String apiKey = config.optString("INNERTUBE_API_KEY", "");
-
-        JSONObject client = context == null ? null : context.optJSONObject("client");
-        String clientVersion = client == null ? "" : client.optString("clientVersion", "");
-        if (clientVersion.isEmpty()) {
-            clientVersion = config.optString("INNERTUBE_CLIENT_VERSION", "");
-        }
-        if (apiKey.isEmpty() || clientVersion.isEmpty()) {
-            throw new JSONException("Watch page did not contain an Innertube API key and client version");
-        }
-
-        if (context == null) {
-            context = new JSONObject();
-            client = new JSONObject();
-            client.put("clientName", "WEB");
-            client.put("clientVersion", clientVersion);
-            String visitorData = config.optString("VISITOR_DATA", "");
-            if (!visitorData.isEmpty()) {
-                client.put("visitorData", visitorData);
-            }
-            context.put("client", client);
-            context.put("request", new JSONObject().put("useSsl", true));
-        }
-
-        JSONObject initialData = parseMarkedObject(html, INITIAL_DATA_MARKERS);
-        if (initialData == null) {
-            throw new JSONException("Watch page did not contain ytInitialData");
-        }
-
-        JSONObject playerResponse = parseMarkedObject(
-                html,
-                "var ytInitialPlayerResponse =",
-                "ytInitialPlayerResponse ="
-        );
-        JSONObject liveChatRenderer = getObjectPath(
-                initialData,
-                "contents",
-                "twoColumnWatchNextResults",
-                "conversationBar",
-                "liveChatRenderer"
-        );
-        Object continuations = liveChatRenderer == null
-                ? null
-                : liveChatRenderer.opt("continuations");
-        Continuation replayContinuation = findContinuation(
-                continuations,
-                "playerSeekContinuationData",
-                "liveChatReplayContinuationData"
-        );
-        if (replayContinuation == null) {
-            JSONObject microformat = playerResponse == null
-                    ? null
-                    : playerResponse.optJSONObject("microformat");
-            JSONObject playerMicroformat = microformat == null
-                    ? null
-                    : microformat.optJSONObject("playerMicroformatRenderer");
-            JSONObject liveDetails = playerMicroformat == null
-                    ? null
-                    : playerMicroformat.optJSONObject("liveBroadcastDetails");
-            boolean isEndedLiveBroadcast = liveDetails != null && !liveDetails.optString("endTimestamp", "").isEmpty();
-            if (isEndedLiveBroadcast) {
-                replayContinuation = findContinuation(
-                        initialData,
-                        "playerSeekContinuationData",
-                        "liveChatReplayContinuationData",
-                        "reloadContinuationData"
-                );
-            }
-        }
-
-        Continuation continuation = null;
-        boolean replay = false;
-        if (liveChatRenderer != null) {
-            if (replayContinuation != null) {
-                try {
-                    Continuation allMessages = fetchAllMessagesReplayContinuation(
-                            replayContinuation.value
-                    );
-                    if (allMessages != null) {
-                        replayContinuation = allMessages;
-                    }
-                } catch (Exception exception) {
-                    Logger.printInfo(() -> "Could not select the all-messages replay filter", exception);
-                }
-                continuation = replayContinuation;
-                replay = true;
-            } else {
-                continuation = findContinuation(
-                        continuations,
-                        "timedContinuationData",
-                        "invalidationContinuationData",
-                        "reloadContinuationData"
-                );
-            }
-        }
-
-        String commentsContinuation = showsTimedComments(
-                continuation != null,
-                replay,
-                Settings.NICONICO_COMMENTS_TIMED_COMMENTS.get(),
-                Settings.NICONICO_COMMENTS_TIMED_COMMENTS_WITH_REPLAY.get()
-        )
-                ? TimedComments.findCommentsContinuation(initialData)
-                : null;
-        JSONObject videoDetails = getObjectPath(playerResponse, "videoDetails");
-        long videoLengthMs = videoDetails == null ? 0 : videoDetails.optLong("lengthSeconds") * 1000;
-
-        return new PageState(
-                apiKey,
-                clientVersion,
-                context,
-                continuation,
-                replay,
-                getVideoType(playerResponse),
-                commentsContinuation,
-                videoLengthMs
-        );
-    }
-
     /**
      * A video without a chat shows its timed comments instead, and a chat replay can show them too.
      * A live chat does not, because its video time is not the time of the comments.
@@ -626,84 +701,6 @@ final class YouTubeChatSource implements Runnable {
     static boolean showsTimedComments(boolean hasChat, boolean replay,
                                       boolean timedComments, boolean timedCommentsWithReplay) {
         return timedComments && (!hasChat || (replay && timedCommentsWithReplay));
-    }
-
-    private Continuation fetchAllMessagesReplayContinuation(String continuation)
-            throws IOException {
-        //noinspection CharsetObjectCanBeUsed
-        String url = YOUTUBE_ORIGIN + "/live_chat_replay?continuation="
-                + URLEncoder.encode(continuation, StandardCharsets.UTF_8.name())
-                + "&hl=en";
-        String html = request(url, null, null, null);
-        JSONObject initialData = parseMarkedObject(html, INITIAL_DATA_MARKERS);
-        if (initialData == null) {
-            return null;
-        }
-
-        JSONObject liveChat = getLiveChatContinuation(initialData);
-        if (liveChat == null) {
-            liveChat = getObjectPath(
-                    initialData,
-                    "contents",
-                    "twoColumnWatchNextResults",
-                    "conversationBar",
-                    "liveChatRenderer"
-            );
-        }
-        JSONObject header = liveChat == null
-                ? null
-                : liveChat.optJSONObject("header");
-        JSONObject headerRenderer = header == null
-                ? null
-                : header.optJSONObject("liveChatHeaderRenderer");
-        JSONObject viewSelector = headerRenderer == null
-                ? null
-                : headerRenderer.optJSONObject("viewSelector");
-        JSONObject menu = viewSelector == null
-                ? null
-                : viewSelector.optJSONObject("sortFilterSubMenuRenderer");
-        JSONArray items = menu == null ? null : menu.optJSONArray("subMenuItems");
-        if (items == null) {
-            return null;
-        }
-
-        int selectedTopIndex = -1;
-        for (int index = 0; index < items.length(); index++) {
-            JSONObject item = items.optJSONObject(index);
-            if (item == null) {
-                continue;
-            }
-            String text = getFilterItemText(item).toLowerCase(Locale.ROOT);
-            boolean topChat = text.contains("top chat") || text.contains("some messages");
-            boolean allMessages = !topChat
-                    && (text.contains("live chat replay") || text.contains("all messages"));
-            if (allMessages) {
-                return item.optBoolean("selected", false)
-                        ? null
-                        : findContinuation(
-                                item.opt("continuation"),
-                                "reloadContinuationData",
-                                "liveChatReplayContinuationData",
-                                "playerSeekContinuationData"
-                        );
-            }
-            if (topChat && item.optBoolean("selected", false)) {
-                selectedTopIndex = index;
-            }
-        }
-
-        if (items.length() == 2 && selectedTopIndex >= 0) {
-            JSONObject other = items.optJSONObject(selectedTopIndex == 0 ? 1 : 0);
-            return other == null
-                    ? null
-                    : findContinuation(
-                            other.opt("continuation"),
-                            "reloadContinuationData",
-                            "liveChatReplayContinuationData",
-                            "playerSeekContinuationData"
-                    );
-        }
-        return null;
     }
 
     /**
@@ -877,12 +874,6 @@ final class YouTubeChatSource implements Runnable {
             }
         }
         return value;
-    }
-
-    private static String getFilterItemText(JSONObject item) {
-        return extractRendererText(item.opt("title"))
-                + " " + extractRendererText(item.opt("accessibility"))
-                + " " + extractRendererText(item.opt("subtitle"));
     }
 
     private static String extractRendererText(Object value) {
@@ -1069,7 +1060,15 @@ final class YouTubeChatSource implements Runnable {
             return null;
         }
 
-        boolean isMembership = membership != null || hasMembershipBadge(renderer);
+        boolean isMembership = membership != null;
+        JSONArray badges = isMembership ? null : renderer.optJSONArray("authorBadges");
+        for (int index = 0; badges != null && index < badges.length() && !isMembership; index++) {
+            JSONObject badge = badges.optJSONObject(index);
+            JSONObject badgeRenderer = badge == null
+                    ? null
+                    : badge.optJSONObject("liveChatAuthorBadgeRenderer");
+            isMembership = badgeRenderer != null && badgeRenderer.has("customThumbnail");
+        }
         int backgroundColor;
         getPaidMessageBackgroundColor: {
             if (paid == null) {
@@ -1154,7 +1153,34 @@ final class YouTubeChatSource implements Runnable {
             }
             if (!fallback.isEmpty()) {
                 result.append(fallback);
-                String imageUrl = getBestEmojiImageUrl(emoji);
+                String imageUrl;
+                getBestEmojiImageUrl: {
+                    JSONObject image = emoji == null ? null : emoji.optJSONObject("image");
+                    JSONArray thumbnails = image == null ? null : image.optJSONArray("thumbnails");
+                    if (thumbnails == null) {
+                        imageUrl = "";
+                        break getBestEmojiImageUrl;
+                    }
+
+                    imageUrl = "";
+                    long bestArea = -1;
+                    for (int thumbnailIndex = 0; thumbnailIndex < thumbnails.length(); thumbnailIndex++) {
+                        JSONObject thumbnail = thumbnails.optJSONObject(thumbnailIndex);
+                        if (thumbnail == null) {
+                            continue;
+                        }
+                        String url = thumbnail.optString("url", "");
+                        if (url.isEmpty()) {
+                            continue;
+                        }
+                        long area = (long) thumbnail.optInt("width", 0)
+                                * thumbnail.optInt("height", 0);
+                        if (imageUrl.isEmpty() || area >= bestArea) {
+                            bestArea = area;
+                            imageUrl = url.startsWith("//") ? "https:" + url : url;
+                        }
+                    }
+                }
                 segments.add(imageUrl.isEmpty()
                         ? NiconicoComment.Segment.text(fallback)
                         : NiconicoComment.Segment.emoji(fallback, imageUrl));
@@ -1165,51 +1191,6 @@ final class YouTubeChatSource implements Runnable {
 
     private static String normalizeMessageText(String text) {
         return text.replace('\n', ' ').replace('\r', ' ');
-    }
-
-    private static String getBestEmojiImageUrl(JSONObject emoji) {
-        JSONObject image = emoji == null ? null : emoji.optJSONObject("image");
-        JSONArray thumbnails = image == null ? null : image.optJSONArray("thumbnails");
-        if (thumbnails == null) {
-            return "";
-        }
-
-        String bestUrl = "";
-        long bestArea = -1;
-        for (int index = 0; index < thumbnails.length(); index++) {
-            JSONObject thumbnail = thumbnails.optJSONObject(index);
-            if (thumbnail == null) {
-                continue;
-            }
-            String url = thumbnail.optString("url", "");
-            if (url.isEmpty()) {
-                continue;
-            }
-            long area = (long) thumbnail.optInt("width", 0)
-                    * thumbnail.optInt("height", 0);
-            if (bestUrl.isEmpty() || area >= bestArea) {
-                bestArea = area;
-                bestUrl = url.startsWith("//") ? "https:" + url : url;
-            }
-        }
-        return bestUrl;
-    }
-
-    private static boolean hasMembershipBadge(JSONObject renderer) {
-        JSONArray badges = renderer.optJSONArray("authorBadges");
-        if (badges == null) {
-            return false;
-        }
-        for (int index = 0; index < badges.length(); index++) {
-            JSONObject badge = badges.optJSONObject(index);
-            JSONObject badgeRenderer = badge == null
-                    ? null
-                    : badge.optJSONObject("liveChatAuthorBadgeRenderer");
-            if (badgeRenderer != null && badgeRenderer.has("customThumbnail")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static String getVisitorData(JSONObject context) {

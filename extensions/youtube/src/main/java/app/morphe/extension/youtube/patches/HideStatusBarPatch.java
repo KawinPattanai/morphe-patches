@@ -493,7 +493,17 @@ public final class HideStatusBarPatch {
                 return;
             }
 
-            systemWindowInsets.top = isWatchingVideo ? 0 : getDisplayCutoutInsetTop(insets);
+            if (isWatchingVideo) {
+                systemWindowInsets.top = 0;
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                systemWindowInsets.top = insets.getInsets(WindowInsets.Type.displayCutout()).top;
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                DisplayCutout cutout = insets.getDisplayCutout();
+                systemWindowInsets.top = cutout == null ? 0 : cutout.getSafeInsetTop();
+            } else {
+                // Display cutouts have no API before Android 9.
+                systemWindowInsets.top = 0;
+            }
         } catch (Exception ex) {
             Logger.printException(() -> "setSystemWindowInsetTop failure", ex);
         }
@@ -516,18 +526,6 @@ public final class HideStatusBarPatch {
             return playerInsets;
         }
         return insets;
-    }
-
-    private static int getDisplayCutoutInsetTop(WindowInsets insets) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            return insets.getInsets(WindowInsets.Type.displayCutout()).top;
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            DisplayCutout cutout = insets.getDisplayCutout();
-            return cutout == null ? 0 : cutout.getSafeInsetTop();
-        }
-        // Display cutouts have no API before Android 9.
-        return 0;
     }
 
     private static boolean isStatusBarVisible(View decorView) {

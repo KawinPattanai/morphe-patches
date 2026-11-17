@@ -222,16 +222,14 @@ public final class PostImageDownloadPatch {
     // region Elements
 
     private static boolean isPostText(String text) {
-        return (text.length() >= MIN_TEXT_LENGTH || isEmojiText(text))
-                && !text.contains(".eml")
-                && !text.startsWith("http");
-    }
-
-    /**
-     * @return If the text has only emojis or symbols, such as the text of a post that is a single emoji.
-     *         Short texts with letters or numbers, such as counts, are shown by many posts.
-     */
-    private static boolean isEmojiText(String text) {
+        if (text.contains(".eml") || text.startsWith("http")) {
+            return false;
+        }
+        if (text.length() >= MIN_TEXT_LENGTH) {
+            return true;
+        }
+        // A text with only emojis or symbols, such as the text of a post that is a single emoji.
+        // Short texts with letters or numbers, such as counts, are shown by many posts.
         boolean hasSymbol = false;
         for (int i = 0, length = text.length(); i < length; ) {
             final int codePoint = text.codePointAt(i);
@@ -284,22 +282,6 @@ public final class PostImageDownloadPatch {
         return options.contains("-k-") || options.contains("no-rj");
     }
 
-    private static UrlKind getUrlKind(String text) {
-        UrlKind kind = UrlKind.NONE;
-        Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
-        while (matcher.find()) {
-            String url = matcher.group();
-            final int optionsIndex = url.indexOf('=');
-            String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
-            if (isAvatarOptions(options)) {
-                kind = UrlKind.AVATAR;
-            } else if (getImageSize(options) >= MIN_IMAGE_SIZE) {
-                return UrlKind.IMAGE;
-            }
-        }
-        return kind;
-    }
-
     /**
      * Injection point.
      * <p>
@@ -341,7 +323,22 @@ public final class PostImageDownloadPatch {
             List<String> current = new ArrayList<>();
             boolean currentHasImage = false;
             for (String text : texts) {
-                final UrlKind kind = getUrlKind(text);
+                UrlKind kind;
+                getUrlKind: {
+                    kind = UrlKind.NONE;
+                    Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
+                    while (matcher.find()) {
+                        String url = matcher.group();
+                        final int optionsIndex = url.indexOf('=');
+                        String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
+                        if (isAvatarOptions(options)) {
+                            kind = UrlKind.AVATAR;
+                        } else if (getImageSize(options) >= MIN_IMAGE_SIZE) {
+                            kind = UrlKind.IMAGE;
+                            break getUrlKind;
+                        }
+                    }
+                }
                 if (kind == UrlKind.AVATAR && currentHasImage) {
                     posts.add(current);
                     current = new ArrayList<>();
@@ -569,55 +566,6 @@ public final class PostImageDownloadPatch {
         }
     }
 
-    private static List<String> getShareLabels(View view) {
-        // YouTube views, the languages of the device, and the language of Morphe.
-        Set<Locale> locales = new LinkedHashSet<>();
-        addLocales(locales, view.getResources().getConfiguration().getLocales());
-        locales.add(Locale.getDefault());
-        addLocales(locales, LocaleList.getDefault());
-        String languages = locales.toString();
-        if (shareLabels == null || !languages.equals(shareLabelLanguages)) {
-            List<String> labels = new ArrayList<>();
-            // Texts in the language of Morphe.
-            for (String name : SHARE_LABEL_NAMES) {
-                addShareLabel(labels, ResourceUtils.getString(name));
-            }
-            final int systemShareId = ResourceUtils.getSystemStringIdentifier("share");
-            if (systemShareId != 0) {
-                addShareLabel(labels, Utils.getContext().getString(systemShareId));
-            }
-            // Texts in the languages YouTube can use. The resources are read from the view,
-            // since the resources of Morphe are in the language of Morphe.
-            List<Integer> ids = new ArrayList<>();
-            for (String name : SHARE_LABEL_NAMES) {
-                final int id = ResourceUtils.getStringIdentifier(name);
-                if (id != 0) {
-                    ids.add(id);
-                }
-            }
-            if (systemShareId != 0) {
-                ids.add(systemShareId);
-            }
-            Context context = view.getContext();
-            for (Locale locale : locales) {
-                try {
-                    Configuration configuration = new Configuration(view.getResources().getConfiguration());
-                    configuration.setLocales(new LocaleList(locale));
-                    Resources resources = context.createConfigurationContext(configuration).getResources();
-                    for (int id : ids) {
-                        addShareLabel(labels, resources.getString(id));
-                    }
-                } catch (Exception ex) {
-                    Logger.printInfo(() -> "Could not read the Share labels of: " + locale, ex);
-                }
-            }
-            Logger.printDebug(() -> "Share button labels: " + labels + " languages: " + languages);
-            shareLabels = labels;
-            shareLabelLanguages = languages;
-        }
-        return shareLabels;
-    }
-
     private static void addShareLabel(List<String> labels, @Nullable String label) {
         if (label == null) {
             return;
@@ -708,9 +656,55 @@ public final class PostImageDownloadPatch {
             // Most root hosts are not posts and have no Share button,
             // so the texts are only looked up for the ones that do.
             Rect shareRect = new Rect();
-            View share = FeedVideoCardsPatch.isInDialog(root)
-                    ? null
-                    : findShareButton(root, root, shareRect, getShareLabels(root));
+            View share = null;
+            if (!FeedVideoCardsPatch.isInDialog(root)) {
+                // YouTube views, the languages of the device, and the language of Morphe.
+                Set<Locale> locales = new LinkedHashSet<>();
+                addLocales(locales, root.getResources().getConfiguration().getLocales());
+                locales.add(Locale.getDefault());
+                addLocales(locales, LocaleList.getDefault());
+                String languages = locales.toString();
+                if (shareLabels == null || !languages.equals(shareLabelLanguages)) {
+                    List<String> labels = new ArrayList<>();
+                    // Texts in the language of Morphe.
+                    for (String name : SHARE_LABEL_NAMES) {
+                        addShareLabel(labels, ResourceUtils.getString(name));
+                    }
+                    final int systemShareId = ResourceUtils.getSystemStringIdentifier("share");
+                    if (systemShareId != 0) {
+                        addShareLabel(labels, Utils.getContext().getString(systemShareId));
+                    }
+                    // Texts in the languages YouTube can use. The resources are read from the view,
+                    // since the resources of Morphe are in the language of Morphe.
+                    List<Integer> ids = new ArrayList<>();
+                    for (String name : SHARE_LABEL_NAMES) {
+                        final int id = ResourceUtils.getStringIdentifier(name);
+                        if (id != 0) {
+                            ids.add(id);
+                        }
+                    }
+                    if (systemShareId != 0) {
+                        ids.add(systemShareId);
+                    }
+                    Context context = root.getContext();
+                    for (Locale locale : locales) {
+                        try {
+                            Configuration configuration = new Configuration(root.getResources().getConfiguration());
+                            configuration.setLocales(new LocaleList(locale));
+                            Resources resources = context.createConfigurationContext(configuration).getResources();
+                            for (int id : ids) {
+                                addShareLabel(labels, resources.getString(id));
+                            }
+                        } catch (Exception ex) {
+                            Logger.printInfo(() -> "Could not read the Share labels of: " + locale, ex);
+                        }
+                    }
+                    Logger.printDebug(() -> "Share button labels: " + labels + " languages: " + languages);
+                    shareLabels = labels;
+                    shareLabelLanguages = languages;
+                }
+                share = findShareButton(root, root, shareRect, shareLabels);
+            }
             String key = share == null ? null : findPostKey(root);
             if (key == null) {
                 if (card != null) {
@@ -904,7 +898,47 @@ public final class PostImageDownloadPatch {
                                 break getShownImages;
                             }
                             View carousel = findImageCarousel(host, null);
-                            final int index = carousel instanceof RecyclerView list ? getShownIndex(list) : -1;
+                            // The position of the item of the carousel that is shown the most, or -1 if none.
+                            final int index;
+                            if (carousel instanceof RecyclerView list) {
+                                getShownIndex: {
+                                    View shown = null;
+                                    int shownWidth = 0;
+                                    int firstLeft = Integer.MAX_VALUE;
+                                    int secondLeft = Integer.MAX_VALUE;
+                                    for (int i = 0, count = list.getChildCount(); i < count; i++) {
+                                        View child = list.getChildAt(i);
+                                        final int left = child.getLeft();
+                                        if (left < firstLeft) {
+                                            secondLeft = firstLeft;
+                                            firstLeft = left;
+                                        } else if (left < secondLeft) {
+                                            secondLeft = left;
+                                        }
+                                        final int visible = Math.min(child.getRight(), list.getWidth())
+                                                - Math.max(left, 0);
+                                        if (visible > shownWidth) {
+                                            shownWidth = visible;
+                                            shown = child;
+                                        }
+                                    }
+                                    if (shown == null || shown.getWidth() <= 0) {
+                                        index = -1;
+                                        break getShownIndex;
+                                    }
+                                    final int pitch = secondLeft != Integer.MAX_VALUE && secondLeft > firstLeft
+                                            ? secondLeft - firstLeft
+                                            : shown.getWidth();
+
+                                    // The scroll offset is the distance of the start of the list to its first item,
+                                    // and is the same for any adapter.
+                                    final int position = list.computeHorizontalScrollOffset() + shown.getLeft()
+                                            - list.getPaddingLeft();
+                                    index = Math.max(0, Math.round(position / (float) pitch));
+                                }
+                            } else {
+                                index = -1;
+                            }
                             Logger.printDebug(() -> "Shown image " + index + " of " + images.size());
                             shownImages = index >= 0 && index < images.size() ? List.of(images.get(index)) : images;
                         }
@@ -949,43 +983,6 @@ public final class PostImageDownloadPatch {
             }
         }
         return best;
-    }
-
-    /**
-     * @return The position of the item of the carousel that is shown the most, or -1 if none.
-     */
-    private static int getShownIndex(RecyclerView carousel) {
-        View shown = null;
-        int shownWidth = 0;
-        int firstLeft = Integer.MAX_VALUE;
-        int secondLeft = Integer.MAX_VALUE;
-        for (int i = 0, count = carousel.getChildCount(); i < count; i++) {
-            View child = carousel.getChildAt(i);
-            final int left = child.getLeft();
-            if (left < firstLeft) {
-                secondLeft = firstLeft;
-                firstLeft = left;
-            } else if (left < secondLeft) {
-                secondLeft = left;
-            }
-            final int visible = Math.min(child.getRight(), carousel.getWidth()) - Math.max(left, 0);
-            if (visible > shownWidth) {
-                shownWidth = visible;
-                shown = child;
-            }
-        }
-        if (shown == null || shown.getWidth() <= 0) {
-            return -1;
-        }
-        final int pitch = secondLeft != Integer.MAX_VALUE && secondLeft > firstLeft
-                ? secondLeft - firstLeft
-                : shown.getWidth();
-
-        // The scroll offset is the distance of the start of the list to its first item,
-        // and is the same for any adapter.
-        final int position = carousel.computeHorizontalScrollOffset() + shown.getLeft()
-                - carousel.getPaddingLeft();
-        return Math.max(0, Math.round(position / (float) pitch));
     }
 
     // endregion

@@ -574,8 +574,96 @@ public final class FeedEngagementCountsPatch {
                     < Math.min(metrics.widthPixels, metrics.heightPixels) * MAX_SMALL_THUMBNAIL_OF_SCREEN;
             ratioText = small && LIKE_COUNT ? null : videoRatioText;
 
-            if (NEXT_TO_VIEW_COUNT && placeRow(host, frame, loading)) {
-                return;
+            if (NEXT_TO_VIEW_COUNT) {
+                // Places the badge as one row at the bottom of the thumbnail, right after the view count badge,
+                // or where the view count badge would be if it's not shown.
+                // Returns if the badge is placed or waits, and goes on below if the row does not fit
+                // on the thumbnail.
+                placeRow: {
+                    if (frame.estimated()) {
+                        // The row of the duration moves down once the title of the Short is drawn.
+                        row = false;
+                        setJoined(host, false);
+                        removeFromOverlay(host);
+                        return;
+                    }
+                    final Rect duration = frame.duration();
+                    final Rect thumbnail = frame.thumbnail();
+                    final boolean rtl = FeedViewCountPatch.isRtl(host);
+                    final int thumbnailLeft = thumbnail != null ? thumbnail.left : 0;
+                    final int thumbnailRight = thumbnail != null ? thumbnail.right : host.getWidth();
+                    final Rect viewCount = FeedViewCountPatch.getBadgeBounds(host);
+                    if (viewCount == null && FeedViewCountPatch.isViewCountPending(host)) {
+                        // The view count is shown once the texts below the title are shown, so the row waits for it,
+                        // instead of being shown alone and then moving next to it.
+                        row = false;
+                        setJoined(host, false);
+                        removeFromOverlay(host);
+                        return;
+                    }
+
+                    // Same height and bottom as the view count badge and the duration badge.
+                    final int top;
+                    final int bottom;
+                    if (viewCount != null) {
+                        top = viewCount.top;
+                        bottom = viewCount.bottom;
+                    } else if (duration != null) {
+                        top = duration.top;
+                        bottom = duration.bottom;
+                    } else {
+                        final int thumbnailBottom = thumbnail != null
+                                ? thumbnail.bottom
+                                : host instanceof ComponentHost componentHost
+                                ? FeedVideoCardsPatch.getThumbnailBottom(componentHost)
+                                : host.getHeight();
+                        bottom = thumbnailBottom - px(RIGHT_MARGIN_DP);
+                        top = bottom - px(ROW_FALLBACK_HEIGHT_DP);
+                    }
+                    final int height = bottom - top;
+                    if (height < px(ROW_MIN_HEIGHT_DP)) {
+                        break placeRow;
+                    }
+                    // The same space from the edge of the thumbnail as the view count badge.
+                    final int margin = duration != null
+                            ? Math.max(0, rtl ? duration.left - thumbnailLeft : thumbnailRight - duration.right)
+                            + px(FeedViewCountPatch.EXTRA_MARGIN_DP)
+                            : px(ROW_FALLBACK_MARGIN_DP);
+                    final float textSize = FeedViewCountPatch.getBadgeTextSize(host, height);
+                    final int gap = px(DURATION_GAP_DP);
+                    // The row does not overlap the duration badge, or the edge of the thumbnail.
+                    final int durationLimit = duration != null
+                            ? (rtl ? duration.right + gap : duration.left - gap)
+                            : (rtl ? thumbnailLeft + margin : thumbnailRight - margin);
+
+                    // Right after the view count badge.
+                    if (viewCount != null && setRow(host, loading, textSize, true,
+                            rtl ? viewCount.left : viewCount.right, top, bottom, durationLimit, rtl)) {
+                        return;
+                    }
+                    final int start = rtl ? thumbnailRight - margin : thumbnailLeft + margin;
+                    // Where the view count badge would be, if it's not shown.
+                    if (viewCount == null) {
+                        for (float scale : ROW_TEXT_SCALES) {
+                            if (setRow(host, loading, textSize * scale, false, start, top, bottom, durationLimit, rtl)) {
+                                return;
+                            }
+                        }
+                    }
+                    // Above the row of the duration, if the row does not fit next to the duration badge,
+                    // such as on the small thumbnails of the rows of a list, or the Shorts of a shelf.
+                    final int aboveBottom = top - gap;
+                    final int aboveTop = aboveBottom - height;
+                    if (aboveTop < (thumbnail != null ? thumbnail.top : 0) + margin) {
+                        break placeRow;
+                    }
+                    final int edgeLimit = rtl ? thumbnailLeft + margin : thumbnailRight - margin;
+                    for (float scale : ROW_TEXT_SCALES) {
+                        if (setRow(host, loading, textSize * scale, false, start, aboveTop, aboveBottom, edgeLimit, rtl)) {
+                            return;
+                        }
+                    }
+                }
             }
             row = false;
             setJoined(host, false);
@@ -729,99 +817,6 @@ public final class FeedEngagementCountsPatch {
         }
 
         /**
-         * Places the badge as one row at the bottom of the thumbnail, right after the view count badge,
-         * or where the view count badge would be if it's not shown.
-         *
-         * @return If the badge is placed or waits, or false if the row does not fit on the thumbnail.
-         */
-        private boolean placeRow(View host, FeedViewCountPatch.ThumbnailFrame frame, boolean loading) {
-            if (frame.estimated()) {
-                // The row of the duration moves down once the title of the Short is drawn.
-                row = false;
-                setJoined(host, false);
-                removeFromOverlay(host);
-                return true;
-            }
-            final Rect duration = frame.duration();
-            final Rect thumbnail = frame.thumbnail();
-            final boolean rtl = FeedViewCountPatch.isRtl(host);
-            final int thumbnailLeft = thumbnail != null ? thumbnail.left : 0;
-            final int thumbnailRight = thumbnail != null ? thumbnail.right : host.getWidth();
-            final Rect viewCount = FeedViewCountPatch.getBadgeBounds(host);
-            if (viewCount == null && FeedViewCountPatch.isViewCountPending(host)) {
-                // The view count is shown once the texts below the title are shown, so the row waits for it,
-                // instead of being shown alone and then moving next to it.
-                row = false;
-                setJoined(host, false);
-                removeFromOverlay(host);
-                return true;
-            }
-
-            // Same height and bottom as the view count badge and the duration badge.
-            final int top;
-            final int bottom;
-            if (viewCount != null) {
-                top = viewCount.top;
-                bottom = viewCount.bottom;
-            } else if (duration != null) {
-                top = duration.top;
-                bottom = duration.bottom;
-            } else {
-                final int thumbnailBottom = thumbnail != null
-                        ? thumbnail.bottom
-                        : host instanceof ComponentHost componentHost
-                        ? FeedVideoCardsPatch.getThumbnailBottom(componentHost)
-                        : host.getHeight();
-                bottom = thumbnailBottom - px(RIGHT_MARGIN_DP);
-                top = bottom - px(ROW_FALLBACK_HEIGHT_DP);
-            }
-            final int height = bottom - top;
-            if (height < px(ROW_MIN_HEIGHT_DP)) {
-                return false;
-            }
-            // The same space from the edge of the thumbnail as the view count badge.
-            final int margin = duration != null
-                    ? Math.max(0, rtl ? duration.left - thumbnailLeft : thumbnailRight - duration.right)
-                    + px(FeedViewCountPatch.EXTRA_MARGIN_DP)
-                    : px(ROW_FALLBACK_MARGIN_DP);
-            final float textSize = FeedViewCountPatch.getBadgeTextSize(host, height);
-            final int gap = px(DURATION_GAP_DP);
-            // The row does not overlap the duration badge, or the edge of the thumbnail.
-            final int durationLimit = duration != null
-                    ? (rtl ? duration.right + gap : duration.left - gap)
-                    : (rtl ? thumbnailLeft + margin : thumbnailRight - margin);
-
-            // Right after the view count badge.
-            if (viewCount != null && setRow(host, loading, textSize, true,
-                    rtl ? viewCount.left : viewCount.right, top, bottom, durationLimit, rtl)) {
-                return true;
-            }
-            final int start = rtl ? thumbnailRight - margin : thumbnailLeft + margin;
-            // Where the view count badge would be, if it's not shown.
-            if (viewCount == null) {
-                for (float scale : ROW_TEXT_SCALES) {
-                    if (setRow(host, loading, textSize * scale, false, start, top, bottom, durationLimit, rtl)) {
-                        return true;
-                    }
-                }
-            }
-            // Above the row of the duration, if the row does not fit next to the duration badge,
-            // such as on the small thumbnails of the rows of a list, or the Shorts of a shelf.
-            final int aboveBottom = top - gap;
-            final int aboveTop = aboveBottom - height;
-            if (aboveTop < (thumbnail != null ? thumbnail.top : 0) + margin) {
-                return false;
-            }
-            final int edgeLimit = rtl ? thumbnailLeft + margin : thumbnailRight - margin;
-            for (float scale : ROW_TEXT_SCALES) {
-                if (setRow(host, loading, textSize * scale, false, start, aboveTop, aboveBottom, edgeLimit, rtl)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /**
          * Places the row if it fits.
          *
          * @param start Where the row starts: its left, or its right in right to left languages.
@@ -831,7 +826,58 @@ public final class FeedEngagementCountsPatch {
         private boolean setRow(View host, boolean loading, float textSize, boolean join,
                                int start, int top, int bottom, int limit, boolean rtl) {
             rowPaint.setTextSize(textSize);
-            final int width = Math.round(measureRow(loading, join, rtl));
+            // Measures the row next to the view count, with the text size set to rowPaint,
+            // and sets where its content and its divider are.
+            // The width of the row.
+            float measureRow;
+            measureRow: {
+                final float rowTextSize = rowPaint.getTextSize();
+                final int gap = px(GAP_DP);
+                final boolean likePart = countText != null || (loading && LIKE_COUNT);
+                final float iconSize = Math.round(rowTextSize * ROW_ICON_OF_TEXT);
+
+                float content = 0;
+                if (likePart) {
+                    content += iconSize + gap;
+                }
+                if (loading) {
+                    content += rowTextSize * ROW_BAR_OF_TEXT;
+                } else {
+                    if (countText != null) {
+                        content += rowPaint.measureText(countText);
+                    }
+                    if (ratioText != null) {
+                        if (countText != null) {
+                            content += px(ROW_GROUP_GAP_DP);
+                        }
+                        content += px(ROW_BAR_WIDTH_DP) + gap + rowPaint.measureText(ratioText);
+                    }
+                }
+
+                final int padding = px(ROW_PADDING_DP);
+                if (!join) {
+                    rowContentLeft = padding;
+                    measureRow = padding * 2 + content;
+                    break measureRow;
+                }
+                // The same space is seen at each side of the divider. The view count badge has its padding
+                // before the divider, and the like icon has some space around its shape after it.
+                final float space = px(ROW_DIVIDER_SPACE_DP);
+                final float dividerWidth = ROW_DIVIDER_WIDTH_DP * density;
+                final float viewCountSide = Math.max(0, space - px(FeedViewCountPatch.PADDING_DP));
+                if (rtl) {
+                    // The like count is at the left, and the view count badge at the right.
+                    rowContentLeft = padding;
+                    rowDividerX = padding + content + space + dividerWidth / 2;
+                    measureRow = rowDividerX + dividerWidth / 2 + viewCountSide;
+                    break measureRow;
+                }
+                final float contentSide = Math.max(0, space - (likePart ? iconSize * ROW_ICON_INSET_OF_SIZE : 0));
+                rowDividerX = viewCountSide + dividerWidth / 2;
+                rowContentLeft = viewCountSide + dividerWidth + contentSide;
+                measureRow = rowContentLeft + content + padding;
+            }
+            final int width = Math.round(measureRow);
             final int left = rtl ? start - width : start;
             final int right = left + width;
             if (rtl ? left < limit : right > limit) {
@@ -848,58 +894,6 @@ public final class FeedEngagementCountsPatch {
             }
             invalidateSelf();
             return true;
-        }
-
-        /**
-         * Measures the row next to the view count, with the text size set to {@link #rowPaint},
-         * and sets where its content and its divider are.
-         *
-         * @return The width of the row.
-         */
-        private float measureRow(boolean loading, boolean withDivider, boolean rtl) {
-            final float textSize = rowPaint.getTextSize();
-            final int gap = px(GAP_DP);
-            final boolean likePart = countText != null || (loading && LIKE_COUNT);
-            final float iconSize = Math.round(textSize * ROW_ICON_OF_TEXT);
-
-            float content = 0;
-            if (likePart) {
-                content += iconSize + gap;
-            }
-            if (loading) {
-                content += textSize * ROW_BAR_OF_TEXT;
-            } else {
-                if (countText != null) {
-                    content += rowPaint.measureText(countText);
-                }
-                if (ratioText != null) {
-                    if (countText != null) {
-                        content += px(ROW_GROUP_GAP_DP);
-                    }
-                    content += px(ROW_BAR_WIDTH_DP) + gap + rowPaint.measureText(ratioText);
-                }
-            }
-
-            final int padding = px(ROW_PADDING_DP);
-            if (!withDivider) {
-                rowContentLeft = padding;
-                return padding * 2 + content;
-            }
-            // The same space is seen at each side of the divider. The view count badge has its padding
-            // before the divider, and the like icon has some space around its shape after it.
-            final float space = px(ROW_DIVIDER_SPACE_DP);
-            final float dividerWidth = ROW_DIVIDER_WIDTH_DP * density;
-            final float viewCountSide = Math.max(0, space - px(FeedViewCountPatch.PADDING_DP));
-            if (rtl) {
-                // The like count is at the left, and the view count badge at the right.
-                rowContentLeft = padding;
-                rowDividerX = padding + content + space + dividerWidth / 2;
-                return rowDividerX + dividerWidth / 2 + viewCountSide;
-            }
-            final float contentSide = Math.max(0, space - (likePart ? iconSize * ROW_ICON_INSET_OF_SIZE : 0));
-            rowDividerX = viewCountSide + dividerWidth / 2;
-            rowContentLeft = viewCountSide + dividerWidth + contentSide;
-            return rowContentLeft + content + padding;
         }
 
         /**
