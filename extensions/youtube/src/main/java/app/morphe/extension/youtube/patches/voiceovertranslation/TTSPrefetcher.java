@@ -114,110 +114,142 @@ final class TTSPrefetcher {
         running = true;
         Utils.runOnBackgroundThread(() -> {
             try {
-                runPrefetchLoop();
+                runPrefetchLoop: {
+                    long lastFetchTimeMs = 0;
+                    String lastVideoId = "";
+
+                    while (!Thread.currentThread().isInterrupted()) {
+                        String videoId;
+                        List<TranscriptSegment> segments;
+                        final long timeMs;
+                        synchronized (lock) {
+                            videoId = currentVideoId;
+                            segments = currentSegments;
+                            timeMs = currentVideoTimeMs;
+                        }
+
+                        if (!videoId.equals(lastVideoId)) {
+                            lastVideoId = videoId;
+                            lastFetchTimeMs = 0;
+                        }
+
+                        if (videoId.isEmpty() || segments.isEmpty()
+                                || !Settings.VOT_ENABLED.get()
+                                || !Settings.VOT_SESSION_ENABLED.get()
+                                || Settings.VOT_USE_NATIVE_TTS.get()) {
+                            if (waitOnLock(DELAY_IDLE_MS)) break runPrefetchLoop;
+                            continue;
+                        }
+
+                        String voiceLang = VoiceOverTranslationPatch.resolveTargetLang();
+                        String voice = VoiceCatalog.resolve(voiceLang, Settings.VOT_TTS_VOICE_TYPE.get());
+
+                        if (voice == null) {
+                            if (waitOnLock(DELAY_IDLE_MS)) break runPrefetchLoop;
+                            continue;
+                        }
+
+                        NextFetch next;
+                        findNextToFetch: {
+                            final int segmentsSize = segments.size();
+                            int firstFutureIndex = segmentsSize;
+
+                            // Priority 1: Future segments, closest first.
+                            for (int i = 0; i < segmentsSize; i++) {
+                                TranscriptSegment seg = segments.get(i);
+                                if (seg.startMs >= timeMs) {
+                                    if (firstFutureIndex == segmentsSize) {
+                                        firstFutureIndex = i;
+                                    }
+
+                                    // A failed translation batch leaves segments in the source language; skip them
+                                    // so we don't cache source-language TTS while the user expects the target language.
+                                    if (TranscriptFetcher.isSpokenLanguageDifferent(voiceLang, seg.lang)) continue;
+                                    if (TTSCache.notCached(videoId, i, voice, voiceLang, seg.text)) {
+                                        next = new NextFetch(i, i - firstFutureIndex, seg);
+                                        break findNextToFetch;
+                                    }
+                                }
+                            }
+
+                            // Priority 2: Past segments (for loops/seeks), closest to playhead first.
+                            for (int i = firstFutureIndex - 1; i >= 0; i--) {
+                                TranscriptSegment seg = segments.get(i);
+                                if (TranscriptFetcher.isSpokenLanguageDifferent(voiceLang, seg.lang)) continue;
+                                if (TTSCache.notCached(videoId, i, voice, voiceLang, seg.text)) {
+                                    next = new NextFetch(i, firstFutureIndex - i, seg);
+                                    break findNextToFetch;
+                                }
+                            }
+
+                            next = null;
+                        }
+                        if (next == null) {
+                            if (waitOnLock(DELAY_IDLE_MS)) break runPrefetchLoop;
+                        } else {
+                            final int delay;
+                            synchronized (lock) {
+                                final long distanceMs = Math.abs(next.seg.startMs - timeMs);
+                                if (currentBackoffMs > 0) {
+                                    delay = currentBackoffMs;
+                                } else if (distanceMs <= DISTANCE_IMMEDIATE_MS) {
+                                    delay = DELAY_IMMEDIATE_MS;
+                                } else if (distanceMs <= DISTANCE_NEAR_MS) {
+                                    delay = DELAY_NEAR_MS;
+                                } else {
+                                    delay = DELAY_BACKGROUND_MS;
+                                }
+
+                                if (loadingLatch != null) {
+                                    // If resuming a previously watched video from a prior app session
+                                    // (no in memory TTS), then this may use the wrong video time.
+                                    // But the prefetch will still block until at least the captions
+                                    // and translations are ready.
+                                    if (distanceMs > DISTANCE_PREFETCH_IGNORE) {
+                                        Logger.printDebug(() -> "Counting down prefetch latch early, " +
+                                                "first segment distance: " + distanceMs);
+                                        loadingLatch.countDown();
+                                        loadingLatch = null;
+                                    }
+                                }
+                            }
+
+                            final long now = System.currentTimeMillis();
+                            final long elapsed = now - lastFetchTimeMs;
+
+                            if (elapsed < delay) {
+                                if (waitOnLock(delay - elapsed)) break runPrefetchLoop;
+                                continue;
+                            }
+
+                            final boolean success = fetch(videoId, segments, segments.get(next.index),
+                                    next.index, voice, voiceLang);
+                            lastFetchTimeMs = System.currentTimeMillis();
+
+                            synchronized (lock) {
+                                // An old request must not release the new video's latch or alter its backoff.
+                                if (!isCurrentSnapshot(videoId, segments)) continue;
+                                if (loadingLatch != null) {
+                                    Logger.printDebug(() -> "Releasing loading latch");
+                                    loadingLatch.countDown();
+                                    loadingLatch = null;
+                                }
+                                if (success) {
+                                    currentBackoffMs = Math.max(0, currentBackoffMs - 500);
+                                } else {
+                                    if (currentBackoffMs == 0) currentBackoffMs = BACKOFF_MIN_MS;
+                                    else currentBackoffMs = (int) Math.min(BACKOFF_MAX_MS, currentBackoffMs * BACKOFF_FACTOR);
+                                }
+                            }
+                        }
+                    }
+                }
             } finally {
                 synchronized (lock) {
                     running = false;
                 }
             }
         });
-    }
-
-    private static void runPrefetchLoop() {
-        long lastFetchTimeMs = 0;
-        String lastVideoId = "";
-
-        while (!Thread.currentThread().isInterrupted()) {
-            String videoId;
-            List<TranscriptSegment> segments;
-            final long timeMs;
-            synchronized (lock) {
-                videoId = currentVideoId;
-                segments = currentSegments;
-                timeMs = currentVideoTimeMs;
-            }
-
-            if (!videoId.equals(lastVideoId)) {
-                lastVideoId = videoId;
-                lastFetchTimeMs = 0;
-            }
-
-            if (videoId.isEmpty() || segments.isEmpty()
-                    || !Settings.VOT_ENABLED.get()
-                    || !Settings.VOT_SESSION_ENABLED.get()
-                    || Settings.VOT_USE_NATIVE_TTS.get()) {
-                if (waitOnLock(DELAY_IDLE_MS)) return;
-                continue;
-            }
-
-            String voiceLang = VoiceOverTranslationPatch.resolveTargetLang();
-            String voice = VoiceCatalog.resolve(voiceLang, Settings.VOT_TTS_VOICE_TYPE.get());
-
-            if (voice == null) {
-                if (waitOnLock(DELAY_IDLE_MS)) return;
-                continue;
-            }
-
-            NextFetch next = findNextToFetch(videoId, segments, timeMs, voice, voiceLang);
-            if (next == null) {
-                if (waitOnLock(DELAY_IDLE_MS)) return;
-            } else {
-                final int delay;
-                synchronized (lock) {
-                    final long distanceMs = Math.abs(next.seg.startMs - timeMs);
-                    if (currentBackoffMs > 0) {
-                        delay = currentBackoffMs;
-                    } else if (distanceMs <= DISTANCE_IMMEDIATE_MS) {
-                        delay = DELAY_IMMEDIATE_MS;
-                    } else if (distanceMs <= DISTANCE_NEAR_MS) {
-                        delay = DELAY_NEAR_MS;
-                    } else {
-                        delay = DELAY_BACKGROUND_MS;
-                    }
-
-                    if (loadingLatch != null) {
-                        // If resuming a previously watched video from a prior app session
-                        // (no in memory TTS), then this may use the wrong video time.
-                        // But the prefetch will still block until at least the captions
-                        // and translations are ready.
-                        if (distanceMs > DISTANCE_PREFETCH_IGNORE) {
-                            Logger.printDebug(() -> "Counting down prefetch latch early, " +
-                                    "first segment distance: " + distanceMs);
-                            loadingLatch.countDown();
-                            loadingLatch = null;
-                        }
-                    }
-                }
-
-                final long now = System.currentTimeMillis();
-                final long elapsed = now - lastFetchTimeMs;
-
-                if (elapsed < delay) {
-                    if (waitOnLock(delay - elapsed)) return;
-                    continue;
-                }
-
-                final boolean success = fetch(videoId, segments, segments.get(next.index),
-                        next.index, voice, voiceLang);
-                lastFetchTimeMs = System.currentTimeMillis();
-
-                synchronized (lock) {
-                    // An old request must not release the new video's latch or alter its backoff.
-                    if (!isCurrentSnapshot(videoId, segments)) continue;
-                    if (loadingLatch != null) {
-                        Logger.printDebug(() -> "Releasing loading latch");
-                        loadingLatch.countDown();
-                        loadingLatch = null;
-                    }
-                    if (success) {
-                        currentBackoffMs = Math.max(0, currentBackoffMs - 500);
-                    } else {
-                        if (currentBackoffMs == 0) currentBackoffMs = BACKOFF_MIN_MS;
-                        else currentBackoffMs = (int) Math.min(BACKOFF_MAX_MS, currentBackoffMs * BACKOFF_FACTOR);
-                    }
-                }
-            }
-        }
     }
 
 
@@ -236,40 +268,6 @@ final class TTSPrefetcher {
                 waiting = false;
             }
         }
-    }
-
-    @Nullable
-    private static NextFetch findNextToFetch(String videoId, List<TranscriptSegment> segments,
-                                             long timeMs, String voice, String lang) {
-        final int segmentsSize = segments.size();
-        int firstFutureIndex = segmentsSize;
-
-        // Priority 1: Future segments, closest first.
-        for (int i = 0; i < segmentsSize; i++) {
-            TranscriptSegment seg = segments.get(i);
-            if (seg.startMs >= timeMs) {
-                if (firstFutureIndex == segmentsSize) {
-                    firstFutureIndex = i;
-                }
-                // A failed translation batch leaves segments in the source language; skip them
-                // so we don't cache source-language TTS while the user expects the target language.
-                if (TranscriptFetcher.isSpokenLanguageDifferent(lang, seg.lang)) continue;
-                if (TTSCache.notCached(videoId, i, voice, lang, seg.text)) {
-                    return new NextFetch(i, i - firstFutureIndex, seg);
-                }
-            }
-        }
-
-        // Priority 2: Past segments (for loops/seeks), closest to playhead first.
-        for (int i = firstFutureIndex - 1; i >= 0; i--) {
-            TranscriptSegment seg = segments.get(i);
-            if (TranscriptFetcher.isSpokenLanguageDifferent(lang, seg.lang)) continue;
-            if (TTSCache.notCached(videoId, i, voice, lang, seg.text)) {
-                return new NextFetch(i, firstFutureIndex - i, seg);
-            }
-        }
-
-        return null;
     }
 
     @GuardedBy("lock")

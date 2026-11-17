@@ -150,10 +150,6 @@ public class LoopCountFlyoutButton {
         return stepper != null && stepper.view.isAttachedToWindow() ? stepper : null;
     }
 
-    private static String formatLoopCount(int loopCount) {
-        return loopCount > 0 ? String.valueOf(loopCount) : NO_LIMIT_TEXT;
-    }
-
     /**
      * Arrows to change the loop count, and the loop count that can be tapped to type it.
      */
@@ -276,7 +272,7 @@ public class LoopCountFlyoutButton {
 
         private void updateViews() {
             valueView.setEnabled(enabled);
-            valueView.setText(formatLoopCount(loopCount));
+            valueView.setText(loopCount > 0 ? String.valueOf(loopCount) : NO_LIMIT_TEXT);
             valueView.setContentDescription(loopCount > 0
                     ? str("morphe_loop_count_times", String.valueOf(loopCount))
                     : str("morphe_loop_count_no_limit"));

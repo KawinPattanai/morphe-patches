@@ -10,7 +10,6 @@ package app.morphe.extension.youtube.patches.originaltitles;
 
 import androidx.annotation.Nullable;
 
-import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -328,7 +327,38 @@ final class OriginalTitleRequest {
 
             // oEmbed does not return the title of some videos,
             // such as the videos whose embedding is disabled by the uploader (code 401).
-            return fetchPlayerTitle(videoId);
+            // Fetches the original title from the player endpoint without an account,
+            // which returns the title as set by the uploader, and not the translated title.
+            if (RequestBackoff.isPaused()) {
+                originalTitleFailed(videoId);
+                return null;
+            }
+            byte[] requestBody = ChannelIdRoutes.createBody(videoId);
+            HttpURLConnection playerConnection = ChannelIdRoutes.getConnection(ChannelIdRoutes.GET_TITLE);
+            playerConnection.setFixedLengthStreamingMode(requestBody.length);
+            try (OutputStream output = playerConnection.getOutputStream()) {
+                output.write(requestBody);
+            }
+
+            final int playerResponseCode = playerConnection.getResponseCode();
+            if (playerResponseCode != Requester.HTTP_STATUS_CODE_SUCCESS) {
+                if (RequestBackoff.isTemporaryError(playerResponseCode)) {
+                    // Fetched again later, as the server limits the requests or is unavailable.
+                    RequestBackoff.onTemporaryError(playerConnection, playerResponseCode);
+                    originalTitleFailed(videoId);
+                    return null;
+                }
+                Logger.printDebug(() -> "Player title request failed for: " + videoId + " code: " + playerResponseCode);
+                return null;
+            }
+            JSONObject videoDetails = Requester.parseJSONObject(playerConnection).optJSONObject("videoDetails");
+            String title = videoDetails == null ? "" : videoDetails.optString("title");
+            if (title.isEmpty()) {
+                Logger.printDebug(() -> "Player response has no title for: " + videoId);
+                return null;
+            }
+            Logger.printDebug(() -> "Original title fetched from the player endpoint for: " + videoId);
+            return originalTitleFetched(videoId, title, videoDetails.optString("author"));
         } catch (IOException ex) {
             Logger.printInfo(() -> "Could not fetch original title of: " + videoId, ex);
             originalTitleFailed(videoId);
@@ -336,44 +366,6 @@ final class OriginalTitleRequest {
             Logger.printException(() -> "fetchOriginalTitle failure", ex);
         }
         return null;
-    }
-
-    /**
-     * Fetches the original title from the player endpoint without an account,
-     * which returns the title as set by the uploader, and not the translated title.
-     */
-    @Nullable
-    private static String fetchPlayerTitle(String videoId) throws IOException, JSONException {
-        if (RequestBackoff.isPaused()) {
-            originalTitleFailed(videoId);
-            return null;
-        }
-        byte[] requestBody = ChannelIdRoutes.createBody(videoId);
-        HttpURLConnection connection = ChannelIdRoutes.getConnection(ChannelIdRoutes.GET_TITLE);
-        connection.setFixedLengthStreamingMode(requestBody.length);
-        try (OutputStream output = connection.getOutputStream()) {
-            output.write(requestBody);
-        }
-
-        final int responseCode = connection.getResponseCode();
-        if (responseCode != Requester.HTTP_STATUS_CODE_SUCCESS) {
-            if (RequestBackoff.isTemporaryError(responseCode)) {
-                // Fetched again later, as the server limits the requests or is unavailable.
-                RequestBackoff.onTemporaryError(connection, responseCode);
-                originalTitleFailed(videoId);
-                return null;
-            }
-            Logger.printDebug(() -> "Player title request failed for: " + videoId + " code: " + responseCode);
-            return null;
-        }
-        JSONObject videoDetails = Requester.parseJSONObject(connection).optJSONObject("videoDetails");
-        String title = videoDetails == null ? "" : videoDetails.optString("title");
-        if (title.isEmpty()) {
-            Logger.printDebug(() -> "Player response has no title for: " + videoId);
-            return null;
-        }
-        Logger.printDebug(() -> "Original title fetched from the player endpoint for: " + videoId);
-        return originalTitleFetched(videoId, title, videoDetails.optString("author"));
     }
 
     private static String originalTitleFetched(String videoId, String title, String channelName) {

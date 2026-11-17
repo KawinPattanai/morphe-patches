@@ -152,8 +152,12 @@ public final class YouTubeGlassNavigationBar {
     /**
      * Views of a button that hold its content, the icon and the label. Other views of the button,
      * such as the badge of the new content count, are left out. Also used by the preview in the settings.
+     * The buttons without a label hold their icon in an image view, except the You button.
      */
-    public static final int BUTTON_ICON = ResourceUtils.getIdentifier(ResourceType.ID, "thumbnail_layout");
+    public static final int[] BUTTON_ICONS = {
+            ResourceUtils.getIdentifier(ResourceType.ID, "thumbnail_layout"),
+            ResourceUtils.getIdentifier(ResourceType.ID, "image")
+    };
     public static final int BUTTON_LABEL = ResourceUtils.getIdentifier(ResourceType.ID, "text");
 
     /**
@@ -198,40 +202,6 @@ public final class YouTubeGlassNavigationBar {
     private static final int SEEN_ROOM_TOLERANCE = Dim.dp2;
 
     /**
-     * Some configurations, such as with the layout updates of the app disabled, add the room
-     * for the system navigation buttons to the height of the bar another way, so it is not known
-     * as the room the app added, and it would be added twice. The bar is then given its full
-     * height plus exactly its bottom padding, which is remembered for as long as the padding
-     * stays the same, also while the app animates the height to hide the bar.
-     */
-    private static void updateSeenAppRoom(View navigationBar, int height) {
-        final int padding = navigationBar.getPaddingBottom();
-        if (padding != seenAppRoomPadding) {
-            seenAppRoom = 0;
-            seenAppRoomPadding = padding;
-        }
-
-        // The app can round the room it adds differently from the padding, such as 109 for a padding of 110.
-        final int base = baseHeight;
-        final int room = height - base;
-        if (base > 0 && padding > 0 && Math.abs(room - padding) <= SEEN_ROOM_TOLERANCE && seenAppRoom != room) {
-            seenAppRoom = room;
-            Logger.printDebug(() -> "Glass navigation bar room added by the app: " + room + " padding: " + padding);
-        }
-    }
-
-    /**
-     * @return The room below the buttons the app added to the height of the bar itself.
-     */
-    private static int getAppRoom(View navigationBar) {
-        final int padding = navigationBar.getPaddingBottom();
-        final int seenRoom = padding == seenAppRoomPadding ? seenAppRoom : 0;
-        // The stored room can still be the room of a previous bar, such as after switching between
-        // gesture and 3-button navigation, and the app never adds more room than the padding.
-        return Math.max(0, Math.min(Math.max(padding, seenRoom), Math.max(appRoom, seenRoom)));
-    }
-
-    /**
      * Injection point helper.
      * <p>
      * The room below the buttons that the app did not add to the height of the bar, such as the
@@ -248,7 +218,25 @@ public final class YouTubeGlassNavigationBar {
             }
 
             final int height = View.MeasureSpec.getSize(heightMeasureSpec);
-            updateSeenAppRoom(navigationBar, height);
+            // Some configurations, such as with the layout updates of the app disabled, add the room
+            // for the system navigation buttons to the height of the bar another way, so it is not known
+            // as the room the app added, and it would be added twice. The bar is then given its full
+            // height plus exactly its bottom padding, which is remembered for as long as the padding
+            // stays the same, also while the app animates the height to hide the bar.
+            final int padding = navigationBar.getPaddingBottom();
+            if (padding != seenAppRoomPadding) {
+                seenAppRoom = 0;
+                seenAppRoomPadding = padding;
+            }
+
+            // The app can round the room it adds differently from the padding, such as 109 for a padding of 110.
+            final int base = baseHeight;
+            final int room = height - base;
+            if (base > 0 && padding > 0 && Math.abs(room - padding) <= SEEN_ROOM_TOLERANCE && seenAppRoom != room) {
+                seenAppRoom = room;
+                Logger.printDebug(() -> "Glass navigation bar room added by the app: " + room + " padding: " + padding);
+            }
+
             final int added = getAddedRoom(navigationBar, height);
             if (added == 0) return heightMeasureSpec;
 
@@ -296,7 +284,12 @@ public final class YouTubeGlassNavigationBar {
      */
     private static int getAddedRoom(View navigationBar, int height) {
         final int base = baseHeight;
-        final int extra = navigationBar.getPaddingBottom() - getAppRoom(navigationBar) + heightDelta;
+        final int padding = navigationBar.getPaddingBottom();
+        final int seenRoom = padding == seenAppRoomPadding ? seenAppRoom : 0;
+        // The stored room can still be the room of a previous bar, such as after switching between
+        // gesture and 3-button navigation, and the app never adds more room than the padding.
+        final int appRoomOfPadding = Math.max(0, Math.min(Math.max(padding, seenRoom), Math.max(appRoom, seenRoom)));
+        final int extra = padding - appRoomOfPadding + heightDelta;
         if (base <= 0 || extra == 0 || height <= 0) return 0;
 
         // A navigation rail along the side.
@@ -513,7 +506,7 @@ public final class YouTubeGlassNavigationBar {
                     if (pivotBar instanceof ViewGroup bar && bar.getChildCount() > 0
                             && bar.getChildAt(0) instanceof ViewGroup tabs) {
                         GlassNavigationBarLayout.Buttons buttons = GlassNavigationBarLayout.measureButtons(
-                                tabs, BUTTON_ICON, BUTTON_LABEL, hiddenButtons);
+                                tabs, BUTTON_ICONS, BUTTON_LABEL, hiddenButtons);
                         final int contentWidth = buttons.contentWidth;
                         final int contentTop = buttons.contentTop;
 

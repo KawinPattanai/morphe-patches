@@ -199,8 +199,23 @@ public class ReturnYouTubeDislike {
                 // Check if colors match to fix changing light/dark mode while player is opened
                 // and avoid recreating the span. But if theme foreground color is replaced
                 // then always use replacement span as-is.
-                if ((ThemeColorPatch.isPatchIncluded() && SharedYouTubeSettings.THEME_COLOR_CHANGE_FOREGROUND.get())
-                        || spansHaveEqualTextAndColor(original, originalDislikeSpan)) {
+                boolean reuseSpan = ThemeColorPatch.isPatchIncluded() && SharedYouTubeSettings.THEME_COLOR_CHANGE_FOREGROUND.get();
+                spansHaveEqualTextAndColor:
+                if (!reuseSpan && original.toString().equals(originalDislikeSpan.toString())) {
+                    ForegroundColorSpan[] originalColors = original.getSpans(0, original.length(), ForegroundColorSpan.class);
+                    ForegroundColorSpan[] dislikeColors = originalDislikeSpan.getSpans(0, originalDislikeSpan.length(), ForegroundColorSpan.class);
+                    final int colorCount = originalColors.length;
+                    if (colorCount != dislikeColors.length) {
+                        break spansHaveEqualTextAndColor;
+                    }
+                    for (int i = 0; i < colorCount; i++) {
+                        if (originalColors[i].getForegroundColor() != dislikeColors[i].getForegroundColor()) {
+                            break spansHaveEqualTextAndColor;
+                        }
+                    }
+                    reuseSpan = true;
+                }
+                if (reuseSpan) {
                     Logger.printDebug(() -> "Replacing span: " + original + " with " +
                             "previously created dislike span of data: " + videoId);
                     return replacementLikeDislikeSpan;
@@ -213,7 +228,27 @@ public class ReturnYouTubeDislike {
                 votingData.updateUsingVote(userVote);
             }
             originalDislikeSpan = original;
-            replacementLikeDislikeSpan = createDislikeSpan(original, votingData);
+            createDislikeSpan: {
+                CharSequence oldLikes = original;
+
+                // YouTube creators can hide the like count on a video,
+                // and the like count appears as a device language specific string that says 'Like'.
+                // Check if the string contains any numbers.
+                if (!Utils.containsNumber(oldLikes)) {
+                    // Likes are hidden by video creator
+                    if (!SharedYouTubeSettings.RYD_ESTIMATED_LIKE.get()) {
+                        // Change the "Likes" string to show that likes and dislikes are hidden.
+                        String hiddenMessageString = str("morphe_ryd_video_likes_hidden_by_video_owner");
+                        replacementLikeDislikeSpan = newSpanUsingStylingOfAnotherSpan(original, hiddenMessageString);
+                        break createDislikeSpan;
+                    }
+
+                    Logger.printDebug(() -> "Using estimated likes");
+                    oldLikes = formatDislikeCount(votingData.getLikeCount());
+                }
+
+                replacementLikeDislikeSpan = newSpanUsingStylingOfAnotherSpan(original, oldLikes);
+            }
             Logger.printDebug(() -> "Replaced: '" + originalDislikeSpan + "' with: '"
                     + replacementLikeDislikeSpan + "'" + " using video: " + videoId);
 
@@ -223,27 +258,6 @@ public class ReturnYouTubeDislike {
         }
 
         return original;
-    }
-
-    private SpannableString createDislikeSpan(Spanned oldSpannable, RYDVoteData voteData) {
-        CharSequence oldLikes = oldSpannable;
-
-        // YouTube creators can hide the like count on a video,
-        // and the like count appears as a device language specific string that says 'Like'.
-        // Check if the string contains any numbers.
-        if (!Utils.containsNumber(oldLikes)) {
-            // Likes are hidden by video creator
-            if (!SharedYouTubeSettings.RYD_ESTIMATED_LIKE.get()) {
-                // Change the "Likes" string to show that likes and dislikes are hidden.
-                String hiddenMessageString = str("morphe_ryd_video_likes_hidden_by_video_owner");
-                return newSpanUsingStylingOfAnotherSpan(oldSpannable, hiddenMessageString);
-            }
-
-            Logger.printDebug(() -> "Using estimated likes");
-            oldLikes = formatDislikeCount(voteData.getLikeCount());
-        }
-
-        return newSpanUsingStylingOfAnotherSpan(oldSpannable, oldLikes);
     }
 
     private static SpannableString setSpanForegroundColor(SpannableString span) {
@@ -262,24 +276,6 @@ public class ReturnYouTubeDislike {
             );
         }
         return span;
-    }
-
-    private static boolean spansHaveEqualTextAndColor(Spanned one, Spanned two) {
-        if (!one.toString().equals(two.toString())) {
-            return false;
-        }
-        ForegroundColorSpan[] oneColors = one.getSpans(0, one.length(), ForegroundColorSpan.class);
-        ForegroundColorSpan[] twoColors = two.getSpans(0, two.length(), ForegroundColorSpan.class);
-        final int oneLength = oneColors.length;
-        if (oneLength != twoColors.length) {
-            return false;
-        }
-        for (int i = 0; i < oneLength; i++) {
-            if (oneColors[i].getForegroundColor() != twoColors[i].getForegroundColor()) {
-                return false;
-            }
-        }
-        return true;
     }
 
     protected static SpannableString newSpanUsingStylingOfAnotherSpan(Spanned sourceStyle, CharSequence newSpanText) {
@@ -352,32 +348,6 @@ public class ReturnYouTubeDislike {
         }
     }
 
-    protected static String formatDislikePercentage(float dislikePercentage) {
-        synchronized (ReturnYouTubeDislike.class) {
-            if (dislikePercentageFormatter == null) {
-                Locale locale = Locale.getDefault();
-                dislikePercentageFormatter = NumberFormat.getPercentInstance(locale);
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-                        && dislikePercentageFormatter instanceof DecimalFormat decimalFormatter) {
-                    DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(locale);
-                    symbols.setDigitStrings(DecimalFormatSymbols.getInstance(Locale.ENGLISH).getDigitStrings());
-                    decimalFormatter.setDecimalFormatSymbols(symbols);
-                }
-            }
-
-            if (dislikePercentage >= 0.01) {
-                // at least 1%
-                dislikePercentageFormatter.setMaximumFractionDigits(0);
-            } else {
-                // show up to 1 digit precision
-                dislikePercentageFormatter.setMaximumFractionDigits(1);
-            }
-
-            return dislikePercentageFormatter.format(dislikePercentage);
-        }
-    }
-
     protected boolean isExpired(long now) {
         final long timeSinceCreation = now - timeFetched;
         if (timeSinceCreation < CACHE_TIMEOUT_FAILURE_MILLISECONDS) {
@@ -428,9 +398,33 @@ public class ReturnYouTubeDislike {
         if (voteData == null) {
             return null;
         }
-        return SharedYouTubeSettings.RYD_DISLIKE_PERCENTAGE.get()
-                ? formatDislikePercentage(voteData.getDislikePercentage())
-                : formatDislikeCount(voteData.getDislikeCount());
+        if (!SharedYouTubeSettings.RYD_DISLIKE_PERCENTAGE.get()) {
+            return formatDislikeCount(voteData.getDislikeCount());
+        }
+        final float dislikePercentage = voteData.getDislikePercentage();
+        synchronized (ReturnYouTubeDislike.class) {
+            if (dislikePercentageFormatter == null) {
+                Locale locale = Locale.getDefault();
+                dislikePercentageFormatter = NumberFormat.getPercentInstance(locale);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                        && dislikePercentageFormatter instanceof DecimalFormat decimalFormatter) {
+                    DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(locale);
+                    symbols.setDigitStrings(DecimalFormatSymbols.getInstance(Locale.ENGLISH).getDigitStrings());
+                    decimalFormatter.setDecimalFormatSymbols(symbols);
+                }
+            }
+
+            if (dislikePercentage >= 0.01) {
+                // at least 1%
+                dislikePercentageFormatter.setMaximumFractionDigits(0);
+            } else {
+                // show up to 1 digit precision
+                dislikePercentageFormatter.setMaximumFractionDigits(1);
+            }
+
+            return dislikePercentageFormatter.format(dislikePercentage);
+        }
     }
 
     /**
@@ -458,13 +452,6 @@ public class ReturnYouTubeDislike {
         return voteData;
     }
 
-    private synchronized void clearUICache() {
-        if (replacementLikeDislikeSpan != null) {
-            Logger.printDebug(() -> "Clearing replacement span for: " + videoId);
-        }
-        replacementLikeDislikeSpan = null;
-    }
-
     public String getVideoId() {
         return videoId;
     }
@@ -480,7 +467,10 @@ public class ReturnYouTubeDislike {
 
                 synchronized (this) {
                     userVote = vote;
-                    clearUICache();
+                    if (replacementLikeDislikeSpan != null) {
+                        Logger.printDebug(() -> "Clearing replacement span for: " + videoId);
+                    }
+                    replacementLikeDislikeSpan = null;
                 }
 
                 if (future.isDone()) {

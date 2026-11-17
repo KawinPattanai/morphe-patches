@@ -183,7 +183,36 @@ public final class RememberLiveStreamPositionPatch {
             }
             lastSaveTime = now;
 
-            savePlaybackPosition(VideoInformation.getVideoId(), playbackTimeMs, videoLength);
+            savePlaybackPosition: {
+                String videoId = VideoInformation.getVideoId();
+                if (videoId.isEmpty()) {
+                    break savePlaybackPosition;
+                }
+
+                Map<String, SavedPosition> map = getSavedPositions();
+                map.put(videoId, new SavedPosition(playbackTimeMs, videoLength, System.currentTimeMillis()));
+                Logger.printDebug(() -> "Saved pos: " + playbackTimeMs
+                        + " len: " + videoLength + " id: " + videoId);
+
+                Map<String, SavedPosition> savedPositions = getSavedPositions();
+
+                while (savedPositions.size() > MAX_SAVED_STREAMS) {
+                    String oldestKey = null;
+                    long oldestTimestamp = Long.MAX_VALUE;
+                    for (Map.Entry<String, SavedPosition> entry : savedPositions.entrySet()) {
+                        if (entry.getValue().timestamp() < oldestTimestamp) {
+                            oldestTimestamp = entry.getValue().timestamp();
+                            oldestKey = entry.getKey();
+                        }
+                    }
+                    if (oldestKey != null) {
+                        savedPositions.remove(oldestKey);
+                    } else {
+                        break;
+                    }
+                }
+                saveSavedPositions();
+            }
         } catch (Exception ex) {
             Logger.printException(() -> "videoTimeChanged failure", ex);
         }
@@ -284,39 +313,38 @@ public final class RememberLiveStreamPositionPatch {
 
     private static Map<String, SavedPosition> getSavedPositions() {
         if (savedPositions == null) {
-            savedPositions = loadSavedPositions();
-        }
-        return savedPositions;
-    }
+            loadSavedPositions: {
+                String raw = Settings.REMEMBER_LIVE_STREAM_POSITION_TIMES.get();
+                if (raw.isEmpty()) {
+                    savedPositions = new HashMap<>();
+                    break loadSavedPositions;
+                }
 
-    private static Map<String, SavedPosition> loadSavedPositions() {
-        String raw = Settings.REMEMBER_LIVE_STREAM_POSITION_TIMES.get();
-        if (raw.isEmpty()) {
-            return new HashMap<>();
-        }
-
-        try {
-            JSONObject json = new JSONObject(raw);
-            Iterator<String> keys = json.keys();
-            Map<String, SavedPosition> map = new HashMap<>(2 * json.length());
-            while (keys.hasNext()) {
-                String videoId = keys.next();
-                JSONObject entry = json.optJSONObject(videoId);
-                if (entry != null) {
-                    final long position = entry.optLong("position", -1);
-                    final long videoLength = entry.optLong("videoLength", -1);
-                    final long timestamp = entry.optLong("timestamp", -1);
-                    if (position >= 0 && videoLength >= 0) {
-                        map.put(videoId, new SavedPosition(position, videoLength, timestamp));
+                try {
+                    JSONObject json = new JSONObject(raw);
+                    Iterator<String> keys = json.keys();
+                    Map<String, SavedPosition> map = new HashMap<>(2 * json.length());
+                    while (keys.hasNext()) {
+                        String videoId = keys.next();
+                        JSONObject entry = json.optJSONObject(videoId);
+                        if (entry != null) {
+                            final long position = entry.optLong("position", -1);
+                            final long videoLength = entry.optLong("videoLength", -1);
+                            final long timestamp = entry.optLong("timestamp", -1);
+                            if (position >= 0 && videoLength >= 0) {
+                                map.put(videoId, new SavedPosition(position, videoLength, timestamp));
+                            }
+                        }
                     }
+                    savedPositions = map;
+                } catch (Exception ex) {
+                    Logger.printException(() -> "Failed to load live stream positions setting", ex);
+                    Settings.REMEMBER_LIVE_STREAM_POSITION_TIMES.resetToDefault();
+                    savedPositions = new HashMap<>();
                 }
             }
-            return map;
-        } catch (Exception ex) {
-            Logger.printException(() -> "Failed to load live stream positions setting", ex);
-            Settings.REMEMBER_LIVE_STREAM_POSITION_TIMES.resetToDefault();
-            return new HashMap<>();
         }
+        return savedPositions;
     }
 
     private static void saveSavedPositions() {
@@ -340,44 +368,10 @@ public final class RememberLiveStreamPositionPatch {
         }
     }
 
-    private static void savePlaybackPosition(String videoId, long positionMs, long videoLengthMs) {
-        if (videoId.isEmpty()) {
-            return;
-        }
-
-        Map<String, SavedPosition> map = getSavedPositions();
-        map.put(videoId, new SavedPosition(positionMs, videoLengthMs, System.currentTimeMillis()));
-        Logger.printDebug(() -> "Saved pos: " + positionMs
-                + " len: " + videoLengthMs + " id: " + videoId);
-
-        trimSavedPositions();
-        saveSavedPositions();
-    }
-
     private static void deletePlaybackPosition(String videoId) {
         Map<String, SavedPosition> map = getSavedPositions();
         if (map.remove(videoId) != null) {
             saveSavedPositions();
-        }
-    }
-
-    private static void trimSavedPositions() {
-        Map<String, SavedPosition> map = getSavedPositions();
-
-        while (map.size() > MAX_SAVED_STREAMS) {
-            String oldestKey = null;
-            long oldestTimestamp = Long.MAX_VALUE;
-            for (Map.Entry<String, SavedPosition> entry : map.entrySet()) {
-                if (entry.getValue().timestamp() < oldestTimestamp) {
-                    oldestTimestamp = entry.getValue().timestamp();
-                    oldestKey = entry.getKey();
-                }
-            }
-            if (oldestKey != null) {
-                map.remove(oldestKey);
-            } else {
-                break;
-            }
         }
     }
 }

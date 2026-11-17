@@ -68,41 +68,31 @@ public class LinkHandlingPreference extends Preference {
             String originalPackage = key.substring(key.indexOf(':') + 1);
             String patchedPackage = context.getPackageName();
 
-            showStep1Dialog(context, originalPackage, patchedPackage);
-        } catch (Exception ex) {
-            Logger.printException(() -> "onClick failure", ex);
-        }
-    }
-
-    private static void showStep1Dialog(Context context, String originalPackage, String patchedPackage) {
-        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                context,
-                str("morphe_link_handling_step1_title"),
-                str("morphe_link_handling_step1_message"),
-                null,
-                str("morphe_link_handling_open"),
-                () -> {
-                    openAppLinkSettings(context, originalPackage);
-                    showStep2Dialog(context, patchedPackage);
-                },
-                null,
-                null,
-                null,
-                true
-        );
-
-        dialogPair.first.show();
-    }
-
-    private static void showStep2Dialog(Context context, String patchedPackage) {
-        Utils.runOnMainThreadDelayed(() -> {
             Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
                     context,
-                    str("morphe_link_handling_step2_title"),
-                    str("morphe_link_handling_step2_message"),
+                    str("morphe_link_handling_step1_title"),
+                    str("morphe_link_handling_step1_message"),
                     null,
                     str("morphe_link_handling_open"),
-                    () -> openAppLinkSettings(context, patchedPackage),
+                    () -> {
+                        openAppLinkSettings(context, originalPackage);
+                        Utils.runOnMainThreadDelayed(() -> {
+                            Pair<Dialog, LinearLayout> step2DialogPair = CustomDialog.create(
+                                    context,
+                                    str("morphe_link_handling_step2_title"),
+                                    str("morphe_link_handling_step2_message"),
+                                    null,
+                                    str("morphe_link_handling_open"),
+                                    () -> openAppLinkSettings(context, patchedPackage),
+                                    null,
+                                    null,
+                                    null,
+                                    true
+                            );
+
+                            step2DialogPair.first.show();
+                        }, 300);
+                    },
                     null,
                     null,
                     null,
@@ -110,7 +100,9 @@ public class LinkHandlingPreference extends Preference {
             );
 
             dialogPair.first.show();
-        }, 300);
+        } catch (Exception ex) {
+            Logger.printException(() -> "onClick failure", ex);
+        }
     }
 
     private static void openAppLinkSettings(Context context, String packageName) {

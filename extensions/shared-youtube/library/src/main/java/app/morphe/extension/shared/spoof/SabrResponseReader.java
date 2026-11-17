@@ -131,7 +131,31 @@ public final class SabrResponseReader {
             if (partRemaining == 0) {
                 if (copiedPart != null) {
                     if (partType == PART_STREAM_PROTECTION_STATUS) {
-                        status = readStatus(copiedPart);
+                        readStatus: {
+                            byte[] part = copiedPart;
+                            int position = 0;
+                            while (position < part.length) {
+                                final int tag = part[position++] & 0xFF;
+                                if ((tag & 7) != 0) {
+                                    // The message has only varint fields.
+                                    status = -1;
+                                    break readStatus;
+                                }
+                                long value = 0;
+                                for (int shift = 0; position < part.length; shift += 7) {
+                                    final byte b = part[position++];
+                                    value |= (long) (b & 0x7F) << shift;
+                                    if (b >= 0) {
+                                        break;
+                                    }
+                                }
+                                if (tag >> 3 == 1) {
+                                    status = (int) value;
+                                    break readStatus;
+                                }
+                            }
+                            status = -1;
+                        }
                     } else if (listener != null) {
                         listener.onPart(partType, copiedPart);
                     }
@@ -176,31 +200,5 @@ public final class SabrResponseReader {
             value |= (header[i] & 0xFFL) << (8 - size + 8 * (i - 1));
         }
         return value;
-    }
-
-    /**
-     * @return Field 1 of the StreamProtectionStatus message, or -1 if it is missing.
-     */
-    private static int readStatus(byte[] part) {
-        int position = 0;
-        while (position < part.length) {
-            final int tag = part[position++] & 0xFF;
-            if ((tag & 7) != 0) {
-                // The message has only varint fields.
-                return -1;
-            }
-            long value = 0;
-            for (int shift = 0; position < part.length; shift += 7) {
-                final byte b = part[position++];
-                value |= (long) (b & 0x7F) << shift;
-                if (b >= 0) {
-                    break;
-                }
-            }
-            if (tag >> 3 == 1) {
-                return (int) value;
-            }
-        }
-        return -1;
     }
 }

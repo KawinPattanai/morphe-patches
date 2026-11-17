@@ -99,22 +99,6 @@ public class ColorPickerPreference extends EditTextPreference implements Setting
             getIdentifierOrThrow(ResourceType.LAYOUT, "morphe_color_dot_widget");
 
     /**
-     * Removes non-valid hex characters, converts to all uppercase,
-     * and adds # character to the start if not present.
-     */
-    public static String cleanupColorCodeString(String colorString, boolean includeAlpha) {
-        String result = "#" + PATTERN_NOT_HEX.matcher(colorString)
-                .replaceAll("").toUpperCase(Locale.ROOT);
-
-        int maxLength = includeAlpha ? COLOR_STRING_LENGTH_WITH_ALPHA : COLOR_STRING_LENGTH_WITHOUT_ALPHA;
-        if (result.length() < maxLength) {
-            return result;
-        }
-
-        return result.substring(0, maxLength);
-    }
-
-    /**
      * @param color Color, with or without alpha channel.
      * @param includeAlpha Whether to include the alpha channel in the output string.
      * @return #RRGGBB or #AARRGGBB hex color string
@@ -215,52 +199,6 @@ public class ColorPickerPreference extends EditTextPreference implements Setting
     }
 
     /**
-     * Creates a TextWatcher to monitor changes in the EditText for color input.
-     */
-    private TextWatcher createColorTextWatcher(ColorPickerView colorPickerView) {
-        return new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-            }
-
-            @Override
-            public void onTextChanged(CharSequence s, int start, int before, int count) {
-            }
-
-            @Override
-            public void afterTextChanged(Editable edit) {
-                try {
-                    String colorString = edit.toString();
-                    String sanitizedColorString = cleanupColorCodeString(colorString, opacitySliderEnabled);
-                    if (!sanitizedColorString.equals(colorString)) {
-                        edit.replace(0, colorString.length(), sanitizedColorString);
-                        return;
-                    }
-
-                    int expectedLength = opacitySliderEnabled
-                            ? COLOR_STRING_LENGTH_WITH_ALPHA
-                            : COLOR_STRING_LENGTH_WITHOUT_ALPHA;
-                    if (sanitizedColorString.length() != expectedLength) {
-                        return;
-                    }
-
-                    final int newColor = Color.parseColor(colorString);
-                    if (currentColor != newColor) {
-                        Logger.printDebug(() -> "afterTextChanged: " + sanitizedColorString);
-                        currentColor = newColor;
-                        updateDialogColorDot();
-                        updateWidgetColorDot();
-                        colorPickerView.setColor(newColor);
-                    }
-                } catch (Exception ex) {
-                    // Should never be reached since input is validated before using.
-                    Logger.printException(() -> "afterTextChanged failure", ex);
-                }
-            }
-        };
-    }
-
-    /**
      * Hook for subclasses to handle the Neutral button click.
      */
     protected void onDialogNeutralClicked() {
@@ -320,7 +258,63 @@ public class ColorPickerPreference extends EditTextPreference implements Setting
         editText.setText(currentColorString);
         editText.setSelection(currentColorString.length());
         editText.setTypeface(Typeface.MONOSPACE);
-        colorTextWatcher = createColorTextWatcher(dialogColorPickerView);
+        // Monitors changes in the EditText for color input.
+        final ColorPickerView colorPickerView = dialogColorPickerView;
+        colorTextWatcher = new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable edit) {
+                try {
+                    String colorString = edit.toString();
+                    // Removes non-valid hex characters, converts to all uppercase,
+                    // and adds # character to the start if not present.
+                    String sanitizedColorString;
+                    cleanupColorCodeString: {
+                        boolean includeAlpha = opacitySliderEnabled;
+                        String result = "#" + PATTERN_NOT_HEX.matcher(colorString)
+                                .replaceAll("").toUpperCase(Locale.ROOT);
+
+                        int maxLength = includeAlpha ? COLOR_STRING_LENGTH_WITH_ALPHA : COLOR_STRING_LENGTH_WITHOUT_ALPHA;
+                        if (result.length() < maxLength) {
+                            sanitizedColorString = result;
+                            break cleanupColorCodeString;
+                        }
+
+                        sanitizedColorString = result.substring(0, maxLength);
+                    }
+                    if (!sanitizedColorString.equals(colorString)) {
+                        edit.replace(0, colorString.length(), sanitizedColorString);
+                        return;
+                    }
+
+                    int expectedLength = opacitySliderEnabled
+                            ? COLOR_STRING_LENGTH_WITH_ALPHA
+                            : COLOR_STRING_LENGTH_WITHOUT_ALPHA;
+                    if (sanitizedColorString.length() != expectedLength) {
+                        return;
+                    }
+
+                    final int newColor = Color.parseColor(colorString);
+                    if (currentColor != newColor) {
+                        Logger.printDebug(() -> "afterTextChanged: " + sanitizedColorString);
+                        currentColor = newColor;
+                        updateDialogColorDot();
+                        updateWidgetColorDot();
+                        colorPickerView.setColor(newColor);
+                    }
+                } catch (Exception ex) {
+                    // Should never be reached since input is validated before using.
+                    Logger.printException(() -> "afterTextChanged failure", ex);
+                }
+            }
+        };
         editText.addTextChangedListener(colorTextWatcher);
         inputLayout.addView(editText);
 

@@ -96,7 +96,48 @@ public final class QueueSaveActions {
                     title = text.toString();
                 }
 
-                var add = bindCommand(option.getAddEndpoint(), ids).toBuilder()
+                NavigationEndpoint bindCommand;
+                bindCommand: {
+                    NavigationEndpoint command = option.getAddEndpoint();
+                    if (command.hasPlaylistEditEndpoint()) {
+                        var edit = command.getPlaylistEditEndpoint();
+                        var additions = new ArrayList<PlaylistEditAction>();
+                        for (var action : edit.getActionsList()) {
+                            if (action.getAction() == 1) {
+                                additions.add(action);
+                            }
+                        }
+
+                        if (additions.size() == 1 && additions.get(0).getAddedVideoId().equals(ids.get(0))) {
+                            var updatedEdit = edit.toBuilder().clearActions();
+                            for (var action : edit.getActionsList()) {
+                                if (action.getAction() == 1) {
+                                    for (String id : ids) {
+                                        updatedEdit.addActions(action.toBuilder().setAddedVideoId(id));
+                                    }
+                                } else {
+                                    updatedEdit.addActions(action);
+                                }
+                            }
+
+                            bindCommand = command.toBuilder().setPlaylistEditEndpoint(updatedEdit).build();
+                            break bindCommand;
+                        }
+
+                        var addedIds = new ArrayList<String>();
+                        for (var action : additions) {
+                            addedIds.add(action.getAddedVideoId());
+                        }
+                        if (addedIds.equals(ids)) {
+                            bindCommand = command;
+                            break bindCommand;
+                        }
+                        throw new IllegalStateException("Native queue save did not supply the complete add selection");
+                    }
+
+                    throw new IllegalStateException("Unrecognized native queue save destination command");
+                }
+                var add = bindCommand.toBuilder()
                         .clearQueueSaveVideoIds().addAllQueueSaveVideoIds(ids).setQueueSavePlaylistTitle(title);
                 var updatedOption = option.toBuilder().setAddEndpoint(add);
                 if (ids.size() > 1) {
@@ -135,44 +176,6 @@ public final class QueueSaveActions {
         }
 
         return result.build();
-    }
-
-    static NavigationEndpoint bindCommand(NavigationEndpoint command, List<String> ids) {
-        if (command.hasPlaylistEditEndpoint()) {
-            var edit = command.getPlaylistEditEndpoint();
-            var additions = new ArrayList<PlaylistEditAction>();
-            for (var action : edit.getActionsList()) {
-                if (action.getAction() == 1) {
-                    additions.add(action);
-                }
-            }
-
-            if (additions.size() == 1 && additions.get(0).getAddedVideoId().equals(ids.get(0))) {
-                var updated = edit.toBuilder().clearActions();
-                for (var action : edit.getActionsList()) {
-                    if (action.getAction() == 1) {
-                        for (String id : ids) {
-                            updated.addActions(action.toBuilder().setAddedVideoId(id));
-                        }
-                    } else {
-                        updated.addActions(action);
-                    }
-                }
-
-                return command.toBuilder().setPlaylistEditEndpoint(updated).build();
-            }
-
-            var addedIds = new ArrayList<String>();
-            for (var action : additions) {
-                addedIds.add(action.getAddedVideoId());
-            }
-            if (addedIds.equals(ids)) {
-                return command;
-            }
-            throw new IllegalStateException("Native queue save did not supply the complete add selection");
-        }
-
-        throw new IllegalStateException("Unrecognized native queue save destination command");
     }
 
     /** The native edit callback owns its selection; no process-wide pending save. */

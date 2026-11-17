@@ -74,7 +74,55 @@ public class BackgroundPlaybackPatch {
                 public void onReceive(Context context, Intent intent) {
                     if (intent != null) {
                         if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                            handleScreenOff(context);
+                            handleScreenOff: {
+                                AutoPauseOnLockMode mode = Settings.AUTO_PAUSE_ON_LOCK.get();
+                                if (mode == AutoPauseOnLockMode.OFF) {
+                                    break handleScreenOff;
+                                }
+
+                                if (mode == AutoPauseOnLockMode.EXCEPT_WIRELESS_AUDIO) {
+                                    boolean isWirelessAudioConnected;
+                                    isWirelessAudioConnected: {
+                                        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+                                        if (am == null) {
+                                            isWirelessAudioConnected = false;
+                                            break isWirelessAudioConnected;
+                                        }
+
+                                        // noinspection WrongConstant // Suppress bogus IDE warning.
+                                        AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+                                        for (AudioDeviceInfo device : devices) {
+                                            final int type = device.getType();
+                                            if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                                                    || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                                    || type == AudioDeviceInfo.TYPE_HEARING_AID) {
+                                                isWirelessAudioConnected = true;
+                                                break isWirelessAudioConnected;
+                                            }
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                                if (type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                                                        || type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+                                                        || type == AudioDeviceInfo.TYPE_BLE_BROADCAST) {
+                                                    isWirelessAudioConnected = true;
+                                                    break isWirelessAudioConnected;
+                                                }
+                                            }
+                                        }
+
+                                        isWirelessAudioConnected = false;
+                                    }
+                                    if (isWirelessAudioConnected) {
+                                        break handleScreenOff;
+                                    }
+                                }
+
+                                VideoState currentState = VideoState.getCurrent();
+                                if (currentState == VideoState.PLAYING) {
+                                    sendPause(context);
+                                } else {
+                                    pendingAutoPause = true;
+                                }
+                            }
                         } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
                             pendingAutoPause = false;
                         }
@@ -87,24 +135,6 @@ public class BackgroundPlaybackPatch {
             Logger.printException(() -> "initialize failure", ex);
         } finally {
             receiverRegistered = true;
-        }
-    }
-
-    private static void handleScreenOff(Context context) {
-        AutoPauseOnLockMode mode = Settings.AUTO_PAUSE_ON_LOCK.get();
-        if (mode == AutoPauseOnLockMode.OFF) {
-            return;
-        }
-
-        if (mode == AutoPauseOnLockMode.EXCEPT_WIRELESS_AUDIO && isWirelessAudioConnected(context)) {
-            return;
-        }
-
-        VideoState currentState = VideoState.getCurrent();
-        if (currentState == VideoState.PLAYING) {
-            sendPause(context);
-        } else {
-            pendingAutoPause = true;
         }
     }
 
@@ -126,31 +156,6 @@ public class BackgroundPlaybackPatch {
                 pendingAutoPause = false;
             }
         }
-    }
-
-    private static boolean isWirelessAudioConnected(Context context) {
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) return false;
-
-        // noinspection WrongConstant // Suppress bogus IDE warning.
-        AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-        for (AudioDeviceInfo device : devices) {
-            final int type = device.getType();
-            if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                    || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-                    || type == AudioDeviceInfo.TYPE_HEARING_AID) {
-                return true;
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (type == AudioDeviceInfo.TYPE_BLE_HEADSET
-                        || type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-                        || type == AudioDeviceInfo.TYPE_BLE_BROADCAST) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     /**

@@ -35,30 +35,33 @@ public final class SearchLinksFilter extends SpanFilter {
         );
     }
 
-    /**
-     * @return Whether the word contains a search icon or not.
-     */
-    private boolean isSearchLinks(SpannableString original, int end) {
-        int wordJoinerIndex = Utils.indexOf(original, WORD_JOINER_CHARACTER);
-        // There may be more than one highlight keyword in the comments.
-        // Check the index of all highlight keywords.
-        while (wordJoinerIndex >= 0) {
-            if (end - wordJoinerIndex == 2) return true;
-            wordJoinerIndex = Utils.indexOf(original, WORD_JOINER_CHARACTER, wordJoinerIndex + 1);
-        }
-        return false;
-    }
-
     @Override
     public boolean skip(String identifier, CharSequence path, SpannableString spannableString, Object span,
                         int start, int end, int flags, boolean isWord, SpanType spanType, StringSpanFilterGroup matchedGroup) {
-        if (isWord && isSearchLinks(spannableString, end)) {
-
-            if (spanType == SpanType.IMAGE) {
-                hideImageSpan(spannableString, start, end, flags);
+        if (isWord) {
+            // Whether the word contains a search icon or not.
+            boolean isSearchLinks;
+            isSearchLinks: {
+                int wordJoinerIndex = Utils.indexOf(spannableString, WORD_JOINER_CHARACTER);
+                // There may be more than one highlight keyword in the comments.
+                // Check the index of all highlight keywords.
+                while (wordJoinerIndex >= 0) {
+                    if (end - wordJoinerIndex == 2) {
+                        isSearchLinks = true;
+                        break isSearchLinks;
+                    }
+                    wordJoinerIndex = Utils.indexOf(spannableString, WORD_JOINER_CHARACTER, wordJoinerIndex + 1);
+                }
+                isSearchLinks = false;
             }
+            if (isSearchLinks) {
 
-            return true;
+                if (spanType == SpanType.IMAGE) {
+                    hideImageSpan(spannableString, start, end, flags);
+                }
+
+                return true;
+            }
         }
         return false;
     }

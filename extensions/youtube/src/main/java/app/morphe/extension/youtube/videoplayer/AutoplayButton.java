@@ -51,7 +51,12 @@ public final class AutoplayButton {
 
             textRef = new WeakReference<>(PlayerOverlayButton.addButtonWithTextOverlay(
                     controlsView,
-                    view -> cycleMode(),
+                    view -> {
+                        AutoplayRule.Mode[] modes = AutoplayRule.Mode.values();
+                        AutoplayRule.Mode next = modes[(Settings.AUTOPLAY_MODE.get().ordinal() + 1) % modes.length];
+                        Logger.printDebug(() -> "Autoplay button: " + next);
+                        AutoplayControlPatch.setMode(next);
+                    },
                     view -> {
                         showList(view.getContext());
                         return true;
@@ -61,13 +66,6 @@ public final class AutoplayButton {
         } catch (Exception ex) {
             Logger.printException(() -> "Autoplay button initializeButton failure", ex);
         }
-    }
-
-    private static void cycleMode() {
-        AutoplayRule.Mode[] modes = AutoplayRule.Mode.values();
-        AutoplayRule.Mode next = modes[(Settings.AUTOPLAY_MODE.get().ordinal() + 1) % modes.length];
-        Logger.printDebug(() -> "Autoplay button: " + next);
-        AutoplayControlPatch.setMode(next);
     }
 
     private static void showList(Context context) {

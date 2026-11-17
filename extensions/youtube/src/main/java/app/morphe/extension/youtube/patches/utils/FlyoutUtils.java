@@ -165,37 +165,6 @@ public final class FlyoutUtils {
         }
 
         /**
-         * The visible frame of a popup window is not limited to the screen, so the visible frame
-         * of the window of the app is used, which excludes the system bars and the keyboard,
-         * and is the window of the app in split screen.
-         *
-         * @return The height of the window that the menu can use.
-         */
-        private int getWindowHeight() {
-            Activity activity = Utils.getActivity();
-            View frameView = activity == null ? this : activity.getWindow().getDecorView();
-            Rect visibleFrame = new Rect();
-            frameView.getWindowVisibleDisplayFrame(visibleFrame);
-            return visibleFrame.height() > 0 ? visibleFrame.height() : Dim.getScreenHeight();
-        }
-
-        /**
-         * @return The height of the other items of the menu as measured in the last layout,
-         *         with the paddings of the menu and the margins of the injected items.
-         */
-        private int getOtherItemsHeight() {
-            int height = menuContainer.getPaddingTop() + menuContainer.getPaddingBottom()
-                    + getVerticalMargins(this);
-            for (int i = 0, count = menuContainer.getChildCount(); i < count; i++) {
-                View child = menuContainer.getChildAt(i);
-                if (child != this && child.getVisibility() != GONE) {
-                    height += child.getMeasuredHeight() + getVerticalMargins(child);
-                }
-            }
-            return height;
-        }
-
-        /**
          * The list of the app is measured after the injected items, and is shrunk to the space they leave,
          * so the items after the injected items are measured without a height limit.
          *
@@ -237,8 +206,25 @@ public final class FlyoutUtils {
          *         take almost all the space.
          */
         private int getMaxHeight() {
-            final int windowHeight = getWindowHeight();
-            final int maxHeight = Math.min(windowHeight - getOtherItemsHeight(),
+            // The visible frame of a popup window is not limited to the screen, so the visible frame
+            // of the window of the app is used, which excludes the system bars and the keyboard,
+            // and is the window of the app in split screen.
+            Activity activity = Utils.getActivity();
+            View frameView = activity == null ? this : activity.getWindow().getDecorView();
+            Rect visibleFrame = new Rect();
+            frameView.getWindowVisibleDisplayFrame(visibleFrame);
+            final int windowHeight = visibleFrame.height() > 0 ? visibleFrame.height() : Dim.getScreenHeight();
+            // with the paddings of the menu and the margins of the injected items.
+            int height = menuContainer.getPaddingTop() + menuContainer.getPaddingBottom()
+                    + getVerticalMargins(this);
+            for (int i = 0, count = menuContainer.getChildCount(); i < count; i++) {
+                View child = menuContainer.getChildAt(i);
+                if (child != this && child.getVisibility() != GONE) {
+                    height += child.getMeasuredHeight() + getVerticalMargins(child);
+                }
+            }
+
+            final int maxHeight = Math.min(windowHeight - height,
                     (int) (windowHeight * MAX_WINDOW_HEIGHT_RATIO));
             return Math.max(maxHeight, getMinHeight());
         }
@@ -575,13 +561,46 @@ public final class FlyoutUtils {
             if (!flyoutElementsAdded) {
                 flyoutElementsAdded = true;
                 flyoutElementsPanelRef = new WeakReference<>(flyoutPanel);
-                addFlyoutElements(flyoutPanel);
+                int nextButtonIndex = 0;
+
+                // The items of the menu that is closing are gone, and their typeface is copied
+                // onto whatever this call adds instead.
+                customItemTextRefs.clear();
+
+                isShortsPlayerFlyout = isShortsPlayerMenu();
+                if (isShortsPlayerFlyout) {
+                    nextButtonIndex = addShortsPlayerFlyoutButtons(flyoutPanel, nextButtonIndex);
+                } else {
+                    nextButtonIndex = addVideoFlyoutButtons(flyoutPanel, nextButtonIndex);
+                }
+
+                if (nextButtonIndex > 0) {
+                    addFlyoutMenuItem(flyoutPanel, null, null, null, nextButtonIndex, true, null, null, true);
+                }
+
+                // Reset 'topFlyoutMenuVisible' field, once the buttons have been injected into the player's
+                // overlay settings, to prevent them from also being added into nested menus.
+                PlayerFlyoutMenuComponentsFilter.resetTopFlyoutMenuVisible();
                 onFlyoutListBound(flyoutPanel);
             } else if (flyoutElementsPanelRef.get() != flyoutPanel) {
                 // The menu of the additional player settings is shown before the player settings menu closes,
                 // so the state of the player settings menu is not reset.
                 flyoutElementsPanelRef = new WeakReference<>(flyoutPanel);
-                addNestedFlyoutElements(flyoutPanel);
+                // Adds the elements of a menu opened on top of another menu, or opened before another menu closes.
+                // The state of the flyout is still the state of the other menu, so only elements that do not use it are added.
+                Logger.printDebug(() -> "Adding the elements of a nested menu");
+                int nextButtonIndex = 0;
+
+                // The items of the other menu are not in this menu.
+                customItemTextRefs.clear();
+
+                if (LoopCountPatch.isPatchIncluded()) {
+                    nextButtonIndex = LoopCountFlyoutButton.addFlyoutButton(flyoutPanel, nextButtonIndex, "", false);
+                }
+
+                if (nextButtonIndex > 0) {
+                    addFlyoutMenuItem(flyoutPanel, null, null, null, nextButtonIndex, true, null, null, true);
+                }
             }
         };
 
@@ -599,7 +618,24 @@ public final class FlyoutUtils {
                 Utils.runOnMainThreadDelayed(() -> {
                     if ((flyoutDialog == null || !flyoutDialog.isShowing())
                             && (flyoutPopupWindow == null || !flyoutPopupWindow.isShowing())) {
-                        resetFlyoutIds();
+                        flyoutElementsAdded = false;
+                        visibleFlyoutButtons.clear();
+                        visibleFlyoutButtonTexts.clear();
+                        flyoutHasAppSaveButton = false;
+                        injectedSaveButtonRef = new WeakReference<>(null);
+                        flyoutHasAppDownloadButton = false;
+                        injectedDownloadButtonRef = new WeakReference<>(null);
+                        currentButtonIndex = 0;
+                        flyoutVideoId = "";
+                        flyoutPlaylistId = "";
+                        nativeQueuePlaylistSource = null;
+                        flyoutBuffer = null;
+                        if (flyoutChannelIdRequest != null) {
+                            // The buttons waiting for the channel are gone with the menu.
+                            flyoutChannelIdRequest.cancelIfNotDone();
+                            flyoutChannelIdRequest = null;
+                        }
+                        isShortsPlayerFlyout = false;
                     }
                 }, 0);
             }
@@ -608,70 +644,6 @@ public final class FlyoutUtils {
         // The app can show the menu before this call.
         if (flyoutView.isAttachedToWindow()) {
             flyoutView.post(addElements);
-        }
-    }
-
-    private static void resetFlyoutIds() {
-        flyoutElementsAdded = false;
-        visibleFlyoutButtons.clear();
-        visibleFlyoutButtonTexts.clear();
-        flyoutHasAppSaveButton = false;
-        injectedSaveButtonRef = new WeakReference<>(null);
-        flyoutHasAppDownloadButton = false;
-        injectedDownloadButtonRef = new WeakReference<>(null);
-        currentButtonIndex = 0;
-        flyoutVideoId = "";
-        flyoutPlaylistId = "";
-        nativeQueuePlaylistSource = null;
-        flyoutBuffer = null;
-        if (flyoutChannelIdRequest != null) {
-            // The buttons waiting for the channel are gone with the menu.
-            flyoutChannelIdRequest.cancelIfNotDone();
-            flyoutChannelIdRequest = null;
-        }
-        isShortsPlayerFlyout = false;
-    }
-
-    private static void addFlyoutElements(Object flyoutPanel) {
-        int nextButtonIndex = 0;
-
-        // The items of the menu that is closing are gone, and their typeface is copied
-        // onto whatever this call adds instead.
-        customItemTextRefs.clear();
-
-        isShortsPlayerFlyout = isShortsPlayerMenu();
-        if (isShortsPlayerFlyout) {
-            nextButtonIndex = addShortsPlayerFlyoutButtons(flyoutPanel, nextButtonIndex);
-        } else {
-            nextButtonIndex = addVideoFlyoutButtons(flyoutPanel, nextButtonIndex);
-        }
-
-        if (nextButtonIndex > 0) {
-            addFlyoutMenuItem(flyoutPanel, null, null, null, nextButtonIndex, true, null, null, true);
-        }
-
-        // Reset 'topFlyoutMenuVisible' field, once the buttons have been injected into the player's
-        // overlay settings, to prevent them from also being added into nested menus.
-        PlayerFlyoutMenuComponentsFilter.resetTopFlyoutMenuVisible();
-    }
-
-    /**
-     * Adds the elements of a menu opened on top of another menu, or opened before another menu closes.
-     * The state of the flyout is still the state of the other menu, so only elements that do not use it are added.
-     */
-    private static void addNestedFlyoutElements(Object flyoutPanel) {
-        Logger.printDebug(() -> "Adding the elements of a nested menu");
-        int nextButtonIndex = 0;
-
-        // The items of the other menu are not in this menu.
-        customItemTextRefs.clear();
-
-        if (LoopCountPatch.isPatchIncluded()) {
-            nextButtonIndex = LoopCountFlyoutButton.addFlyoutButton(flyoutPanel, nextButtonIndex, "", false);
-        }
-
-        if (nextButtonIndex > 0) {
-            addFlyoutMenuItem(flyoutPanel, null, null, null, nextButtonIndex, true, null, null, true);
         }
     }
 
@@ -845,50 +817,25 @@ public final class FlyoutUtils {
                 return;
             }
 
-            copyListItemTypeface(itemList);
+            // The app applies its own font weight to the menu items after they are bound,
+            // so the custom item only matches them by taking the typeface of a bound item.
+            if (!(customItemTextRefs.isEmpty() || ITEM_TEXT_ID == 0)) {
+                if (itemList.getChildAt(0).findViewById(ITEM_TEXT_ID) instanceof TextView itemText) {
+                    Typeface itemTypeface = itemText.getTypeface();
+
+                    for (WeakReference<TextView> customItemTextRef : customItemTextRefs) {
+                        TextView customItemText = customItemTextRef.get();
+                        // setTypeface always requests a layout, so only call it when the font really differs.
+                        if (customItemText != null && customItemText.getTypeface() != itemTypeface) {
+                            customItemText.setTypeface(itemTypeface);
+                        }
+                    }
+                }
+            }
             AddToQueuePatch.onListBound(itemList);
         } catch (Exception ex) {
             Logger.printException(() -> "onFlyoutListBound failure", ex);
         }
-    }
-
-    /**
-     * The app applies its own font weight to the menu items after they are bound,
-     * so the custom item only matches them by taking the typeface of a bound item.
-     */
-    private static void copyListItemTypeface(ViewGroup itemList) {
-        if (customItemTextRefs.isEmpty() || ITEM_TEXT_ID == 0) {
-            return;
-        }
-
-        if (itemList.getChildAt(0).findViewById(ITEM_TEXT_ID) instanceof TextView itemText) {
-            Typeface itemTypeface = itemText.getTypeface();
-
-            for (WeakReference<TextView> customItemTextRef : customItemTextRefs) {
-                TextView customItemText = customItemTextRef.get();
-                // setTypeface always requests a layout, so only call it when the font really differs.
-                if (customItemText != null && customItemText.getTypeface() != itemTypeface) {
-                    customItemText.setTypeface(itemTypeface);
-                }
-            }
-        }
-    }
-
-    /**
-     * @return The height of the bottom sheet drag handle, or zero if the menu has no handle.
-     * The handle is drawn over the top of the menu instead of being laid out in it,
-     * so the first item has to be pushed down by its height.
-     */
-    private static int getDragHandleHeight(ViewGroup menuContainer) {
-        for (int i = 0, count = menuContainer.getChildCount(); i < count; i++) {
-            // The handle is an ImageView, or a plain View on older app versions.
-            View child = menuContainer.getChildAt(i);
-            if (!(child instanceof ViewGroup)) {
-                return child.getHeight();
-            }
-        }
-
-        return 0;
     }
 
     public static int addFlyoutButton(
@@ -1037,8 +984,20 @@ public final class FlyoutUtils {
 
                 // The divider separates the injected items from the app list,
                 // so it stays outside the injected items scroll view.
+                int height = ResourceUtils.getDimensionPixelSize("line_separator_height");
+                LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        height > 0 ? height : Dim.dp1
+                );
+
+                // A plain View measures to the full available width and stretches the whole menu
+                // when the menu is not measured with a fixed width. An empty ViewGroup measures to zero.
+                LinearLayout divider = new LinearLayout(context);
+                divider.setLayoutParams(dividerParams);
+                // Same 20% of the foreground the app draws its own separators with.
+                divider.setBackgroundColor((ThemeUtils.getAppForegroundColor() & 0xFFFFFF) | 0x33000000);
                 menuContainer.addView(
-                        createFlyoutDivider(context),
+                        divider,
                         menuContainer.indexOfChild(currentInjectedItems) + 1
                 );
             } else {
@@ -1049,7 +1008,21 @@ public final class FlyoutUtils {
                             LinearLayout.LayoutParams.WRAP_CONTENT
                     );
                     // The scroll view ends up under the drag handle, so it has to clear it.
-                    params.topMargin = getDragHandleHeight(menuContainer);
+                    // The height of the bottom sheet drag handle, or zero if the menu has no handle.
+                    // The handle is drawn over the top of the menu instead of being laid out in it,
+                    // so the first item has to be pushed down by its height.
+                    getDragHandleHeight: {
+                        for (int i = 0, count = menuContainer.getChildCount(); i < count; i++) {
+                            // The handle is an ImageView, or a plain View on older app versions.
+                            View child = menuContainer.getChildAt(i);
+                            if (!(child instanceof ViewGroup)) {
+                                params.topMargin = child.getHeight();
+                                break getDragHandleHeight;
+                            }
+                        }
+
+                        params.topMargin = 0;
+                    }
                     menuContainer.addView(currentInjectedItems, menuInfo.adjustedIndex(), params);
                 }
 
@@ -1169,7 +1142,23 @@ public final class FlyoutUtils {
 
         if (flyoutPanel instanceof PopupWindow checkedPopupWindow) {
             popupWindow = checkedPopupWindow;
-            menuContainer = getPopupMenuContainer(checkedPopupWindow.getContentView());
+            // The menu container of a popup menu is the first LinearLayout found by following the first child
+            // of the content view. Depending on the app version, the device and A/B tests, the content view is:
+            // the container itself, a view that places the container next to its anchor (also wrapped
+            // in a frame on phones), or a frame that sizes the popup window to the container.
+            // The menu container, or null if the content view is not a popup menu.
+            getPopupMenuContainer: {
+                View view = checkedPopupWindow.getContentView();
+                // The deepest container is in a frame, inside the view that places it.
+                for (int depth = 0; depth < 3 && view != null; depth++) {
+                    if (view instanceof LinearLayout linearLayout) {
+                        menuContainer = linearLayout;
+                        break getPopupMenuContainer;
+                    }
+                    view = view instanceof ViewGroup viewGroup ? viewGroup.getChildAt(0) : null;
+                }
+                menuContainer = null;
+            }
         } else if (flyoutPanel instanceof Dialog checkedDialog) {
             Window window = checkedDialog.getWindow();
             if (window != null) {
@@ -1230,27 +1219,6 @@ public final class FlyoutUtils {
         }
 
         Logger.printDebug(() -> "Shorts player menu container not found");
-        return null;
-    }
-
-    /**
-     * The menu container of a popup menu is the first LinearLayout found by following the first child
-     * of the content view. Depending on the app version, the device and A/B tests, the content view is:
-     * the container itself, a view that places the container next to its anchor (also wrapped
-     * in a frame on phones), or a frame that sizes the popup window to the container.
-     *
-     * @return The menu container, or null if the content view is not a popup menu.
-     */
-    @Nullable
-    private static LinearLayout getPopupMenuContainer(@Nullable View contentView) {
-        View view = contentView;
-        // The deepest container is in a frame, inside the view that places it.
-        for (int depth = 0; depth < 3 && view != null; depth++) {
-            if (view instanceof LinearLayout linearLayout) {
-                return linearLayout;
-            }
-            view = view instanceof ViewGroup viewGroup ? viewGroup.getChildAt(0) : null;
-        }
         return null;
     }
 
@@ -1327,7 +1295,21 @@ public final class FlyoutUtils {
         customButton.setOnClickListener(clickListener);
 
         if (endView != null) {
-            addFlyoutButtonEndView(customButton, endView);
+            // The secondary container is at the end of the item, and the item text ends before it.
+            if (customButton.findViewById(SECONDARY_CONTAINER_ID) instanceof ViewGroup secondaryContainer) {
+                for (int i = 0, count = secondaryContainer.getChildCount(); i < count; i++) {
+                    secondaryContainer.getChildAt(i).setVisibility(View.GONE);
+                }
+                secondaryContainer.setVisibility(View.VISIBLE);
+                secondaryContainer.addView(endView, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.CENTER_VERTICAL
+                ));
+            } else {
+                // 20.21 has no container. The button is still usable with its click listener.
+                Logger.printDebug(() -> "Flyout button has no place for its end view");
+            }
         }
 
         if (!enabled) {
@@ -1379,24 +1361,6 @@ public final class FlyoutUtils {
         return customButton;
     }
 
-    private static void addFlyoutButtonEndView(View button, View endView) {
-        // The secondary container is at the end of the item, and the item text ends before it.
-        if (button.findViewById(SECONDARY_CONTAINER_ID) instanceof ViewGroup secondaryContainer) {
-            for (int i = 0, count = secondaryContainer.getChildCount(); i < count; i++) {
-                secondaryContainer.getChildAt(i).setVisibility(View.GONE);
-            }
-            secondaryContainer.setVisibility(View.VISIBLE);
-            secondaryContainer.addView(endView, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.CENTER_VERTICAL
-            ));
-        } else {
-            // 20.21 has no container. The button is still usable with its click listener.
-            Logger.printDebug(() -> "Flyout button has no place for its end view");
-        }
-    }
-
     /**
      * Shows the button text again and enables the button if its resource can be used.
      * Can run more than once for the same button.
@@ -1428,23 +1392,6 @@ public final class FlyoutUtils {
     private static void setFlyoutButtonEnabled(View button, boolean enabled) {
         button.setEnabled(enabled);
         button.setAlpha(enabled ? 1.0f : DISABLED_ALPHA);
-    }
-
-    public static View createFlyoutDivider(Context context) {
-        int height = ResourceUtils.getDimensionPixelSize("line_separator_height");
-        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                height > 0 ? height : Dim.dp1
-        );
-
-        // A plain View measures to the full available width and stretches the whole menu
-        // when the menu is not measured with a fixed width. An empty ViewGroup measures to zero.
-        LinearLayout divider = new LinearLayout(context);
-        divider.setLayoutParams(dividerParams);
-        // Same 20% of the foreground the app draws its own separators with.
-        divider.setBackgroundColor((ThemeUtils.getAppForegroundColor() & 0xFFFFFF) | 0x33000000);
-
-        return divider;
     }
 
     /**
@@ -1507,7 +1454,38 @@ public final class FlyoutUtils {
                         horizontalShelfHistoryBytesIndexes.size() == HORIZONTAL_SHELF_HISTORY_BYTES.size() &&
                         horizontalShelfHistoryBytesIndexes.get(0) <= 30;
 
-        setFlyoutPlaylistId(flyoutBuffer);
+        final int index = byteIndexOf(flyoutBuffer, PLAYLIST_ID_PREFIX_BYTES);
+
+        if (index >= 0) {
+            final int playlistIdStart = index + PLAYLIST_ID_PREFIX_BYTES.length;
+
+            int playlistIdEnd = playlistIdStart;
+            while (playlistIdEnd < flyoutBuffer.length) {
+                byte b = flyoutBuffer[playlistIdEnd];
+                if (!((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
+                        b == '-' ||
+                        b == '_')) {
+                    break;
+                }
+                playlistIdEnd++;
+            }
+            // "playlist?list=" always ends with a character extraneous to the
+            // playlist ID, so verify that the current index of being
+            // searched bytes does not belong to this element.
+            final int playlistLength = playlistIdEnd - playlistIdStart - 1;
+
+            if (playlistLength >= 18) {
+                flyoutPlaylistId = new String(
+                        flyoutBuffer,
+                        playlistIdStart,
+                        playlistLength,
+                        StandardCharsets.US_ASCII
+                );
+                Logger.printDebug(() -> "Flyout Playlist ID found: " +
+                        flyoutPlaylistId
+                );
+            }
+        }
 
         View senderView = senderViewRef.get();
         Logger.printDebug(() -> "Flyout sender view object: " + (senderView != null));
@@ -1642,42 +1620,6 @@ public final class FlyoutUtils {
                     );
                 }
                 return;
-            }
-        }
-    }
-
-    @SuppressWarnings("ExtractMethodRecommender")
-    private static void setFlyoutPlaylistId(byte[] flyoutBuffer) {
-        final int index = byteIndexOf(flyoutBuffer, PLAYLIST_ID_PREFIX_BYTES);
-
-        if (index >= 0) {
-            final int playlistIdStart = index + PLAYLIST_ID_PREFIX_BYTES.length;
-
-            int playlistIdEnd = playlistIdStart;
-            while (playlistIdEnd < flyoutBuffer.length) {
-                byte b = flyoutBuffer[playlistIdEnd];
-                if (!((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
-                        b == '-' ||
-                        b == '_')) {
-                    break;
-                }
-                playlistIdEnd++;
-            }
-            // "playlist?list=" always ends with a character extraneous to the
-            // playlist ID, so verify that the current index of being
-            // searched bytes does not belong to this element.
-            final int playlistLength = playlistIdEnd - playlistIdStart - 1;
-
-            if (playlistLength >= 18) {
-                flyoutPlaylistId = new String(
-                        flyoutBuffer,
-                        playlistIdStart,
-                        playlistLength,
-                        StandardCharsets.US_ASCII
-                );
-                Logger.printDebug(() -> "Flyout Playlist ID found: " +
-                        flyoutPlaylistId
-                );
             }
         }
     }

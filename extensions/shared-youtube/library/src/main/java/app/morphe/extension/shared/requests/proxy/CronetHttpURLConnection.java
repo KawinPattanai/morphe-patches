@@ -57,7 +57,11 @@ public final class CronetHttpURLConnection extends DelegatingHttpURLConnection {
         return executor;
     }
 
-    private RequestDeadline getOrCreateConnectDeadline() {
+    private RequestDeadline requestStartDeadline() {
+        if (requestStarted) {
+            return RequestDeadline.afterMillis(getReadTimeout());
+        }
+
         RequestDeadline deadline = connectDeadline;
         if (deadline != null) {
             return deadline;
@@ -69,33 +73,6 @@ public final class CronetHttpURLConnection extends DelegatingHttpURLConnection {
             }
             return connectDeadline;
         }
-    }
-
-    private RequestDeadline responseDeadline() {
-        int connectTimeout = getConnectTimeout();
-        int readTimeout = getReadTimeout();
-
-        if (requestStarted) {
-            return RequestDeadline.afterMillis(readTimeout);
-        }
-
-        // A zero value means that the corresponding phase may wait indefinitely. Cronet does not
-        // expose the boundary between connecting and reading response headers, so a finite total
-        // deadline is only equivalent to HttpURLConnection when both phases are bounded.
-        if (connectTimeout == 0 || readTimeout == 0) {
-            return RequestDeadline.NONE;
-        }
-
-        RequestDeadline deadline = connectDeadline;
-        return deadline == null
-                ? RequestDeadline.afterMillis((long) connectTimeout + readTimeout)
-                : deadline.extendByMillis(readTimeout);
-    }
-
-    private RequestDeadline requestStartDeadline() {
-        return requestStarted
-                ? RequestDeadline.afterMillis(getReadTimeout())
-                : getOrCreateConnectDeadline();
     }
 
     private void markRequestStarted() {
@@ -175,9 +152,32 @@ public final class CronetHttpURLConnection extends DelegatingHttpURLConnection {
 
         synchronized (this) {
             if (!responseHeadersReceived) {
+                RequestDeadline responseDeadline;
+                responseDeadline: {
+                    int connectTimeout = getConnectTimeout();
+                    int readTimeout = getReadTimeout();
+
+                    if (requestStarted) {
+                        responseDeadline = RequestDeadline.afterMillis(readTimeout);
+                        break responseDeadline;
+                    }
+
+                    // A zero value means that the corresponding phase may wait indefinitely. Cronet does not
+                    // expose the boundary between connecting and reading response headers, so a finite total
+                    // deadline is only equivalent to HttpURLConnection when both phases are bounded.
+                    if (connectTimeout == 0 || readTimeout == 0) {
+                        responseDeadline = RequestDeadline.NONE;
+                        break responseDeadline;
+                    }
+
+                    RequestDeadline deadline = connectDeadline;
+                    responseDeadline = deadline == null
+                            ? RequestDeadline.afterMillis((long) connectTimeout + readTimeout)
+                            : deadline.extendByMillis(readTimeout);
+                }
                 responseCode = executeRequestStartWithDeadline(
                         delegate::getResponseCode,
-                        responseDeadline()
+                        responseDeadline
                 );
                 markRequestStarted();
                 responseHeadersReceived = true;

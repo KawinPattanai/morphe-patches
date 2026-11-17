@@ -275,9 +275,47 @@ public final class DeArrowBrandingRequest {
             if (branding == null) {
                 return Branding.NONE;
             }
-            return new Branding(new DeArrowTitle(parseTitle(branding.optJSONArray("titles")),
-                    parseCasualTitles(branding.optJSONArray("casualVotes"))),
-                    parseThumbnailTime(branding.optJSONArray("thumbnails")));
+            String title = null;
+            JSONObject titleSubmission = findSubmission(branding.optJSONArray("titles"));
+            if (titleSubmission != null) {
+                String text = formatTitle(titleSubmission.optString("title"));
+                if (!text.isEmpty()) {
+                    title = text;
+                }
+            }
+
+            // Users of casual mode vote for the original titles they like, in categories such as 'funny'.
+            // As done by the DeArrow extension, casual mode shows the original title if any category
+            // has enough votes. The server subtracts the votes against the original title from the counts.
+            // The original titles are in lowercase, and the votes that do not include the original title
+            // are an empty title.
+            Set<String> casualTitles = Collections.emptySet();
+            JSONArray casualVotes = branding.optJSONArray("casualVotes");
+            if (casualVotes != null && Settings.DEARROW_CASUAL_MODE.get()) {
+                final int minimumVotes = Settings.DEARROW_CASUAL_MODE_MIN_VOTES.get();
+                final int casualVoteCount = casualVotes.length();
+                casualTitles = new HashSet<>(2 * casualVoteCount);
+
+                for (int i = 0; i < casualVoteCount; i++) {
+                    JSONObject vote = casualVotes.optJSONObject(i);
+                    if (vote != null && vote.optInt("count") >= minimumVotes) {
+                        // optString() returns "null" for a null value.
+                        casualTitles.add(vote.isNull("title")
+                                ? ""
+                                : vote.optString("title").trim().toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
+
+            Double thumbnailTime = null;
+            JSONObject thumbnail = findSubmission(branding.optJSONArray("thumbnails"));
+            if (thumbnail != null) {
+                final double time = thumbnail.optDouble("timestamp");
+                if (!Double.isNaN(time) && time >= 0) {
+                    thumbnailTime = time;
+                }
+            }
+            return new Branding(new DeArrowTitle(title, casualTitles), thumbnailTime);
         } catch (IOException ex) {
             Logger.printInfo(() -> "Could not read DeArrow branding of: " + videoId, ex);
             throw ex;
@@ -309,17 +347,6 @@ public final class DeArrowBrandingRequest {
         return null;
     }
 
-    @Nullable
-    private static String parseTitle(@Nullable JSONArray titles) {
-        JSONObject title = findSubmission(titles);
-        if (title == null) {
-            return null;
-        }
-
-        String text = formatTitle(title.optString("title"));
-        return text.isEmpty() ? null : text;
-    }
-
     /**
      * Words that are not auto formatted by the DeArrow extension start with '>'.
      *
@@ -327,43 +354,5 @@ public final class DeArrowBrandingRequest {
      */
     static String formatTitle(String submittedTitle) {
         return FORMATTER_OVERRIDE_PATTERN.matcher(submittedTitle).replaceAll("$1").trim();
-    }
-
-    /**
-     * Users of casual mode vote for the original titles they like, in categories such as 'funny'.
-     * As done by the DeArrow extension, casual mode shows the original title if any category
-     * has enough votes. The server subtracts the votes against the original title from the counts.
-     *
-     * @return The original titles in lowercase with enough casual votes,
-     *         or an empty title for votes that do not include the original title.
-     */
-    private static Set<String> parseCasualTitles(@Nullable JSONArray casualVotes) {
-        if (casualVotes == null || !Settings.DEARROW_CASUAL_MODE.get()) {
-            return Collections.emptySet();
-        }
-        final int minimumVotes = Settings.DEARROW_CASUAL_MODE_MIN_VOTES.get();
-        final int casualVoteCount = casualVotes.length();
-        Set<String> titles = new HashSet<>(2 * casualVoteCount);
-
-        for (int i = 0; i < casualVoteCount; i++) {
-            JSONObject vote = casualVotes.optJSONObject(i);
-            if (vote != null && vote.optInt("count") >= minimumVotes) {
-                // optString() returns "null" for a null value.
-                titles.add(vote.isNull("title")
-                        ? ""
-                        : vote.optString("title").trim().toLowerCase(Locale.ROOT));
-            }
-        }
-        return titles;
-    }
-
-    @Nullable
-    private static Double parseThumbnailTime(@Nullable JSONArray thumbnails) {
-        JSONObject thumbnail = findSubmission(thumbnails);
-        if (thumbnail == null) {
-            return null;
-        }
-        final double time = thumbnail.optDouble("timestamp");
-        return Double.isNaN(time) || time < 0 ? null : time;
     }
 }

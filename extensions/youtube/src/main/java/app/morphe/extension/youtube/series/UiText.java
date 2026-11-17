@@ -19,17 +19,17 @@ final class UiText {
     }
 
     static String episodeTitle(TrackerModels.Episode episode) {
-        String value = episodeTitleValue(episode);
-        return value.equals(episode.title) ? value : get(value);
-    }
-
-    static String episodeTitleValue(TrackerModels.Episode episode) {
-        if (episode.title.isEmpty()) {
-            return episode.available
-                    ? "morphe_series_tracker_untitled_episode"
-                    : "morphe_series_tracker_unavailable_episode";
+        String value;
+        episodeTitleValue: {
+            if (episode.title.isEmpty()) {
+                value = episode.available
+                        ? "morphe_series_tracker_untitled_episode"
+                        : "morphe_series_tracker_unavailable_episode";
+                break episodeTitleValue;
+            }
+            value = episode.title;
         }
-        return episode.title;
+        return value.equals(episode.title) ? value : get(value);
     }
 
     private UiText() {}

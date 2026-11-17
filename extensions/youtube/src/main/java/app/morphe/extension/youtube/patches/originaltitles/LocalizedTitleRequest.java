@@ -235,7 +235,41 @@ final class LocalizedTitleRequest {
                 JSONObject json = Requester.parseJSONObject(connection);
                 JSONArray runs;
                 if (listTitle) {
-                    runs = findListTitleRuns(json, videoId);
+                    // The search results of a video id can include other videos, so the title is the title
+                    // of the result with the same video id.
+                    findListTitleRuns: {
+                        JSONObject results = json;
+                        for (String pathKey : SEARCH_SECTIONS_PATH) {
+                            results = results.optJSONObject(pathKey);
+                            if (results == null) {
+                                runs = null;
+                                break findListTitleRuns;
+                            }
+                        }
+                        JSONArray sections = results.optJSONArray("contents");
+                        if (sections == null) {
+                            runs = null;
+                            break findListTitleRuns;
+                        }
+                        for (int i = 0, sectionCount = sections.length(); i < sectionCount; i++) {
+                            JSONObject section = sections.optJSONObject(i);
+                            JSONObject itemSection = section == null ? null : section.optJSONObject("itemSectionRenderer");
+                            JSONArray items = itemSection == null ? null : itemSection.optJSONArray("contents");
+                            if (items == null) {
+                                continue;
+                            }
+                            for (int j = 0, itemCount = items.length(); j < itemCount; j++) {
+                                JSONObject item = items.optJSONObject(j);
+                                JSONObject video = item == null ? null : item.optJSONObject("videoWithContextRenderer");
+                                if (video != null && videoId.equals(video.optString("videoId"))) {
+                                    JSONObject headline = video.optJSONObject("headline");
+                                    runs = headline == null ? null : headline.optJSONArray("runs");
+                                    break findListTitleRuns;
+                                }
+                            }
+                        }
+                        runs = null;
+                    }
                 } else {
                     JSONObject titleJson = json;
                     for (String pathKey : TITLE_PATH) {
@@ -275,43 +309,6 @@ final class LocalizedTitleRequest {
             cache.remove(key);
         } catch (Exception ex) {
             Logger.printException(() -> "fetchTitle failure", ex);
-        }
-        return null;
-    }
-
-    /**
-     * The search results of a video id can include other videos, so the title is the title
-     * of the result with the same video id.
-     *
-     * @return The runs of the title of the video, or null if the results do not include the video.
-     */
-    @Nullable
-    private static JSONArray findListTitleRuns(JSONObject json, String videoId) {
-        for (String pathKey : SEARCH_SECTIONS_PATH) {
-            json = json.optJSONObject(pathKey);
-            if (json == null) {
-                return null;
-            }
-        }
-        JSONArray sections = json.optJSONArray("contents");
-        if (sections == null) {
-            return null;
-        }
-        for (int i = 0, sectionCount = sections.length(); i < sectionCount; i++) {
-            JSONObject section = sections.optJSONObject(i);
-            JSONObject itemSection = section == null ? null : section.optJSONObject("itemSectionRenderer");
-            JSONArray items = itemSection == null ? null : itemSection.optJSONArray("contents");
-            if (items == null) {
-                continue;
-            }
-            for (int j = 0, itemCount = items.length(); j < itemCount; j++) {
-                JSONObject item = items.optJSONObject(j);
-                JSONObject video = item == null ? null : item.optJSONObject("videoWithContextRenderer");
-                if (video != null && videoId.equals(video.optString("videoId"))) {
-                    JSONObject headline = video.optJSONObject("headline");
-                    return headline == null ? null : headline.optJSONArray("runs");
-                }
-            }
         }
         return null;
     }

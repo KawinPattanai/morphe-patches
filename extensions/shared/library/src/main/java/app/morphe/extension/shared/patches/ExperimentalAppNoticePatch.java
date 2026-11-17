@@ -16,20 +16,6 @@ import app.morphe.extension.shared.ui.CustomDialog;
 @SuppressWarnings("unused")
 public class ExperimentalAppNoticePatch {
 
-    public static boolean experimentalNoticeShouldBeShown() {
-        String appVersionName = Utils.getAppVersionName();
-        String recommendedAppVersion = Utils.getRecommendedAppVersion();
-
-        // The current app is the same or less than the recommended.
-        // YT 21.x uses nn.nn.nnn numbers but still sorts correctly compared to older releases.
-        if (appVersionName.compareTo(recommendedAppVersion) <= 0) {
-            return false;
-        }
-
-        // User already confirmed experimental.
-        return !SharedSettings.EXPERIMENTAL_APP_CONFIRMED.get().equals(appVersionName);
-    }
-
     /**
      * Injection point.
      * <p>
@@ -37,7 +23,22 @@ public class ExperimentalAppNoticePatch {
      */
     public static void showExperimentalNoticeIfNeeded(Activity activity) {
         try {
-            if (!experimentalNoticeShouldBeShown()) {
+            boolean experimentalNoticeShouldBeShown;
+            experimentalNoticeShouldBeShown: {
+                String appVersionName = Utils.getAppVersionName();
+                String recommendedAppVersion = Utils.getRecommendedAppVersion();
+
+                // The current app is the same or less than the recommended.
+                // YT 21.x uses nn.nn.nnn numbers but still sorts correctly compared to older releases.
+                if (appVersionName.compareTo(recommendedAppVersion) <= 0) {
+                    experimentalNoticeShouldBeShown = false;
+                    break experimentalNoticeShouldBeShown;
+                }
+
+                // User already confirmed experimental.
+                experimentalNoticeShouldBeShown = !SharedSettings.EXPERIMENTAL_APP_CONFIRMED.get().equals(appVersionName);
+            }
+            if (!experimentalNoticeShouldBeShown) {
                 return;
             }
 

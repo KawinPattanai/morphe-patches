@@ -494,7 +494,72 @@ public final class AskFlyoutMenuPatch {
             if (menu == null || !menu.patch_dismissPopup()) {
                 FlyoutUtils.dismissFlyout();
             }
-            Utils.runOnMainThreadDelayed(() -> openAskPanel(videoId), SHOW_PANEL_DELAY_MS);
+            Utils.runOnMainThreadDelayed(() -> {
+                final boolean needsTemplate = !AskPanelCommand.hasTemplate();
+                // If this class gave the processor the Elements templates of the Ask chat
+                // if the app session has used them, or if the used Elements resources are not known.
+                // The app marks a template as used when it first shows it, not when a response attaches it,
+                // and it does not always mark the template of the answers as used, such as on 21.42.
+                boolean hasChatTemplates;
+                hasChatTemplates: {
+                    if (loadedChatTemplates) {
+                        hasChatTemplates = true;
+                        break hasChatTemplates;
+                    }
+                    ElementsResourceProcessorAccess processor = elementsResourceProcessorRef.get();
+                    if (processor == null) {
+                        hasChatTemplates = true;
+                        break hasChatTemplates;
+                    }
+                    Set<?> usedResources = processor.patch_getUsedResources();
+                    synchronized (usedResources) {
+                        for (Object resource : usedResources) {
+                            if (resource instanceof String name && name.startsWith(CHAT_RESPONSE_TEMPLATE)) {
+                                hasChatTemplates = true;
+                                break hasChatTemplates;
+                            }
+                        }
+                    }
+                    hasChatTemplates = false;
+                }
+
+                final boolean needsChatTemplates = !hasChatTemplates;
+                if (!needsTemplate && !needsChatTemplates) {
+                    showAskPanel(videoId);
+                    return;
+                }
+
+                // Without an Ask panel to build from, the watch page of the video is fetched for its Ask panel.
+                // The chat shows nothing until a watch page response attaches its Elements templates,
+                // so in an app session without them, a watch page with an Ask panel is fetched for them.
+                String watchPageVideoId = needsTemplate ? videoId : AskPanelCommand.getTemplateVideoId();
+                Utils.runOnBackgroundThread(() -> {
+                    byte[] watchPage = AskPanelRequest.fetchWatchPage(watchPageVideoId);
+                    byte[] panel = watchPage != null
+                            ? AskPanelCommand.findAskPanelInWatchPage(watchPage)
+                            : null;
+                    // A watch page without an Ask panel may not attach the templates of the chat,
+                    // such as when the account can no longer use Ask.
+                    if (needsChatTemplates && panel != null) {
+                        loadElementsResources(watchPage);
+                    }
+
+                    Utils.runOnMainThread(() -> {
+                        if (needsTemplate) {
+                            if (panel == null) {
+                                Utils.showSnackbarLong(str("morphe_ask_summarize_unavailable"));
+                                return;
+                            }
+                            AskPanelCommand.saveTemplate(panel);
+                            if (!AskPanelCommand.hasTemplate()) {
+                                Utils.showSnackbarLong(str("morphe_ask_summarize_failed"));
+                                return;
+                            }
+                        }
+                        showAskPanel(videoId);
+                    });
+                });
+            }, SHOW_PANEL_DELAY_MS);
             return true;
         } catch (Exception ex) {
             Logger.printException(() -> "onMenuItemTapped failure", ex);
@@ -547,71 +612,6 @@ public final class AskFlyoutMenuPatch {
                 Logger.printException(() -> "onTapHandlerCreated failure", ex);
             }
         });
-    }
-
-    private static void openAskPanel(String videoId) {
-        final boolean needsTemplate = !AskPanelCommand.hasTemplate();
-        final boolean needsChatTemplates = !hasChatTemplates();
-        if (!needsTemplate && !needsChatTemplates) {
-            showAskPanel(videoId);
-            return;
-        }
-
-        // Without an Ask panel to build from, the watch page of the video is fetched for its Ask panel.
-        // The chat shows nothing until a watch page response attaches its Elements templates,
-        // so in an app session without them, a watch page with an Ask panel is fetched for them.
-        String watchPageVideoId = needsTemplate ? videoId : AskPanelCommand.getTemplateVideoId();
-        Utils.runOnBackgroundThread(() -> {
-            byte[] watchPage = AskPanelRequest.fetchWatchPage(watchPageVideoId);
-            byte[] panel = watchPage != null
-                    ? AskPanelCommand.findAskPanelInWatchPage(watchPage)
-                    : null;
-            // A watch page without an Ask panel may not attach the templates of the chat,
-            // such as when the account can no longer use Ask.
-            if (needsChatTemplates && panel != null) {
-                loadElementsResources(watchPage);
-            }
-
-            Utils.runOnMainThread(() -> {
-                if (needsTemplate) {
-                    if (panel == null) {
-                        Utils.showSnackbarLong(str("morphe_ask_summarize_unavailable"));
-                        return;
-                    }
-                    AskPanelCommand.saveTemplate(panel);
-                    if (!AskPanelCommand.hasTemplate()) {
-                        Utils.showSnackbarLong(str("morphe_ask_summarize_failed"));
-                        return;
-                    }
-                }
-                showAskPanel(videoId);
-            });
-        });
-    }
-
-    /**
-     * @return If this class gave the processor the Elements templates of the Ask chat
-     *         if the app session has used them, or if the used Elements resources are not known.
-     *         The app marks a template as used when it first shows it, not when a response attaches it,
-     *         and it does not always mark the template of the answers as used, such as on 21.42.
-     */
-    private static boolean hasChatTemplates() {
-        if (loadedChatTemplates) {
-            return true;
-        }
-        ElementsResourceProcessorAccess processor = elementsResourceProcessorRef.get();
-        if (processor == null) {
-            return true;
-        }
-        Set<?> usedResources = processor.patch_getUsedResources();
-        synchronized (usedResources) {
-            for (Object resource : usedResources) {
-                if (resource instanceof String name && name.startsWith(CHAT_RESPONSE_TEMPLATE)) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     /**

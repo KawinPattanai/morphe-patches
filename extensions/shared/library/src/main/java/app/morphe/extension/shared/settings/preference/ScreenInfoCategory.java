@@ -73,7 +73,33 @@ public class ScreenInfoCategory extends PreferenceCategory {
         LinearLayout content = new LinearLayout(context);
         content.setOrientation(LinearLayout.VERTICAL);
         for (int i = 0, count = getPreferenceCount(); i < count; i++) {
-            View section = createSection(context, getPreference(i));
+            Preference preference = getPreference(i);
+            CharSequence sectionTitle = preference.getTitle();
+            CharSequence summary = preference.getSummary();
+            boolean hasTitle = Utils.isNotEmpty(sectionTitle);
+
+            LinearLayout section = new LinearLayout(context);
+            section.setOrientation(LinearLayout.VERTICAL);
+
+            if (hasTitle) {
+                TextView titleView = new TextView(context);
+                titleView.setText(sectionTitle);
+                titleView.setTypeface(Typeface.DEFAULT_BOLD);
+                titleView.setTextSize(16);
+                titleView.setTextColor(ThemeUtils.getAppForegroundColor());
+                section.addView(titleView);
+            }
+
+            if (Utils.isNotEmpty(summary)) {
+                TextView summaryView = new TextView(context);
+                summaryView.setText(summary);
+                summaryView.setTextSize(14);
+                summaryView.setTextColor(ThemeUtils.getAppForegroundColor());
+                if (hasTitle) {
+                    summaryView.setPadding(0, Dim.dp4, 0, 0);
+                }
+                section.addView(summaryView);
+            }
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -93,36 +119,5 @@ public class ScreenInfoCategory extends PreferenceCategory {
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
 
         dialog.show();
-    }
-
-    private static View createSection(Context context, Preference preference) {
-        CharSequence title = preference.getTitle();
-        CharSequence summary = preference.getSummary();
-        boolean hasTitle = Utils.isNotEmpty(title);
-
-        LinearLayout section = new LinearLayout(context);
-        section.setOrientation(LinearLayout.VERTICAL);
-
-        if (hasTitle) {
-            TextView titleView = new TextView(context);
-            titleView.setText(title);
-            titleView.setTypeface(Typeface.DEFAULT_BOLD);
-            titleView.setTextSize(16);
-            titleView.setTextColor(ThemeUtils.getAppForegroundColor());
-            section.addView(titleView);
-        }
-
-        if (Utils.isNotEmpty(summary)) {
-            TextView summaryView = new TextView(context);
-            summaryView.setText(summary);
-            summaryView.setTextSize(14);
-            summaryView.setTextColor(ThemeUtils.getAppForegroundColor());
-            if (hasTitle) {
-                summaryView.setPadding(0, Dim.dp4, 0, 0);
-            }
-            section.addView(summaryView);
-        }
-
-        return section;
     }
 }

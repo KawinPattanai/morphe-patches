@@ -47,7 +47,7 @@ public final class MetapanelTextColorFilter extends SpanFilter {
     @Override
     public boolean skip(String identifier, CharSequence path, SpannableString spannableString, Object span,
                         int start, int end, int flags, boolean isWord, SpanType spanType, StringSpanFilterGroup matchedGroup) {
-        if (spanType != SpanType.FOREGROUND_COLOR || !isMetapanelText(identifier, path)
+        if (spanType != SpanType.FOREGROUND_COLOR || !(isMetapanelIdentifier(identifier) && Utils.indexOf(path, "compact_channel_bar") < 0)
                 || !LegacyPlayerControlsPatch.fixMetapanelTextColors()) {
             return false;
         }
@@ -59,11 +59,6 @@ public final class MetapanelTextColorFilter extends SpanFilter {
 
         spannableString.setSpan(new ForegroundColorSpan(getLightThemeTextColor(color)), start, end, flags);
         return true;
-    }
-
-    private static boolean isMetapanelText(String identifier, CharSequence path) {
-        // The subscribe button has its own background, with the white text of the light theme.
-        return isMetapanelIdentifier(identifier) && Utils.indexOf(path, "compact_channel_bar") < 0;
     }
 
     /**

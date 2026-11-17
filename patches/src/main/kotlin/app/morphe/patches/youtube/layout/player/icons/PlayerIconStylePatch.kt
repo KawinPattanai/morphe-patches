@@ -60,12 +60,6 @@ private val iconStyleSuffixes = listOf(
     "_sharp"
 )
 
-private fun iconStyleVariants(resourceDirectory: String, baseNames: Array<out String>) =
-    baseNames.flatMap { baseName -> iconStyleSuffixes.map { suffix -> "$baseName$suffix.xml" } }
-        .filter { file ->
-            inputStreamFromBundledResource(resourceDirectory, "drawable/$file")?.use { true } ?: false
-        }
-
 private val logger = Logger.getLogger(Patch::class.java.name)
 
 /**
@@ -105,7 +99,29 @@ internal class CustomIcons(path: String) {
             }
             val (name, bytes) = found.single()
             val png = name.endsWith(".png")
-            if (png) validatePng(name, bytes) else validateVector(name, bytes)
+            if (png) {
+                // The signature is followed by the IHDR chunk, which starts with the width and height.
+                if (bytes.size < 24 || !bytes.copyOfRange(0, 8).contentEquals(PNG_SIGNATURE)) {
+                    throw PatchException("Custom icon $name is not a PNG image")
+                }
+                fun int(offset: Int) = (0 until 4).fold(0) { value, i -> (value shl 8) or (bytes[offset + i].toInt() and 0xFF) }
+                val width = int(16)
+                val height = int(20)
+                // The buttons are square, a different shape would be squeezed.
+                if (width != height) {
+                    throw PatchException("Custom icon $name must be square, found ${width}x$height")
+                }
+            } else {
+                val root = try {
+                    readXml(bytes.inputStream()).use { it.root.tag }
+                } catch (ex: Exception) {
+                    throw PatchException("Custom icon $name is not valid XML: ${ex.message}")
+                }
+
+                if (root != "vector" && root != "animated-vector") {
+                    throw PatchException("Custom icon $name must be a vector drawable, found <$root>")
+                }
+            }
             Icon(bytes, png)
         }
 
@@ -138,32 +154,6 @@ internal class CustomIcons(path: String) {
 
     private companion object {
         val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
-
-        fun validatePng(name: String, bytes: ByteArray) {
-            // The signature is followed by the IHDR chunk, which starts with the width and height.
-            if (bytes.size < 24 || !bytes.copyOfRange(0, 8).contentEquals(PNG_SIGNATURE)) {
-                throw PatchException("Custom icon $name is not a PNG image")
-            }
-            fun int(offset: Int) = (0 until 4).fold(0) { value, i -> (value shl 8) or (bytes[offset + i].toInt() and 0xFF) }
-            val width = int(16)
-            val height = int(20)
-            // The buttons are square, a different shape would be squeezed.
-            if (width != height) {
-                throw PatchException("Custom icon $name must be square, found ${width}x$height")
-            }
-        }
-
-        fun validateVector(name: String, bytes: ByteArray) {
-            val root = try {
-                readXml(bytes.inputStream()).use { it.root.tag }
-            } catch (ex: Exception) {
-                throw PatchException("Custom icon $name is not valid XML: ${ex.message}")
-            }
-
-            if (root != "vector" && root != "animated-vector") {
-                throw PatchException("Custom icon $name must be a vector drawable, found <$root>")
-            }
-        }
     }
 }
 
@@ -185,9 +175,14 @@ internal fun copyIconStyles(
     baseNames: Array<out String>,
     customIcons: CustomIcons?,
 ) {
+    // The icon styles bundled for each base name.
+    val iconStyleVariants = baseNames.flatMap { baseName -> iconStyleSuffixes.map { suffix -> "$baseName$suffix.xml" } }
+        .filter { file ->
+            inputStreamFromBundledResource(resourceDirectory, "drawable/$file")?.use { true } ?: false
+        }
     copyResources(
         resourceDirectory,
-        ResourceGroup("drawable", *iconStyleVariants(resourceDirectory, baseNames).toTypedArray())
+        ResourceGroup("drawable", *iconStyleVariants.toTypedArray())
     )
     customIcons?.copy(baseNames)
 }
@@ -297,35 +292,6 @@ private fun appPlayerIconWrapper(wrapperClass: String, appIcon: String? = null):
     <drawable xmlns:android="http://schemas.android.com/apk/res/android"
         class="$${APP_PLAYER_ICON_DRAWABLE}$$${wrapperClass}"$$drawable />
     """.trimIndent()
-}
-
-/**
- * Puts a wrapper around every icon of an app selector, which keeps its states.
- * The wrapper gets the app icon as android:drawable, since the icon differs per screen size.
- *
- * @param selectorPaths The paths of the selector in each configuration.
- */
-private fun wrapAppSelectorIcons(selectorPaths: List<String>, wrapperClass: String) {
-    selectorPaths.forEach { path ->
-        resourceXml(path).use { selector ->
-            selector.elements("item").toList().forEach { item ->
-                // The disabled item is a tinted <bitmap> child instead of an android:drawable attribute.
-                val bitmap = item.children("bitmap").firstOrNull()
-                val icon = item.attribute("android:drawable").orEmpty().ifEmpty {
-                    bitmap?.attribute("android:src").orEmpty()
-                }
-                if (icon.isEmpty()) return@forEach
-
-                item.removeAttribute("android:drawable")
-                bitmap?.remove()
-                val disabled = if (item.attribute("android:state_enabled") == "false") "Disabled" else ""
-                item.appendChild("drawable") {
-                    setAttribute("class", $$"$${APP_PLAYER_ICON_DRAWABLE}$$${wrapperClass}$${disabled}")
-                    setAttribute("android:drawable", icon)
-                }
-            }
-        }
-    }
 }
 
 // Layouts with the player settings button. Decoding every layout to find them is slow.
@@ -566,7 +532,28 @@ val playerIconStylePatch = patch(
             listDecodableFiles("res/drawable*/$selectorName.xml")
         }.sorted()
         appSkipSelectors.forEach { (selectorName, wrapperClass) ->
-            wrapAppSelectorIcons(selectorPaths.filter { it.endsWith("/$selectorName.xml") }, wrapperClass)
+            // Puts a wrapper around every icon of an app selector, which keeps its states.
+            // The wrapper gets the app icon as android:drawable, since the icon differs per screen size.
+            selectorPaths.filter { it.endsWith("/$selectorName.xml") }.forEach { path ->
+                resourceXml(path).use { selector ->
+                    selector.elements("item").toList().forEach { item ->
+                        // The disabled item is a tinted <bitmap> child instead of an android:drawable attribute.
+                        val bitmap = item.children("bitmap").firstOrNull()
+                        val icon = item.attribute("android:drawable").orEmpty().ifEmpty {
+                            bitmap?.attribute("android:src").orEmpty()
+                        }
+                        if (icon.isEmpty()) return@forEach
+
+                        item.removeAttribute("android:drawable")
+                        bitmap?.remove()
+                        val disabled = if (item.attribute("android:state_enabled") == "false") "Disabled" else ""
+                        item.appendChild("drawable") {
+                            setAttribute("class", $$"$${APP_PLAYER_ICON_DRAWABLE}$$${wrapperClass}$${disabled}")
+                            setAttribute("android:drawable", icon)
+                        }
+                    }
+                }
+            }
         }
 
         // Without the bold player the settings button keeps the gear of its layout, which other screens share,

@@ -11,7 +11,6 @@ package app.morphe.extension.shared.spoof.js.nsigsolver.runtime;
 import static app.morphe.extension.shared.Utils.isNotEmpty;
 
 import androidx.annotation.GuardedBy;
-import androidx.annotation.Nullable;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
@@ -113,7 +112,31 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
 
             if (playerChanged) {
                 // Try to get preprocessed player from cache
-                String player = readPreprocessedPlayer(playerJSHash);
+                String player;
+                readPreprocessedPlayer: {
+                    String playerHash = playerJSHash;
+                    if (!legacyPlayerCacheRemoved) {
+                        legacyPlayerCacheRemoved = true;
+                        try {
+                            cacheService.removePlayerEntries(CACHE_SECTION);
+                        } catch (CacheError ex) {
+                            Logger.printDebug(() -> "Ignoring legacy player cache error", ex);
+                        }
+                    }
+
+                    File file = getPreprocessedPlayerFile(playerHash);
+                    if (!file.isFile()) {
+                        player = null;
+                        break readPreprocessedPlayer;
+                    }
+                    try {
+                        player = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+                    } catch (IOException ex) {
+                        Logger.printDebug(() -> "Could not read preprocessed player", ex);
+                        player = null;
+                    }
+                }
+
                 final boolean preprocessed = (player != null);
 
                 if (!preprocessed) {
@@ -121,7 +144,39 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
                 }
 
                 // Load player into JS runtime wrapper
-                String loadStdin = constructPlayerLoadStdin(player, playerJSHash, preprocessed);
+                // Constructs stdin to load a player into the JS wrapper.
+                // This is called when the player changes or on first solve.
+                String loadStdin;
+                constructPlayerLoadStdin: {
+                    Gson gson = new Gson();
+                    String escapedPlayer = gson.toJson(player);
+                    String escapedHash = gson.toJson(playerJSHash);
+
+                    if (preprocessed) {
+                        // Use setPreprocessedPlayer for already-preprocessed player
+                        loadStdin = String.format("""
+                                setPreprocessedPlayer(%s, %s);
+                                JSON.stringify({type: 'result', responses: []});
+                            """,
+                            escapedPlayer, escapedHash
+                        );
+                        break constructPlayerLoadStdin;
+                    }
+
+                    // Use setPlayer for raw player, then do a dummy solve to trigger preprocessing
+                    // Do a minimal solve to trigger preprocessing and get the preprocessed player back
+                    loadStdin = String.format("""
+                            setPlayer(%s, %s);
+                            JSON.stringify((function() {
+                              var result = jscw({requests: [{type: 'n', challenges: []}]});
+                              var pp = getPreprocessedPlayer();
+                              if (pp) result.preprocessed_player = pp;
+                              return result;
+                            })());
+                        """,
+                        escapedPlayer, escapedHash
+                    );
+                }
                 String loadResult = runJsRuntime(loadStdin);
 
                 // Parse the load result to check for preprocessed player
@@ -129,7 +184,34 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
                 try {
                     SolverOutput loadOutput = gson.fromJson(loadResult, SOLVER_OUTPUT_TYPE);
                     if (loadOutput != null && loadOutput.getPreprocessedPlayer() != null) {
-                        savePreprocessedPlayer(playerJSHash, loadOutput.getPreprocessedPlayer());
+                        savePreprocessedPlayer: {
+                            String preprocessedPlayer = loadOutput.getPreprocessedPlayer();
+                            File file = getPreprocessedPlayerFile(playerJSHash);
+                            // A partly written file would be loaded as broken JavaScript, so write it fully before renaming.
+                            File temp = new File(file.getPath() + ".tmp");
+                            try {
+                                Files.write(temp.toPath(), preprocessedPlayer.getBytes(StandardCharsets.UTF_8));
+                                if (!temp.renameTo(file)) {
+                                    throw new IOException("Could not rename " + temp);
+                                }
+                            } catch (IOException ex) {
+                                Logger.printException(() -> "Failed to save preprocessed player", ex);
+                                Utils.deleteQuietly(temp);
+                                break savePreprocessedPlayer;
+                            }
+
+                            File directory = file.getParentFile();
+                            if (directory == null) {
+                                break savePreprocessedPlayer;
+                            }
+                            File[] files = directory.listFiles((dir, name) ->
+                                    name.startsWith(PREPROCESSED_PLAYER_PREFIX) && !name.equals(file.getName()));
+                            if (files != null) {
+                                for (File old : files) {
+                                    Utils.deleteQuietly(old);
+                                }
+                            }
+                        }
                     }
                 } catch (JsonSyntaxException ex) {
                     // Ignore parse errors for load result - the important thing is the player is loaded
@@ -140,7 +222,20 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
             }
 
             // Now solve challenges using the wrapper (player is already in JS runtime memory)
-            String stdin = constructWrapperStdin(requests);
+            // Constructs stdin to solve challenges using the wrapper.
+            // The player is already loaded in the JS runtime.
+            List<Map<String, Object>> jsonRequests = new ArrayList<>(requests.size());
+            for (JsChallengeRequest request : requests) {
+                Map<String, Object> reqMap = new HashMap<>();
+                reqMap.put("type", request.type().getValue());
+                reqMap.put("challenges", request.input().challenges());
+                jsonRequests.add(reqMap);
+            }
+
+            Gson wrapperGson = new Gson();
+            Map<String, Object> data = Map.of("requests", jsonRequests);
+            String jsonData = wrapperGson.toJson(data);
+            String stdin = String.format("\nJSON.stringify(jscw(%s));\n", jsonData);
             String stdout = runJsRuntime(stdin);
 
             Gson gson = new Gson();
@@ -200,59 +295,6 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
         return new File(Utils.getContext().getCacheDir(), PREPROCESSED_PLAYER_PREFIX + playerHash + ".js");
     }
 
-    @SuppressWarnings("ReadWriteStringCanBeUsed")
-    @Nullable
-    private String readPreprocessedPlayer(String playerHash) {
-        if (!legacyPlayerCacheRemoved) {
-            legacyPlayerCacheRemoved = true;
-            try {
-                cacheService.removePlayerEntries(CACHE_SECTION);
-            } catch (CacheError ex) {
-                Logger.printDebug(() -> "Ignoring legacy player cache error", ex);
-            }
-        }
-
-        File file = getPreprocessedPlayerFile(playerHash);
-        if (!file.isFile()) {
-            return null;
-        }
-        try {
-            return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            Logger.printDebug(() -> "Could not read preprocessed player", ex);
-            return null;
-        }
-    }
-
-    @SuppressWarnings("ReadWriteStringCanBeUsed")
-    private static void savePreprocessedPlayer(String playerHash, String player) {
-        File file = getPreprocessedPlayerFile(playerHash);
-        // A partly written file would be loaded as broken JavaScript, so write it fully before renaming.
-        File temp = new File(file.getPath() + ".tmp");
-        try {
-            Files.write(temp.toPath(), player.getBytes(StandardCharsets.UTF_8));
-            if (!temp.renameTo(file)) {
-                throw new IOException("Could not rename " + temp);
-            }
-        } catch (IOException ex) {
-            Logger.printException(() -> "Failed to save preprocessed player", ex);
-            Utils.deleteQuietly(temp);
-            return;
-        }
-
-        File directory = file.getParentFile();
-        if (directory == null) {
-            return;
-        }
-        File[] files = directory.listFiles((dir, name) ->
-                name.startsWith(PREPROCESSED_PLAYER_PREFIX) && !name.equals(file.getName()));
-        if (files != null) {
-            for (File old : files) {
-                Utils.deleteQuietly(old);
-            }
-        }
-    }
-
     protected static void clearPreprocessedPlayer(String playerHash) {
         Utils.deleteQuietly(getPreprocessedPlayerFile(playerHash));
     }
@@ -261,91 +303,27 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
         return playerJSHash;
     }
 
-    /**
-     * Constructs stdin to load a player into the JS wrapper.
-     * This is called when the player changes or on first solve.
-     */
-    private String constructPlayerLoadStdin(String playerJS, String playerHash, boolean preprocessed) {
-        Gson gson = new Gson();
-        String escapedPlayer = gson.toJson(playerJS);
-        String escapedHash = gson.toJson(playerHash);
-
-        if (preprocessed) {
-            // Use setPreprocessedPlayer for already-preprocessed player
-            return String.format("""
-                    setPreprocessedPlayer(%s, %s);
-                    JSON.stringify({type: 'result', responses: []});
-                """,
-                escapedPlayer, escapedHash
-            );
-        }
-        // Use setPlayer for raw player, then do a dummy solve to trigger preprocessing
-        // Do a minimal solve to trigger preprocessing and get the preprocessed player back
-        return String.format("""
-                setPlayer(%s, %s);
-                JSON.stringify((function() {
-                  var result = jscw({requests: [{type: 'n', challenges: []}]});
-                  var pp = getPreprocessedPlayer();
-                  if (pp) result.preprocessed_player = pp;
-                  return result;
-                })());
-            """,
-            escapedPlayer, escapedHash
-        );
-    }
-
-    /**
-     * Constructs stdin to solve challenges using the wrapper.
-     * The player is already loaded in the JS runtime.
-     */
-    private String constructWrapperStdin(List<JsChallengeRequest> requests) {
-        List<Map<String, Object>> jsonRequests = new ArrayList<>(requests.size());
-        for (JsChallengeRequest request : requests) {
-            Map<String, Object> reqMap = new HashMap<>();
-            reqMap.put("type", request.type().getValue());
-            reqMap.put("challenges", request.input().challenges());
-            jsonRequests.add(reqMap);
-        }
-
-        Gson gson = new Gson();
-        Map<String, Object> data = Map.of("requests", jsonRequests);
-        String jsonData = gson.toJson(data);
-        return String.format("\nJSON.stringify(jscw(%s));\n", jsonData);
-    }
-
     protected String constructCommonStdin() {
         try {
+            if (libScript == null) {
+                libScript = getScript(ScriptType.LIB);
+            }
+            if (coreScript == null) {
+                coreScript = getScript(ScriptType.CORE);
+            }
+            if (wrapperScript == null) {
+                wrapperScript = getScript(ScriptType.WRAPPER);
+            }
             return String.join("\n",
-                    getLibScript().getCode(),
-                    getCoreScript().getCode(),
-                    getWrapperScript().getCode(),
+                    libScript.getCode(),
+                    coreScript.getCode(),
+                    wrapperScript.getCode(),
                     "\"\";"
             );
         } catch (JsChallengeProviderRejectedRequest ex) {
             Logger.printException(() -> "Failed to construct stdin", ex);
             return "";
         }
-    }
-
-    private Script getLibScript() throws JsChallengeProviderRejectedRequest {
-        if (libScript == null) {
-            libScript = getScript(ScriptType.LIB);
-        }
-        return libScript;
-    }
-
-    private Script getCoreScript() throws JsChallengeProviderRejectedRequest {
-        if (coreScript == null) {
-            coreScript = getScript(ScriptType.CORE);
-        }
-        return coreScript;
-    }
-
-    private Script getWrapperScript() throws JsChallengeProviderRejectedRequest {
-        if (wrapperScript == null) {
-            wrapperScript = getScript(ScriptType.WRAPPER);
-        }
-        return wrapperScript;
     }
 
     private interface ScriptSourceProvider {

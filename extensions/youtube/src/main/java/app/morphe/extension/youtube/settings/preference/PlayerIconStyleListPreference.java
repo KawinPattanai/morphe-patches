@@ -91,16 +91,42 @@ public class PlayerIconStyleListPreference extends IconListPreference {
 
         Drawable[] drawables = new Drawable[values.length];
         final boolean shorts = Settings.SHORTS_ICON_STYLE.key.equals(getKey());
-        String sample = shorts ? SHORTS_SAMPLE_ICON : findSampleIcon();
+        String sample;
+        if (shorts) {
+            sample = SHORTS_SAMPLE_ICON;
+        } else {
+            findSampleIcon: {
+                for (String baseName : SAMPLE_ICONS) {
+                    if (PlayerIcons.exists(baseName) || PlayerIcons.exists(baseName + "_bold")) {
+                        sample = baseName;
+                        break findSampleIcon;
+                    }
+                }
+                sample = null;
+            }
+        }
         if (sample == null) return drawables;
 
         Context context = getContext();
         for (int i = 0; i < values.length; i++) {
             try {
                 PlayerIcons.Style style = PlayerIcons.Style.valueOf(values[i].toString());
-                String styleSample = style == PlayerIcons.Style.CUSTOM
-                        ? findCustomSampleIcon(shorts ? SHORTS_CUSTOM_SAMPLE_ICONS : SAMPLE_ICONS, sample)
-                        : sample;
+                String styleSample;
+                if (style == PlayerIcons.Style.CUSTOM) {
+                    // A custom icon set may not have the usual sample, so it shows the first icon it does have.
+                    findCustomSampleIcon: {
+                        String[] candidates = shorts ? SHORTS_CUSTOM_SAMPLE_ICONS : SAMPLE_ICONS;
+                        for (String baseName : candidates) {
+                            if (PlayerIcons.exists(baseName + PlayerIcons.Style.CUSTOM.suffix)) {
+                                styleSample = baseName;
+                                break findCustomSampleIcon;
+                            }
+                        }
+                        styleSample = sample;
+                    }
+                } else {
+                    styleSample = sample;
+                }
                 drawables[i] = shorts
                         // The app's Shorts icons carry their own shadow, which a tint would paint over.
                         ? buildTile(context, PlayerIcons.shorts(style, styleSample, SHORTS_SAMPLE_APP_ICON), false)
@@ -111,26 +137,6 @@ public class PlayerIconStyleListPreference extends IconListPreference {
             }
         }
         return drawables;
-    }
-
-    @Nullable
-    private static String findSampleIcon() {
-        for (String baseName : SAMPLE_ICONS) {
-            if (PlayerIcons.exists(baseName) || PlayerIcons.exists(baseName + "_bold")) {
-                return baseName;
-            }
-        }
-        return null;
-    }
-
-    // A custom icon set may not have the usual sample, so it shows the first icon it does have.
-    private static String findCustomSampleIcon(String[] candidates, String fallback) {
-        for (String baseName : candidates) {
-            if (PlayerIcons.exists(baseName + PlayerIcons.Style.CUSTOM.suffix)) {
-                return baseName;
-            }
-        }
-        return fallback;
     }
 
     @Nullable

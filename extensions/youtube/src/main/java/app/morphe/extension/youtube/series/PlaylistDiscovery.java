@@ -96,7 +96,16 @@ final class PlaylistDiscovery {
                     author = details.optString("author"),
                     channel = details.optString("channelId");
             LinkedHashMap<String, Match> linked = new LinkedHashMap<>();
-            for (String id : descriptionPlaylists(details.optString("shortDescription")))
+            String description = details.optString("shortDescription");
+            Set<String> ids = new LinkedHashSet<>();
+            Matcher urls = Pattern.compile("https?://[^\\s<>\"]+")
+                    .matcher(description.substring(0, Math.min(description.length(), 20000)));
+            while (urls.find() && ids.size() < 4) {
+                String id = PlaylistInput.parseOrNull(urls.group().replaceAll("[).,;]+$", ""));
+                if (id != null && eligible(id)) ids.add(id);
+            }
+            List<String> descriptionPlaylists = new ArrayList<>(ids);
+            for (String id : descriptionPlaylists)
                 linked.put(id, new Match(id, "", "", ""));
             verify(linked.values(), video, checked, found, budget);
             if (!found.isEmpty()) return remember(video, found);
@@ -284,17 +293,6 @@ final class PlaylistDiscovery {
         }
     }
 
-    static List<String> descriptionPlaylists(String description) {
-        Set<String> ids = new LinkedHashSet<>();
-        Matcher urls = Pattern.compile("https?://[^\\s<>\"]+")
-                .matcher(description.substring(0, Math.min(description.length(), 20000)));
-        while (urls.find() && ids.size() < 4) {
-            String id = PlaylistInput.parseOrNull(urls.group().replaceAll("[).,;]+$", ""));
-            if (id != null && eligible(id)) ids.add(id);
-        }
-        return new ArrayList<>(ids);
-    }
-
     static boolean eligible(String id) {
         return PlaylistInput.suggestible(id) && !id.startsWith("UU") && !id.startsWith("UUL");
     }
@@ -307,7 +305,30 @@ final class PlaylistDiscovery {
     }
 
     static List<String> queries(String title, String author) {
-        String series = seriesName(title);
+        String series;
+        seriesName: {
+            // Season identity is more useful than an episode subtitle or a format suffix.
+            Matcher season = SEASON.matcher(title);
+            if (season.find()) {
+                series = title.substring(0, season.end()).replaceAll("[|｜]", " ").trim();
+                break seriesName;
+            }
+            String[] parts = title.split("[|｜]");
+            series = "";
+            for (int i = parts.length - 1; i >= 0 && series.isEmpty(); i--) {
+                String part = parts[i].trim();
+                if (!part.matches("(?i)(?:full\\s+episodes?|official\\s+video|4k|hd)"))
+                    series = part;
+            }
+
+            // Android regex is ICU, so ] stays escaped inside the character class.
+            //noinspection RegExpRedundantEscape
+            series = series.replaceAll(
+                            "\\[[^\\]]*]|(?i)\\b(?:episode|ep|part)\\s*#?\\s*\\d+|#\\d+",
+                            " ")
+                    .replaceAll("\\s+", " ")
+                    .trim();
+        }
         String primary = series.toLowerCase(Locale.ROOT).contains(author.toLowerCase(Locale.ROOT))
                 ? series
                 : author + " " + series;
@@ -317,26 +338,6 @@ final class PlaylistDiscovery {
             if (!value.isEmpty()) queries.add(value.substring(0, Math.min(180, value.length())));
         }
         return new ArrayList<>(queries);
-    }
-
-    private static String seriesName(String title) {
-        // Season identity is more useful than an episode subtitle or a format suffix.
-        Matcher season = SEASON.matcher(title);
-        if (season.find()) return title.substring(0, season.end()).replaceAll("[|｜]", " ").trim();
-        String[] parts = title.split("[|｜]");
-        String series = "";
-        for (int i = parts.length - 1; i >= 0 && series.isEmpty(); i--) {
-            String part = parts[i].trim();
-            if (!part.matches("(?i)(?:full\\s+episodes?|official\\s+video|4k|hd)"))
-                series = part;
-        }
-        // Android regex is ICU, so ] stays escaped inside the character class.
-        //noinspection RegExpRedundantEscape
-        return series.replaceAll(
-                        "\\[[^\\]]*]|(?i)\\b(?:episode|ep|part)\\s*#?\\s*\\d+|#\\d+",
-                        " ")
-                .replaceAll("\\s+", " ")
-                .trim();
     }
 
     private record Candidate(Match match, int score) {

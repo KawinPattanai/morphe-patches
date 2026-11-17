@@ -57,16 +57,6 @@ final class SeriesPlayback {
         return session != null;
     }
 
-    /**
-     * Autoplay is off by "Disable playlist autoplay", or by Autoplay control in mode Off.
-     */
-    private static boolean autoplayOff() {
-        if (Settings.AUTOPLAY_CONTROL.get()) {
-            return Settings.AUTOPLAY_MODE.get() == AutoplayRule.Mode.OFF;
-        }
-        return Settings.DISABLE_PLAYLIST_AUTOPLAY.get();
-    }
-
     static void privacyChanged(long generation) {
         if (session != null && session.privacy != generation) clear();
     }
@@ -96,7 +86,18 @@ final class SeriesPlayback {
         Session active = session;
         PlaybackBridge.Source source = PlaybackBridge.source();
         if (!valid(active, source, token)) return false;
-        if (autoplay && autoplayOff()) return true;
+        if (autoplay) {
+            // Autoplay is off by "Disable playlist autoplay", or by Autoplay control in mode Off.
+            boolean autoplayOff;
+            autoplayOff: {
+                if (Settings.AUTOPLAY_CONTROL.get()) {
+                    autoplayOff = Settings.AUTOPLAY_MODE.get() == AutoplayRule.Mode.OFF;
+                    break autoplayOff;
+                }
+                autoplayOff = Settings.DISABLE_PLAYLIST_AUTOPLAY.get();
+            }
+            if (autoplayOff) return true;
+        }
         if (navigating) return true;
         TrackerService service = TrackerService.existing();
         if (service == null) {

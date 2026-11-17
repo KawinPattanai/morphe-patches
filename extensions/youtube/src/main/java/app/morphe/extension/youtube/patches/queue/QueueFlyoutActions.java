@@ -50,7 +50,30 @@ public final class QueueFlyoutActions {
             // present. Shared card context is needed for private menus without Share.
             String playlistId = "";
             if (NativePlaylistQueuePatch.canQueuePlaylist()) {
-                playlistId = playlistIdFromMenu(menu);
+                playlistIdFromMenu: {
+                    String found = "";
+                    for (MenuItem item : menu.getItemsList()) {
+                        var command = endpoint(item);
+                        String encoded = command.hasShareEntityServiceEndpoint()
+                                ? command.getShareEntityServiceEndpoint().getSerializedShareEntity()
+                                : command.getLegacyShareEntityEndpoint().getSerializedShareEntity();
+                        if (encoded.isEmpty()) {
+                            continue;
+                        }
+                        var entity = PlaylistQueueRenderer.ShareEntity.parseFrom(Base64.decode(Uri.decode(encoded), Base64.URL_SAFE));
+                        // Individual videos may share a surrounding playlist too. Only a
+                        // collection-only ShareEntity can authorize importing its whole list.
+                        if (!entity.getVideoId().isEmpty() || !PlaylistCardSource.isPlaylistId(entity.getPlaylistId())) {
+                            continue;
+                        }
+                        if (!found.isEmpty() && !found.equals(entity.getPlaylistId())) {
+                            playlistId = "";
+                            break playlistIdFromMenu;
+                        }
+                        found = entity.getPlaylistId();
+                    }
+                    playlistId = found;
+                }
                 if (playlistId.isEmpty()) {
                     playlistId = FlyoutUtils.getNativeQueuePlaylistId();
                 }
@@ -185,30 +208,6 @@ public final class QueueFlyoutActions {
             Logger.printException(() -> "playlistSource failure", ex);
             return new PlaylistCardSource.Selection("", collection);
         }
-    }
-
-    static String playlistIdFromMenu(MenuRenderer menu) throws InvalidProtocolBufferException {
-        String found = "";
-        for (MenuItem item : menu.getItemsList()) {
-            var command = endpoint(item);
-            String encoded = command.hasShareEntityServiceEndpoint()
-                    ? command.getShareEntityServiceEndpoint().getSerializedShareEntity()
-                    : command.getLegacyShareEntityEndpoint().getSerializedShareEntity();
-            if (encoded.isEmpty()) {
-                continue;
-            }
-            var entity = PlaylistQueueRenderer.ShareEntity.parseFrom(Base64.decode(Uri.decode(encoded), Base64.URL_SAFE));
-            // Individual videos may share a surrounding playlist too. Only a
-            // collection-only ShareEntity can authorize importing its whole list.
-            if (!entity.getVideoId().isEmpty() || !PlaylistCardSource.isPlaylistId(entity.getPlaylistId())) {
-                continue;
-            }
-            if (!found.isEmpty() && !found.equals(entity.getPlaylistId())) {
-                return "";
-            }
-            found = entity.getPlaylistId();
-        }
-        return found;
     }
 
     @Nullable

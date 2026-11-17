@@ -135,17 +135,6 @@ public final class ChannelPostsSearchRequest {
         return builder.toString();
     }
 
-    /**
-     * Adds the posts of a page of the posts tab to the list, in the order they are listed.
-     *
-     * @param seenPostIds Ids of the posts already in the list.
-     */
-    private static void collectPagePosts(JSONObject json, List<ChannelPostResult> posts, Set<String> seenPostIds) {
-        for (String key : POST_LIST_KEYS) {
-            collectPosts(json.opt(key), posts, seenPostIds);
-        }
-    }
-
     private static void collectPosts(@Nullable Object json, List<ChannelPostResult> posts, Set<String> seenPostIds) {
         if (json instanceof JSONObject object) {
             Iterator<String> keys = object.keys();
@@ -154,8 +143,89 @@ public final class ChannelPostsSearchRequest {
                 if (SHARED_POST_RENDERER_KEY.equals(key)) continue;
 
                 Object value = object.opt(key);
-                if (isPostRendererKey(key) && value instanceof JSONObject post) {
-                    ChannelPostResult result = parsePost(post);
+                boolean isPostRendererKey;
+                isPostRendererKey: {
+                    for (String postKey : POST_RENDERER_KEYS) {
+                        if (postKey.equals(key)) {
+                            isPostRendererKey = true;
+                            break isPostRendererKey;
+                        }
+                    }
+                    isPostRendererKey = false;
+                }
+                if (isPostRendererKey && value instanceof JSONObject post) {
+                    ChannelPostResult result;
+                    parsePost: {
+                        String postId = post.optString("postId");
+                        if (postId.isEmpty()) {
+                            result = null;
+                            break parsePost;
+                        }
+
+                        String text = ChannelSearchRequest.parseText(post.optJSONObject("contentText"));
+                        String publishedTime = ChannelSearchRequest.parseText(post.optJSONObject("publishedTimeText"));
+
+                        JSONObject voteCount = post.optJSONObject("voteCount");
+                        String likes;
+                        accessibilityLabel: {
+                            if (voteCount == null) {
+                                likes = "";
+                                break accessibilityLabel;
+                            }
+                            JSONObject accessibility = voteCount.optJSONObject("accessibility");
+                            JSONObject data = accessibility == null ? null : accessibility.optJSONObject("accessibilityData");
+                            likes = data == null ? "" : data.optString("label");
+                        }
+                        if (likes.isEmpty()) {
+                            likes = ChannelSearchRequest.parseText(voteCount);
+                        }
+
+                        StringBuilder searchText = new StringBuilder(text);
+                        String thumbnailUrl = "";
+                        int imageCount = 0;
+
+                        JSONObject attachment = post.optJSONObject("backstageAttachment");
+                        if (attachment != null) {
+                            JSONObject image = attachment.optJSONObject("backstageImageRenderer");
+                            JSONObject multiImage = attachment.optJSONObject("postMultiImageRenderer");
+                            JSONObject video = attachment.optJSONObject("videoRenderer");
+                            JSONObject poll = attachment.optJSONObject("pollRenderer");
+
+                            if (image != null) {
+                                imageCount = 1;
+                                thumbnailUrl = imageUrl(image);
+                            } else if (multiImage != null) {
+                                JSONArray images = multiImage.optJSONArray("images");
+                                if (images != null) {
+                                    imageCount = images.length();
+                                    JSONObject first = images.optJSONObject(0);
+                                    if (first != null) {
+                                        JSONObject firstImage = first.optJSONObject("backstageImageRenderer");
+                                        if (firstImage != null) thumbnailUrl = imageUrl(firstImage);
+                                    }
+                                }
+                            } else if (video != null) {
+                                JSONObject thumbnail = video.optJSONObject("thumbnail");
+                                if (thumbnail != null) {
+                                    thumbnailUrl = ChannelSearchRequest.widestThumbnail(thumbnail.optJSONArray("thumbnails"));
+                                }
+                                appendSearchText(searchText, ChannelSearchRequest.parseText(video.optJSONObject("title")));
+                            } else if (poll != null) {
+                                JSONArray choices = poll.optJSONArray("choices");
+                                if (choices != null) {
+                                    for (int i = 0, length = choices.length(); i < length; i++) {
+                                        JSONObject choice = choices.optJSONObject(i);
+                                        if (choice != null) {
+                                            appendSearchText(searchText, ChannelSearchRequest.parseText(choice.optJSONObject("text")));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        result = new ChannelPostResult(postId, text.trim(), thumbnailUrl, imageCount,
+                                publishedTime, likes, searchText.toString());
+                    }
                     if (result != null && seenPostIds.add(result.postId)) {
                         posts.add(result);
                     }
@@ -168,76 +238,6 @@ public final class ChannelPostsSearchRequest {
                 collectPosts(array.opt(i), posts, seenPostIds);
             }
         }
-    }
-
-    private static boolean isPostRendererKey(String key) {
-        for (String postKey : POST_RENDERER_KEYS) {
-            if (postKey.equals(key)) return true;
-        }
-        return false;
-    }
-
-    @Nullable
-    private static ChannelPostResult parsePost(JSONObject post) {
-        String postId = post.optString("postId");
-        if (postId.isEmpty()) {
-            return null;
-        }
-
-        String text = ChannelSearchRequest.parseText(post.optJSONObject("contentText"));
-        String publishedTime = ChannelSearchRequest.parseText(post.optJSONObject("publishedTimeText"));
-
-        JSONObject voteCount = post.optJSONObject("voteCount");
-        String likes = accessibilityLabel(voteCount);
-        if (likes.isEmpty()) {
-            likes = ChannelSearchRequest.parseText(voteCount);
-        }
-
-        StringBuilder searchText = new StringBuilder(text);
-        String thumbnailUrl = "";
-        int imageCount = 0;
-
-        JSONObject attachment = post.optJSONObject("backstageAttachment");
-        if (attachment != null) {
-            JSONObject image = attachment.optJSONObject("backstageImageRenderer");
-            JSONObject multiImage = attachment.optJSONObject("postMultiImageRenderer");
-            JSONObject video = attachment.optJSONObject("videoRenderer");
-            JSONObject poll = attachment.optJSONObject("pollRenderer");
-
-            if (image != null) {
-                imageCount = 1;
-                thumbnailUrl = imageUrl(image);
-            } else if (multiImage != null) {
-                JSONArray images = multiImage.optJSONArray("images");
-                if (images != null) {
-                    imageCount = images.length();
-                    JSONObject first = images.optJSONObject(0);
-                    if (first != null) {
-                        JSONObject firstImage = first.optJSONObject("backstageImageRenderer");
-                        if (firstImage != null) thumbnailUrl = imageUrl(firstImage);
-                    }
-                }
-            } else if (video != null) {
-                JSONObject thumbnail = video.optJSONObject("thumbnail");
-                if (thumbnail != null) {
-                    thumbnailUrl = ChannelSearchRequest.widestThumbnail(thumbnail.optJSONArray("thumbnails"));
-                }
-                appendSearchText(searchText, ChannelSearchRequest.parseText(video.optJSONObject("title")));
-            } else if (poll != null) {
-                JSONArray choices = poll.optJSONArray("choices");
-                if (choices != null) {
-                    for (int i = 0, length = choices.length(); i < length; i++) {
-                        JSONObject choice = choices.optJSONObject(i);
-                        if (choice != null) {
-                            appendSearchText(searchText, ChannelSearchRequest.parseText(choice.optJSONObject("text")));
-                        }
-                    }
-                }
-            }
-        }
-
-        return new ChannelPostResult(postId, text.trim(), thumbnailUrl, imageCount,
-                publishedTime, likes, searchText.toString());
     }
 
     private static void appendSearchText(StringBuilder searchText, String value) {
@@ -327,13 +327,51 @@ public final class ChannelPostsSearchRequest {
             }
 
             // The tabs of the response tell the params of the posts tab, if the ones sent were not taken.
-            String postsTabParams = findPostsTabParams(json);
+            // The params of the posts tab, empty if the tab has none,
+            // or null if the channel has no posts tab.
+            final String postsTabParams;
+            JSONArray channelTabs = findTabs(json);
+            if (channelTabs == null) {
+                // Not a tab list, such as a page that is only the posts.
+                postsTabParams = "";
+            } else {
+                String postsTabBrowseParams = null;
+                for (int i = 0, length = channelTabs.length(); i < length; i++) {
+                    JSONObject tab = channelTabs.optJSONObject(i);
+                    JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
+                    if (tabRenderer == null || !isPostsTab(tabRenderer)) continue;
+
+                    JSONObject endpoint = tabRenderer.optJSONObject("endpoint");
+                    JSONObject browse = endpoint == null ? null : endpoint.optJSONObject("browseEndpoint");
+                    // The params of a tab are url encoded, such as "%3D" for "=".
+                    postsTabBrowseParams = browse == null ? "" : Uri.decode(browse.optString("params"));
+                    break;
+                }
+                postsTabParams = postsTabBrowseParams;
+            }
             if (postsTabParams == null) {
                 Logger.printDebug(() -> "Channel has no posts tab: " + channelId);
                 callback.onPostsPage(matches, parseChannelName(json), true);
                 return matches;
             }
-            if (!isPostsTabSelected(json) && !postsTabParams.isEmpty()) {
+            boolean isPostsTabSelected;
+            isPostsTabSelected: {
+                JSONArray tabs = findTabs(json);
+                if (tabs == null) {
+                    isPostsTabSelected = true;
+                    break isPostsTabSelected;
+                }
+                for (int i = 0, length = tabs.length(); i < length; i++) {
+                    JSONObject tab = tabs.optJSONObject(i);
+                    JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
+                    if (tabRenderer != null && tabRenderer.optBoolean("selected")) {
+                        isPostsTabSelected = isPostsTab(tabRenderer);
+                        break isPostsTabSelected;
+                    }
+                }
+                isPostsTabSelected = false;
+            }
+            if (!isPostsTabSelected && !postsTabParams.isEmpty()) {
                 Logger.printDebug(() -> "Posts tab params of the response: " + postsTabParams);
                 json = ChannelSearchRoutes.fetch(ChannelSearchRoutes.CHANNEL_SEARCH,
                         ChannelSearchRoutes.createPostsTabBody(channelId, postsTabParams, locale));
@@ -347,7 +385,10 @@ public final class ChannelPostsSearchRequest {
 
             for (page = 1; ; page++) {
                 pagePosts.clear();
-                collectPagePosts(json, pagePosts, seenPostIds);
+                // Adds the posts of a page of the posts tab to the list, in the order they are listed.
+                for (String key : POST_LIST_KEYS) {
+                    collectPosts(json.opt(key), pagePosts, seenPostIds);
+                }
                 scannedPosts += pagePosts.size();
                 for (ChannelPostResult post : pagePosts) {
                     if (matches(post, query)) {
@@ -355,7 +396,12 @@ public final class ChannelPostsSearchRequest {
                     }
                 }
 
-                String nextToken = findNextPageToken(json);
+                String nextToken = null;
+                for (String key : POST_LIST_KEYS) {
+                    String found = findContinuationToken(json.opt(key));
+                    if (found != null) nextToken = found;
+                }
+
                 final boolean isLast = nextToken == null || page >= MAX_POSTS_TAB_PAGES
                         // A page without new posts would only repeat.
                         || (page > 1 && pagePosts.isEmpty());
@@ -388,45 +434,6 @@ public final class ChannelPostsSearchRequest {
         }
     }
 
-    /**
-     * @return The params of the posts tab, empty if the tab has none,
-     *         or null if the channel has no posts tab.
-     */
-    @Nullable
-    private static String findPostsTabParams(JSONObject json) {
-        JSONArray tabs = findTabs(json);
-        if (tabs == null) {
-            // Not a tab list, such as a page that is only the posts.
-            return "";
-        }
-        for (int i = 0, length = tabs.length(); i < length; i++) {
-            JSONObject tab = tabs.optJSONObject(i);
-            JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
-            if (tabRenderer == null || !isPostsTab(tabRenderer)) continue;
-
-            JSONObject endpoint = tabRenderer.optJSONObject("endpoint");
-            JSONObject browse = endpoint == null ? null : endpoint.optJSONObject("browseEndpoint");
-            // The params of a tab are url encoded, such as "%3D" for "=".
-            return browse == null ? "" : Uri.decode(browse.optString("params"));
-        }
-        return null;
-    }
-
-    private static boolean isPostsTabSelected(JSONObject json) {
-        JSONArray tabs = findTabs(json);
-        if (tabs == null) {
-            return true;
-        }
-        for (int i = 0, length = tabs.length(); i < length; i++) {
-            JSONObject tab = tabs.optJSONObject(i);
-            JSONObject tabRenderer = tab == null ? null : tab.optJSONObject("tabRenderer");
-            if (tabRenderer != null && tabRenderer.optBoolean("selected")) {
-                return isPostsTab(tabRenderer);
-            }
-        }
-        return false;
-    }
-
     private static boolean isPostsTab(JSONObject tabRenderer) {
         JSONObject endpoint = tabRenderer.optJSONObject("endpoint");
         if (endpoint == null) return false;
@@ -447,32 +454,44 @@ public final class ChannelPostsSearchRequest {
         return null;
     }
 
-    /**
-     * @return Token of the next page of the posts tab, which is listed after the posts of the page.
-     */
-    @Nullable
-    private static String findNextPageToken(JSONObject json) {
-        String token = null;
-        for (String key : POST_LIST_KEYS) {
-            String found = findContinuationToken(json.opt(key));
-            if (found != null) token = found;
-        }
-        return token;
-    }
-
     @Nullable
     private static String findContinuationToken(@Nullable Object json) {
         String token = null;
         if (json instanceof JSONObject object) {
             JSONObject continuation = object.optJSONObject("continuationItemRenderer");
             if (continuation != null) {
-                String found = commandToken(continuation);
+                String found;
+                commandToken: {
+                    JSONObject endpoint = continuation.optJSONObject("continuationEndpoint");
+                    if (endpoint == null) {
+                        found = null;
+                        break commandToken;
+                    }
+                    JSONObject command = endpoint.optJSONObject("continuationCommand");
+                    if (command == null) {
+                        found = null;
+                        break commandToken;
+                    }
+                    String continuationToken = command.optString("token");
+                    found = continuationToken.isEmpty() ? null : continuationToken;
+                }
                 if (found != null) token = found;
             }
             Iterator<String> keys = object.keys();
             while (keys.hasNext()) {
                 String key = keys.next();
-                if ("continuationItemRenderer".equals(key) || isNotPostListKey(key)) continue;
+                if ("continuationItemRenderer".equals(key)) continue;
+                boolean isNotPostListKey;
+                isNotPostListKey: {
+                    for (String notPostListKey : NOT_POST_LIST_KEYS) {
+                        if (notPostListKey.equals(key)) {
+                            isNotPostListKey = true;
+                            break isNotPostListKey;
+                        }
+                    }
+                    isNotPostListKey = false;
+                }
+                if (isNotPostListKey) continue;
                 String found = findContinuationToken(object.opt(key));
                 if (found != null) token = found;
             }
@@ -485,33 +504,9 @@ public final class ChannelPostsSearchRequest {
         return token;
     }
 
-    private static boolean isNotPostListKey(String key) {
-        for (String notPostListKey : NOT_POST_LIST_KEYS) {
-            if (notPostListKey.equals(key)) return true;
-        }
-        return false;
-    }
-
-    @Nullable
-    private static String commandToken(JSONObject continuationItemRenderer) {
-        JSONObject endpoint = continuationItemRenderer.optJSONObject("continuationEndpoint");
-        if (endpoint == null) return null;
-        JSONObject command = endpoint.optJSONObject("continuationCommand");
-        if (command == null) return null;
-        String token = command.optString("token");
-        return token.isEmpty() ? null : token;
-    }
-
     private static String parseChannelName(JSONObject json) {
         JSONObject metadata = json.optJSONObject("metadata");
         JSONObject channel = metadata == null ? null : metadata.optJSONObject("channelMetadataRenderer");
         return channel == null ? "" : channel.optString("title");
-    }
-
-    private static String accessibilityLabel(@Nullable JSONObject text) {
-        if (text == null) return "";
-        JSONObject accessibility = text.optJSONObject("accessibility");
-        JSONObject data = accessibility == null ? null : accessibility.optJSONObject("accessibilityData");
-        return data == null ? "" : data.optString("label");
     }
 }

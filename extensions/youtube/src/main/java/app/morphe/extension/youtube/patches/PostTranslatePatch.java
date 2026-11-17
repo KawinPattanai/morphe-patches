@@ -503,7 +503,86 @@ public final class PostTranslatePatch {
         ViewParent parent = sender instanceof ComponentHost host ? host : sender.getParent();
         while (parent instanceof View view) {
             if (view instanceof ComponentHost host) {
-                PostText postText = findPostTextOfHost(host);
+                PostText postText;
+                findPostTextOfHost: {
+                    List<ShownText> shownTexts = new ArrayList<>();
+                    collectShownTexts(host, host, shownTexts);
+
+                    List<PostText> candidates = new ArrayList<>();
+                    for (ShownText shown : shownTexts) {
+                        String text = shown.text().trim();
+                        String original;
+                        String key = getOriginalKey(text);
+                        final boolean showsTranslation = key != null;
+                        if (showsTranslation) {
+                            synchronized (postTexts) {
+                                original = postTexts.get(key);
+                            }
+                            if (original == null) {
+                                original = key;
+                            }
+                        } else {
+                            if (!isPostText(normalize(text))) {
+                                continue;
+                            }
+                            original = findPostText(text);
+                            // A short text with a number, such as the date of the post or the count of its likes,
+                            // is shown in the language of the app.
+                            if (original == null || (original.length() <= MAX_METADATA_LENGTH
+                                    && DIGIT_PATTERN.matcher(original).find())) {
+                                continue;
+                            }
+                            key = normalize(original);
+                        }
+                        candidates.add(new PostText(shown, original, key, showsTranslation));
+                    }
+                    if (candidates.isEmpty()) {
+                        postText = null;
+                        break findPostTextOfHost;
+                    }
+
+                    // The name of the channel and the date are in the header, above the text of the post.
+                    Rect header = null;
+                    for (ShownText shown : shownTexts) {
+                        Rect bounds = shown.bounds();
+                        if (bounds != null && LETTER_PATTERN.matcher(shown.text()).find()
+                                && (header == null || bounds.top < header.top)) {
+                            header = bounds;
+                        }
+                    }
+
+                    PostText best = null;
+                    for (PostText candidate : candidates) {
+                        Rect bounds = candidate.shown().bounds();
+                        if (header != null) {
+                            if (bounds == null || bounds.top < header.bottom - Dim.dp(HEADER_TOLERANCE_DP)) {
+                                continue;
+                            }
+
+                            // The text of the post is the first text below the header, such as above a poll.
+                            if (best == null || bounds.top < best.shown().bounds().top) {
+                                best = candidate;
+                            }
+                        } else if (best == null || candidate.original().length() > best.original().length()) {
+                            best = candidate;
+                        }
+                    }
+
+                    final PostText chosen = best;
+                    Logger.printDebug(() -> {
+                        StringBuilder builder = new StringBuilder();
+                        for (PostText candidate : candidates) {
+                            if (Utils.isNotEmpty(builder)) builder.append('\n');
+                            builder.append(candidate == chosen ? "Post text: " : "Other post text: ")
+                                    .append(candidate.shown().bounds())
+                                    .append(" drawable: ").append(candidate.shown().drawable() != null)
+                                    .append(" text: ")
+                                    .append(candidate.original(), 0, Math.min(40, candidate.original().length()));
+                        }
+                        return builder.toString();
+                    });
+                    postText = best;
+                }
                 if (postText != null || host == root) {
                     return postText;
                 }
@@ -511,88 +590,6 @@ public final class PostTranslatePatch {
             parent = view.getParent();
         }
         return null;
-    }
-
-    /**
-     * @return The text of the post the host shows, or null if it does not show the text of a post.
-     */
-    @Nullable
-    private static PostText findPostTextOfHost(ComponentHost root) {
-        List<ShownText> shownTexts = new ArrayList<>();
-        collectShownTexts(root, root, shownTexts);
-
-        List<PostText> candidates = new ArrayList<>();
-        for (ShownText shown : shownTexts) {
-            String text = shown.text().trim();
-            String original;
-            String key = getOriginalKey(text);
-            final boolean showsTranslation = key != null;
-            if (showsTranslation) {
-                synchronized (postTexts) {
-                    original = postTexts.get(key);
-                }
-                if (original == null) {
-                    original = key;
-                }
-            } else {
-                if (!isPostText(normalize(text))) {
-                    continue;
-                }
-                original = findPostText(text);
-                // A short text with a number, such as the date of the post or the count of its likes,
-                // is shown in the language of the app.
-                if (original == null || (original.length() <= MAX_METADATA_LENGTH
-                        && DIGIT_PATTERN.matcher(original).find())) {
-                    continue;
-                }
-                key = normalize(original);
-            }
-            candidates.add(new PostText(shown, original, key, showsTranslation));
-        }
-        if (candidates.isEmpty()) {
-            return null;
-        }
-
-        // The name of the channel and the date are in the header, above the text of the post.
-        Rect header = null;
-        for (ShownText shown : shownTexts) {
-            Rect bounds = shown.bounds();
-            if (bounds != null && LETTER_PATTERN.matcher(shown.text()).find()
-                    && (header == null || bounds.top < header.top)) {
-                header = bounds;
-            }
-        }
-
-        PostText best = null;
-        for (PostText candidate : candidates) {
-            Rect bounds = candidate.shown().bounds();
-            if (header != null) {
-                if (bounds == null || bounds.top < header.bottom - Dim.dp(HEADER_TOLERANCE_DP)) {
-                    continue;
-                }
-                // The text of the post is the first text below the header, such as above a poll.
-                if (best == null || bounds.top < best.shown().bounds().top) {
-                    best = candidate;
-                }
-            } else if (best == null || candidate.original().length() > best.original().length()) {
-                best = candidate;
-            }
-        }
-
-        final PostText chosen = best;
-        Logger.printDebug(() -> {
-            StringBuilder builder = new StringBuilder();
-            for (PostText candidate : candidates) {
-                if (Utils.isNotEmpty(builder)) builder.append('\n');
-                builder.append(candidate == chosen ? "Post text: " : "Other post text: ")
-                        .append(candidate.shown().bounds())
-                        .append(" drawable: ").append(candidate.shown().drawable() != null)
-                        .append(" text: ")
-                        .append(candidate.original(), 0, Math.min(40, candidate.original().length()));
-            }
-            return builder.toString();
-        });
-        return best;
     }
 
     /**
@@ -657,16 +654,6 @@ public final class PostTranslatePatch {
 
     // region Menu
 
-    @Nullable
-    private static Drawable getTranslateIcon() {
-        for (String name : TRANSLATE_ICONS) {
-            if (ResourceUtils.getDrawableIdentifier(name) != 0) {
-                return ResourceUtils.getDrawable(name);
-            }
-        }
-        return null;
-    }
-
     /**
      * Adds Translate or Show original to the menu of a post with a text.
      *
@@ -687,9 +674,20 @@ public final class PostTranslatePatch {
             }
 
             final boolean showsTranslation = postText.showsTranslation();
+            Drawable translateIcon;
+            getTranslateIcon: {
+                for (String name : TRANSLATE_ICONS) {
+                    if (ResourceUtils.getDrawableIdentifier(name) != 0) {
+                        translateIcon = ResourceUtils.getDrawable(name);
+                        break getTranslateIcon;
+                    }
+                }
+                translateIcon = null;
+            }
+
             final int nextIndex = FlyoutUtils.addFlyoutButton(
                     flyoutPanel,
-                    getTranslateIcon(),
+                    translateIcon,
                     str(showsTranslation
                             ? "morphe_post_translate_flyout_original"
                             : "morphe_post_translate_flyout"),
@@ -752,7 +750,33 @@ public final class PostTranslatePatch {
                 pendingTranslations.remove(key);
                 if (translated == null || translated.isEmpty()) {
                     Utils.showToastShort(str("morphe_post_translate_failed"));
-                    openTranslationApp(context, original);
+                    // Sends the text to the translation app of the device, or else to any app that takes text.
+                    openTranslationApp: {
+                        Intent processText = new Intent(Intent.ACTION_PROCESS_TEXT)
+                                .setType("text/plain")
+                                .putExtra(Intent.EXTRA_PROCESS_TEXT, original)
+                                .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
+                                .setPackage(GOOGLE_TRANSLATE_PACKAGE)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        try {
+                            context.startActivity(processText);
+                            break openTranslationApp;
+                        } catch (ActivityNotFoundException ex) {
+                            Logger.printDebug(() -> "Google Translate is not installed");
+                        } catch (Exception ex) {
+                            Logger.printInfo(() -> "Could not open Google Translate", ex);
+                        }
+
+                        try {
+                            Intent send = new Intent(Intent.ACTION_SEND)
+                                    .setType("text/plain")
+                                    .putExtra(Intent.EXTRA_TEXT, original);
+                            context.startActivity(Intent.createChooser(send, str("morphe_post_translate_flyout"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                        } catch (Exception ex) {
+                            Logger.printException(() -> "Could not send the text to a translation app", ex);
+                        }
+                    }
                     return;
                 }
                 if (normalize(translated).equals(key)) {
@@ -778,7 +802,23 @@ public final class PostTranslatePatch {
         TextDrawableInterface drawable = postText.shown().drawable();
         if (drawable == null) {
             Logger.printDebug(() -> "The translation can not be shown in place");
-            showTranslationDialog(context, translation);
+            try {
+                Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                        context,
+                        str("morphe_post_translate_flyout"), // Title.
+                        translation, // Message.
+                        null, // No EditText.
+                        null, // OK button text.
+                        () -> {}, // OK button action (dismiss only).
+                        null, // No cancel button.
+                        null, // No neutral button.
+                        null, // No neutral button action.
+                        true  // Dismiss dialog when onNeutralClick.
+                );
+                dialogPair.first.show();
+            } catch (Exception ex) {
+                Logger.printException(() -> "Could not show the translation", ex);
+            }
             return;
         }
         // If the post is not shown anymore, the translation is shown once it is laid out again.
@@ -802,56 +842,6 @@ public final class PostTranslatePatch {
             if (entry.getValue().key().equals(key)) {
                 showOriginal(entry.getKey(), postText.original());
             }
-        }
-    }
-
-    private static void showTranslationDialog(Context context, String translation) {
-        try {
-            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                    context,
-                    str("morphe_post_translate_flyout"), // Title.
-                    translation, // Message.
-                    null, // No EditText.
-                    null, // OK button text.
-                    () -> {}, // OK button action (dismiss only).
-                    null, // No cancel button.
-                    null, // No neutral button.
-                    null, // No neutral button action.
-                    true  // Dismiss dialog when onNeutralClick.
-            );
-            dialogPair.first.show();
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not show the translation", ex);
-        }
-    }
-
-    /**
-     * Sends the text to the translation app of the device, or else to any app that takes text.
-     */
-    private static void openTranslationApp(Context context, String text) {
-        Intent processText = new Intent(Intent.ACTION_PROCESS_TEXT)
-                .setType("text/plain")
-                .putExtra(Intent.EXTRA_PROCESS_TEXT, text)
-                .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
-                .setPackage(GOOGLE_TRANSLATE_PACKAGE)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        try {
-            context.startActivity(processText);
-            return;
-        } catch (ActivityNotFoundException ex) {
-            Logger.printDebug(() -> "Google Translate is not installed");
-        } catch (Exception ex) {
-            Logger.printInfo(() -> "Could not open Google Translate", ex);
-        }
-
-        try {
-            Intent send = new Intent(Intent.ACTION_SEND)
-                    .setType("text/plain")
-                    .putExtra(Intent.EXTRA_TEXT, text);
-            context.startActivity(Intent.createChooser(send, str("morphe_post_translate_flyout"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not send the text to a translation app", ex);
         }
     }
 

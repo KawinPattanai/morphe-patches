@@ -485,26 +485,24 @@ public class StreamingDataRequest {
         // The streams of a client used because the Mobile Web client could not play the video are not reused,
         // so when the video is played again, such as when the player is started again, the Mobile Web client
         // is used again with a new session of the website.
-        return age < MAX_MILLISECONDS_TO_REUSE_STREAMS && stream != null && !isWebClientFallback(stream.client());
-    }
-
-    /**
-     * @return If the client comes after the Mobile Web client in the order of this fetch,
-     *         so the streams are of the client used because the Mobile Web client could not play the video.
-     */
-    private boolean isWebClientFallback(ClientType client) {
-        if (client.isWebClient()) {
+        if (age >= MAX_MILLISECONDS_TO_REUSE_STREAMS || stream == null) {
             return false;
+        }
+        // The client comes after the Mobile Web client in the order of this fetch if the streams are
+        // of the client used because the Mobile Web client could not play the video.
+        ClientType client = stream.client();
+        if (client.isWebClient()) {
+            return true;
         }
         for (ClientType orderClient : clientOrder) {
             if (orderClient == client) {
-                return false;
-            }
-            if (orderClient.isWebClient() && !skipClient(orderClient)) {
                 return true;
             }
+            if (orderClient.isWebClient() && !skipClient(orderClient)) {
+                return false;
+            }
         }
-        return false;
+        return true;
     }
 
     /**

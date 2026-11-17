@@ -503,7 +503,17 @@ public final class AmbientLightController {
         if (activity != null && activity.isInPictureInPictureMode()) return false;
 
         View root = video.getRootView();
-        View page = findWatchPage(root, video);
+        View page;
+        findWatchPage: {
+            for (int id : WATCH_PAGE_IDS) {
+                View found = id == 0 ? null : root.findViewById(id);
+                if (found instanceof ViewGroup && childContaining((ViewGroup) found, video) != null) {
+                    page = found;
+                    break findWatchPage;
+                }
+            }
+            page = null;
+        }
         if (page == null || !(root instanceof FrameLayout)) return false;
 
         if (readback == null) {
@@ -583,7 +593,41 @@ public final class AmbientLightController {
     private static void onPreDraw() {
         try {
             if (!active) return;
-            updateDrawables();
+            // Litho mounts a drawable again, also in another window of the app such as the comment box,
+            // and keeps its color when its bounds stay the same. This runs before the watch page draws,
+            // so a drawable shows the light only while it is in the window of the watch page.
+            if (!(seeThroughDrawables.isEmpty() && pendingDrawables.isEmpty())) {
+                View root = rootRef.get();
+                List<Drawable> changed = new ArrayList<>();
+
+                // Drawables that left the watch page get their own color back, and wait to be mounted again.
+                for (Iterator<Drawable> iterator = seeThroughDrawables.keySet().iterator(); iterator.hasNext(); ) {
+                    Drawable drawable = iterator.next();
+                    View host = hostOf(drawable);
+                    if (host == null || host.getRootView() != root) {
+                        iterator.remove();
+                        changed.add(drawable);
+                    }
+                }
+
+                // Drawables that are mounted in another window keep their own color.
+                for (Iterator<Drawable> iterator = pendingDrawables.keySet().iterator(); iterator.hasNext(); ) {
+                    Drawable drawable = iterator.next();
+                    View host = hostOf(drawable);
+                    if (host == null) continue;
+                    iterator.remove();
+                    if (host.getRootView() == root) changed.add(drawable);
+                }
+
+                // This calls getLithoColor, which adds the drawables to the maps again.
+                for (Drawable drawable : changed) {
+                    // The color of a drawable is chosen when its bounds change.
+                    Rect bounds = new Rect(drawable.getBounds());
+                    drawable.setBounds(0, 0, 0, 0);
+                    drawable.setBounds(bounds);
+                    drawable.invalidateSelf();
+                }
+            }
             updateLayout();
             if (!active) return;
             if (!pageCleared) {
@@ -614,50 +658,6 @@ public final class AmbientLightController {
             callback = drawableCallback.getCallback();
         }
         return callback instanceof View view ? view : null;
-    }
-
-    /**
-     * Litho mounts a drawable again, also in another window of the app such as the comment box,
-     * and keeps its color when its bounds stay the same. This runs before the watch page draws,
-     * so a drawable shows the light only while it is in the window of the watch page.
-     */
-    private static void updateDrawables() {
-        if (seeThroughDrawables.isEmpty() && pendingDrawables.isEmpty()) return;
-        View root = rootRef.get();
-        List<Drawable> changed = new ArrayList<>();
-
-        // Drawables that left the watch page get their own color back, and wait to be mounted again.
-        for (Iterator<Drawable> iterator = seeThroughDrawables.keySet().iterator(); iterator.hasNext(); ) {
-            Drawable drawable = iterator.next();
-            View host = hostOf(drawable);
-            if (host == null || host.getRootView() != root) {
-                iterator.remove();
-                changed.add(drawable);
-            }
-        }
-        // Drawables that are mounted in another window keep their own color.
-        for (Iterator<Drawable> iterator = pendingDrawables.keySet().iterator(); iterator.hasNext(); ) {
-            Drawable drawable = iterator.next();
-            View host = hostOf(drawable);
-            if (host == null) continue;
-            iterator.remove();
-            if (host.getRootView() == root) changed.add(drawable);
-        }
-
-        // This calls getLithoColor, which adds the drawables to the maps again.
-        for (Drawable drawable : changed) {
-            chooseColorAgain(drawable);
-        }
-    }
-
-    /**
-     * The color of a drawable is chosen when its bounds change.
-     */
-    private static void chooseColorAgain(Drawable drawable) {
-        Rect bounds = new Rect(drawable.getBounds());
-        drawable.setBounds(0, 0, 0, 0);
-        drawable.setBounds(bounds);
-        drawable.invalidateSelf();
     }
 
     private static void clearPage() {
@@ -693,7 +693,20 @@ public final class AmbientLightController {
         final int right = left + player.getWidth();
         final int bottom = top + player.getHeight();
         // While the page scrolls, the player gets shorter and crops the video, which keeps its size.
-        int[] videoBounds = videoInWindow(video);
+        int[] videoLocation = new int[2];
+        video.getLocationInWindow(videoLocation);
+        // Zooming the video scales a parent of the surface, and the surface keeps its size.
+        float scaleX = 1f;
+        float scaleY = 1f;
+        Object view = video;
+        while (view instanceof View scaled) {
+            scaleX *= scaled.getScaleX();
+            scaleY *= scaled.getScaleY();
+            view = scaled.getParent();
+        }
+        int[] videoBounds = new int[]{videoLocation[0], videoLocation[1],
+                videoLocation[0] + Math.round(video.getWidth() * scaleX),
+                videoLocation[1] + Math.round(video.getHeight() * scaleY)};
         videoBounds[0] = Math.max(videoBounds[0], left);
         videoBounds[1] = Math.max(videoBounds[1], top);
         videoBounds[2] = Math.min(videoBounds[2], right);
@@ -854,23 +867,6 @@ public final class AmbientLightController {
         scheduleTick();
     }
 
-    private static int[] videoInWindow(View video) {
-        int[] location = new int[2];
-        video.getLocationInWindow(location);
-        // Zooming the video scales a parent of the surface, and the surface keeps its size.
-        float scaleX = 1f;
-        float scaleY = 1f;
-        Object view = video;
-        while (view instanceof View scaled) {
-            scaleX *= scaled.getScaleX();
-            scaleY *= scaled.getScaleY();
-            view = scaled.getParent();
-        }
-        return new int[]{location[0], location[1],
-                location[0] + Math.round(video.getWidth() * scaleX),
-                location[1] + Math.round(video.getHeight() * scaleY)};
-    }
-
     private static void addRect(List<int[]> rects, int left, int top, int right, int bottom) {
         if (right - left >= MIN_RECT_SIZE && bottom - top >= MIN_RECT_SIZE) {
             rects.add(new int[]{left, top, right, bottom});
@@ -964,7 +960,11 @@ public final class AmbientLightController {
             final boolean failing = failures >= CAPTURE_FAILURES_BEFORE_BACKOFF;
             if (failing && !playing) return;
             // The surface that is read is not shown, so the video can be on another surface by now.
-            if (video.getAlpha() == 0 || (failing && failures % CAPTURE_FAILURES_BEFORE_BACKOFF == 0)) findVideoAgain();
+            if (video.getAlpha() == 0 || (failing && failures % CAPTURE_FAILURES_BEFORE_BACKOFF == 0)) {
+                // YouTube can replace the video surface while the old one stays attached.
+                ViewGroup overlay = overlayRef.get();
+                if (overlay != null && overlay.isAttachedToWindow() && findPlayer(overlay)) updateLayout();
+            }
 
             final long interval = failing ? FAILED_CAPTURE_INTERVAL_MS
                     : stillCaptures.get() >= STILL_CAPTURES_BEFORE_SLOWDOWN ? STILL_CAPTURE_INTERVAL_MS : CAPTURE_INTERVAL_MS;
@@ -998,7 +998,31 @@ public final class AmbientLightController {
         captureInFlight = true;
         if (video instanceof SurfaceView) {
             // Before Android 14 the request blocks until the copy is finished.
-            worker().post(() -> copySurface((SurfaceView) video, bitmap, current));
+            worker().post(() -> {
+                // Worker thread.
+                SurfaceView surfaceView = (SurfaceView) video;
+                try {
+                    if (!surfaceView.getHolder().getSurface().isValid()) {
+                        onCaptureFailed();
+                        return;
+                    }
+                    PixelCopy.request(surfaceView, bitmap, result -> {
+                        if (result == PixelCopy.SUCCESS) {
+                            // The next capture is a second away after failed ones, as while a video loads.
+                            if (captureFailures.getAndSet(0) >= CAPTURE_FAILURES_BEFORE_BACKOFF) {
+                                mainHandler.post(AmbientLightController::tickNow);
+                            }
+                            process(bitmap, current);
+                        } else {
+                            captureFailures.incrementAndGet();
+                        }
+                        captureInFlight = false;
+                    }, worker());
+                } catch (IllegalArgumentException ex) {
+                    Logger.printDebug(() -> "Video surface went away during the capture");
+                    onCaptureFailed();
+                }
+            });
         } else {
             ((TextureView) video).getBitmap(bitmap);
             worker().post(() -> {
@@ -1008,44 +1032,9 @@ public final class AmbientLightController {
         }
     }
 
-    /**
-     * Worker thread.
-     */
-    private static void copySurface(SurfaceView video, Bitmap bitmap, Layout current) {
-        try {
-            if (!video.getHolder().getSurface().isValid()) {
-                onCaptureFailed();
-                return;
-            }
-            PixelCopy.request(video, bitmap, result -> {
-                if (result == PixelCopy.SUCCESS) {
-                    // The next capture is a second away after failed ones, as while a video loads.
-                    if (captureFailures.getAndSet(0) >= CAPTURE_FAILURES_BEFORE_BACKOFF) {
-                        mainHandler.post(AmbientLightController::tickNow);
-                    }
-                    process(bitmap, current);
-                } else {
-                    captureFailures.incrementAndGet();
-                }
-                captureInFlight = false;
-            }, worker());
-        } catch (IllegalArgumentException ex) {
-            Logger.printDebug(() -> "Video surface went away during the capture");
-            onCaptureFailed();
-        }
-    }
-
     private static void onCaptureFailed() {
         captureFailures.incrementAndGet();
         captureInFlight = false;
-    }
-
-    /**
-     * YouTube can replace the video surface while the old one stays attached.
-     */
-    private static void findVideoAgain() {
-        ViewGroup overlay = overlayRef.get();
-        if (overlay != null && overlay.isAttachedToWindow() && findPlayer(overlay)) updateLayout();
     }
 
     /**
@@ -1054,7 +1043,38 @@ public final class AmbientLightController {
     private static void process(Bitmap bitmap, Layout current) {
         try {
             bitmap.getPixels(readbackPixels, 0, READBACK_WIDTH, 0, 0, READBACK_WIDTH, READBACK_HEIGHT);
-            updateBars();
+            // Worker thread. Black bars in the video would darken the light, so colors are only taken
+            // from what most captures agree is the picture. A wrong guess only changes the colors a
+            // little. A dark scene only makes the picture look smaller, so it does not count against it.
+            updateBars: {
+                int[] seen = AmbientLightMath.pictureBounds(readbackPixels, READBACK_WIDTH, READBACK_HEIGHT);
+                if (seen == null) break updateBars;
+
+                if (drawnLayout == null) {
+                    barsCandidate = null;
+                    barsVotes = 0;
+                    barsCaptures = 0;
+                    setPictureBounds(seen);
+                    break updateBars;
+                }
+
+                int[] candidate = barsCandidate;
+                if (candidate != null && isCloseTo(seen, candidate)) {
+                    barsVotes++;
+                } else if (candidate == null || !(seen[0] >= candidate[0] && seen[1] >= candidate[1] && seen[2] <= candidate[2] && seen[3] <= candidate[3])) {
+                    if (--barsVotes < 0) {
+                        barsCandidate = seen;
+                        barsVotes = 1;
+                    }
+                }
+                if (++barsCaptures < BARS_STABLE_CAPTURES) break updateBars;
+
+                int[] agreed = barsVotes >= BARS_MIN_VOTES ? barsCandidate : null;
+                barsCandidate = null;
+                barsVotes = 0;
+                barsCaptures = 0;
+                if (agreed != null) setPictureBounds(agreed);
+            }
             AmbientLightMath.downsample(readbackPixels, READBACK_WIDTH, readbackBounds,
                     pictureColors, PICTURE_WIDTH, PICTURE_HEIGHT);
 
@@ -1159,7 +1179,25 @@ public final class AmbientLightController {
                 float[] shown = encodedLight;
                 encodedLight = presentedLight;
                 presentedLight = shown;
-                updateLightBitmap(height);
+                // The bitmap has more than 8 bits per channel, as even a blur over dozens
+                // of pixels leaves visible color blotches once the light is rounded to 8 bits.
+                // The window can still be drawing the last bitmap.
+                final int index = nextLightBitmap;
+                nextLightBitmap = 1 - index;
+                Bitmap lightBitmap = lightBitmaps[index];
+                if (lightBitmap == null || lightBitmap.getHeight() != height) {
+                    lightBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGBA_F16);
+                    lightBitmaps[index] = lightBitmap;
+                }
+                if (halfFloats.length != width * height * BITMAP_CHANNELS) {
+                    halfFloats = new short[width * height * BITMAP_CHANNELS];
+                    AmbientLightMath.fillAlpha(halfFloats);
+                }
+                AmbientLightMath.toHalfFloats(presentedLight, halfFloats);
+                lightBitmap.copyPixelsFromBuffer(ShortBuffer.wrap(halfFloats));
+                // A shader keeps the pixels the bitmap had when the shader was created.
+                lightPaint.setShader(new BitmapShader(lightBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+                newestLightBitmap = lightBitmap;
             }
             litLayout = current;
             if (present(current)) {
@@ -1171,31 +1209,6 @@ public final class AmbientLightController {
         } catch (Exception ex) {
             Logger.printException(() -> "process failure", ex);
         }
-    }
-
-    /**
-     * Worker thread. The bitmap has more than 8 bits per channel, as even a blur over dozens
-     * of pixels leaves visible color blotches once the light is rounded to 8 bits.
-     */
-    private static void updateLightBitmap(int height) {
-        final int width = LIGHT_COLUMNS;
-        // The window can still be drawing the last bitmap.
-        final int index = nextLightBitmap;
-        nextLightBitmap = 1 - index;
-        Bitmap bitmap = lightBitmaps[index];
-        if (bitmap == null || bitmap.getHeight() != height) {
-            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGBA_F16);
-            lightBitmaps[index] = bitmap;
-        }
-        if (halfFloats.length != width * height * BITMAP_CHANNELS) {
-            halfFloats = new short[width * height * BITMAP_CHANNELS];
-            AmbientLightMath.fillAlpha(halfFloats);
-        }
-        AmbientLightMath.toHalfFloats(presentedLight, halfFloats);
-        bitmap.copyPixelsFromBuffer(ShortBuffer.wrap(halfFloats));
-        // A shader keeps the pixels the bitmap had when the shader was created.
-        lightPaint.setShader(new BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
-        newestLightBitmap = bitmap;
     }
 
     /**
@@ -1525,56 +1538,26 @@ public final class AmbientLightController {
          */
         @Override
         public boolean dispatchTouchEvent(MotionEvent event) {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN && !isOnPlayer(event)) {
-                lastPageTouch = SystemClock.uptimeMillis();
-                onInteraction(false);
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                boolean isOnPlayer;
+                isOnPlayer: {
+                    ViewGroup player = playerRef.get();
+                    if (player == null) {
+                        isOnPlayer = false;
+                        break isOnPlayer;
+                    }
+                    int[] location = new int[2];
+                    player.getLocationInWindow(location);
+                    isOnPlayer = event.getRawY() >= location[1] && event.getRawY() <= location[1] + player.getHeight();
+                }
+                if (!isOnPlayer) {
+                    lastPageTouch = SystemClock.uptimeMillis();
+                    onInteraction(false);
+                }
             }
             // False, as this view is not clickable and has no touch listener.
             return super.dispatchTouchEvent(event);
         }
-
-        private static boolean isOnPlayer(MotionEvent event) {
-            ViewGroup player = playerRef.get();
-            if (player == null) return false;
-            int[] location = new int[2];
-            player.getLocationInWindow(location);
-            return event.getRawY() >= location[1] && event.getRawY() <= location[1] + player.getHeight();
-        }
-    }
-
-    /**
-     * Worker thread. Black bars in the video would darken the light, so colors are only taken
-     * from what most captures agree is the picture. A wrong guess only changes the colors a
-     * little. A dark scene only makes the picture look smaller, so it does not count against it.
-     */
-    private static void updateBars() {
-        int[] seen = AmbientLightMath.pictureBounds(readbackPixels, READBACK_WIDTH, READBACK_HEIGHT);
-        if (seen == null) return;
-
-        if (drawnLayout == null) {
-            barsCandidate = null;
-            barsVotes = 0;
-            barsCaptures = 0;
-            setPictureBounds(seen);
-            return;
-        }
-
-        int[] candidate = barsCandidate;
-        if (candidate != null && isCloseTo(seen, candidate)) {
-            barsVotes++;
-        } else if (candidate == null || !isInside(seen, candidate)) {
-            if (--barsVotes < 0) {
-                barsCandidate = seen;
-                barsVotes = 1;
-            }
-        }
-        if (++barsCaptures < BARS_STABLE_CAPTURES) return;
-
-        int[] agreed = barsVotes >= BARS_MIN_VOTES ? barsCandidate : null;
-        barsCandidate = null;
-        barsVotes = 0;
-        barsCaptures = 0;
-        if (agreed != null) setPictureBounds(agreed);
     }
 
     private static void setPictureBounds(int[] seen) {
@@ -1583,10 +1566,6 @@ public final class AmbientLightController {
 
         readbackBounds = bounds;
         resetSmoothing = true;
-    }
-
-    private static boolean isInside(int[] inner, int[] outer) {
-        return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
     }
 
     private static boolean isCloseTo(int[] first, int[] second) {
@@ -1633,18 +1612,6 @@ public final class AmbientLightController {
     }
 
     /**
-     * On some devices the player holds two surfaces of the same size, and YouTube shows only one
-     * of them. The other one is fully transparent and never gets a picture.
-     *
-     * @return If the surface is a better match for the video than the best one found so far.
-     */
-    private static boolean isBetterSurface(View surface, long area, View best) {
-        final boolean shown = surface.getAlpha() > 0;
-        if (shown != best.getAlpha() > 0) return shown;
-        return area > (long) best.getWidth() * best.getHeight();
-    }
-
-    /**
      * @return If the player that was found before is still on screen.
      */
     private static boolean playerIsShown() {
@@ -1663,8 +1630,17 @@ public final class AmbientLightController {
             final boolean contains = x >= location[0] && x <= location[0] + view.getWidth()
                     && y >= location[1] && y <= location[1] + view.getHeight();
             final long area = (long) view.getWidth() * view.getHeight();
-            if (contains && area > 0 && (best == null || isBetterSurface(view, area, best))) {
-                best = view;
+            if (contains && area > 0) {
+                if (best == null) {
+                    best = view;
+                } else {
+                    // On some devices the player holds two surfaces of the same size, and YouTube shows only one
+                    // of them. The other one is fully transparent and never gets a picture.
+                    final boolean shown = view.getAlpha() > 0;
+                    if (shown != best.getAlpha() > 0 ? shown : area > (long) best.getWidth() * best.getHeight()) {
+                        best = view;
+                    }
+                }
             }
         }
         if (view instanceof ViewGroup group) {
@@ -1673,17 +1649,6 @@ public final class AmbientLightController {
             }
         }
         return best;
-    }
-
-    @Nullable
-    private static View findWatchPage(View root, View video) {
-        for (int id : WATCH_PAGE_IDS) {
-            View found = id == 0 ? null : root.findViewById(id);
-            if (found instanceof ViewGroup && childContaining((ViewGroup) found, video) != null) {
-                return found;
-            }
-        }
-        return null;
     }
 
     @Nullable

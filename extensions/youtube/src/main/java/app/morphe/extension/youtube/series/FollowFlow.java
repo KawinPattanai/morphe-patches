@@ -150,7 +150,45 @@ final class FollowFlow {
                                         failure("morphe_series_tracker_video_not_in_playlist");
                                     } else {
                                         busy = false;
-                                        startingOptions();
+                                        if (watchedBefore == null) {
+                                            resume = sheet.message("");
+                                            order = NativeSheet.button(
+                                                    activity, "morphe_series_tracker_playlist_order", this::chooseOrder, false);
+                                            order.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                                            order.setPadding(0, HistoryUi.dp(6), 0, HistoryUi.dp(6));
+                                            order.setCompoundDrawablesRelative(
+                                                    null,
+                                                    null,
+                                                    new UiIcon(
+                                                            UiIcon.EXPAND,
+                                                            HistoryUi.foreground(),
+                                                            HistoryUi.dp(20)),
+                                                    null);
+                                            order.setCompoundDrawablePadding(HistoryUi.dp(8));
+                                            order.setMaxLines(2);
+                                            order.setEllipsize(TextUtils.TruncateAt.END);
+                                            sheet.body.addView(order);
+                                            watchedBefore = new CheckBox(activity);
+                                            watchedBefore.setText(UiText.get("morphe_series_tracker_watch_previous"));
+                                            watchedBefore.setTextColor(HistoryUi.foreground());
+                                            watchedBefore.setTextSize(14);
+                                            watchedBefore.setMinHeight(HistoryUi.dp(48));
+                                            watchedBefore.setChecked(false);
+                                            sheet.body.addView(watchedBefore);
+                                            watchedOnAdvanceOption();
+                                        }
+                                        order.setVisibility(View.VISIBLE);
+                                        watchedOnAdvance.setVisibility(View.VISIBLE);
+                                        long position =
+                                                RecordingPrivacy.canEnable()
+                                                        ? FollowStart.position(PlaybackBridge.source(), startVideo)
+                                                        : -1;
+                                        resume.setVisibility(position >= 0 ? View.VISIBLE : View.GONE);
+                                        if (position >= 0) {
+                                            resume.setText(UiText.format(
+                                                    "morphe_series_tracker_resume_at", MediaTime.format(position)));
+                                        }
+                                        updateOrder();
                                         status.setText(
                                                 value.title().isEmpty() ? id : value.title());
                                         follow.setEnabled(true);
@@ -241,48 +279,6 @@ final class FollowFlow {
                     saved,
                     this::failure);
         }
-    }
-
-    private void startingOptions() {
-        if (watchedBefore == null) {
-            resume = sheet.message("");
-            order = NativeSheet.button(
-                    activity, "morphe_series_tracker_playlist_order", this::chooseOrder, false);
-            order.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            order.setPadding(0, HistoryUi.dp(6), 0, HistoryUi.dp(6));
-            order.setCompoundDrawablesRelative(
-                    null,
-                    null,
-                    new UiIcon(
-                            UiIcon.EXPAND,
-                            HistoryUi.foreground(),
-                            HistoryUi.dp(20)),
-                    null);
-            order.setCompoundDrawablePadding(HistoryUi.dp(8));
-            order.setMaxLines(2);
-            order.setEllipsize(TextUtils.TruncateAt.END);
-            sheet.body.addView(order);
-            watchedBefore = new CheckBox(activity);
-            watchedBefore.setText(UiText.get("morphe_series_tracker_watch_previous"));
-            watchedBefore.setTextColor(HistoryUi.foreground());
-            watchedBefore.setTextSize(14);
-            watchedBefore.setMinHeight(HistoryUi.dp(48));
-            watchedBefore.setChecked(false);
-            sheet.body.addView(watchedBefore);
-            watchedOnAdvanceOption();
-        }
-        order.setVisibility(View.VISIBLE);
-        watchedOnAdvance.setVisibility(View.VISIBLE);
-        long position =
-                RecordingPrivacy.canEnable()
-                        ? FollowStart.position(PlaybackBridge.source(), startVideo)
-                        : -1;
-        resume.setVisibility(position >= 0 ? View.VISIBLE : View.GONE);
-        if (position >= 0) {
-            resume.setText(UiText.format(
-                    "morphe_series_tracker_resume_at", MediaTime.format(position)));
-        }
-        updateOrder();
     }
 
     private void watchedOnAdvanceOption() {

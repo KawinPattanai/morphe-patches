@@ -21,30 +21,6 @@ class AboutLinksWebClient extends WebViewClient {
         this.dialog = dialog;
     }
 
-    /**
-     * Opens one of the lists of people over the dialog, which closing the list comes back to,
-     * once the lists are fetched. They are fetched once, so only the first list opened waits on
-     * the network.
-     *
-     * @param credits Whether to list the contributors rather than the supporters.
-     */
-    private void showPeople(boolean credits) {
-        Utils.runOnBackgroundThread(() -> {
-            AboutRoutes.People people = AboutRoutes.fetchPeople();
-
-            Utils.runOnMainThreadNowOrLater(() -> {
-                // The dialog was closed while the lists were on their way.
-                if (!dialog.isShowing()) return;
-
-                if (credits) {
-                    new MorpheCreditsDialog(context, people).show();
-                } else {
-                    new MorpheSupportersDialog(context, people).show();
-                }
-            });
-        });
-    }
-
     @Override
     public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
         final String url = request.getUrl().toString();
@@ -56,7 +32,23 @@ class AboutLinksWebClient extends WebViewClient {
 
             final boolean credits = MorpheAboutPreference.CREDITS_LINK_PLACEHOLDER_URL.equals(url);
             if (credits || MorpheAboutPreference.SUPPORTERS_LINK_PLACEHOLDER_URL.equals(url)) {
-                showPeople(credits);
+                // Opens one of the lists of people over the dialog, which closing the list comes back to,
+                // once the lists are fetched. They are fetched once, so only the first list opened waits on
+                // the network.
+                Utils.runOnBackgroundThread(() -> {
+                    AboutRoutes.People people = AboutRoutes.fetchPeople();
+
+                    Utils.runOnMainThreadNowOrLater(() -> {
+                        // The dialog was closed while the lists were on their way.
+                        if (!dialog.isShowing()) return;
+
+                        if (credits) {
+                            new MorpheCreditsDialog(context, people).show();
+                        } else {
+                            new MorpheSupportersDialog(context, people).show();
+                        }
+                    });
+                });
                 return true;
             }
 

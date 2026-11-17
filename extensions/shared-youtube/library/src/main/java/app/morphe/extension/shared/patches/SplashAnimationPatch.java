@@ -178,10 +178,14 @@ public class SplashAnimationPatch {
             final int color = ThemeUtils.getAppForegroundColor();
             final String flatColor = getColorStringArray(color);
 
+            final String stop = Color.red(color) / 255.0 + ", "
+                    + Color.green(color) / 255.0 + ", "
+                    + Color.blue(color) / 255.0;
+            String gradientStringArray = "[0, " + stop + ", 1, " + stop + "]";
             replaceColorsAndPlay(view, animation, Map.of(
                     BRAND_PRIMARY_COLOR, flatColor,
                     BRAND_SECONDARY_COLOR, flatColor,
-                    BRAND_GRADIENT, getGradientStringArray(color)
+                    BRAND_GRADIENT, gradientStringArray
             ), COLOR_KEYS);
         } else {
             view.patch_setAnimation(animation);
@@ -230,7 +234,14 @@ public class SplashAnimationPatch {
 
     private static void replaceColorsAndPlay(LottieAnimationView view, int resourceId,
                                              Map<String, String> replacements, String[] colorKeys) {
-        String json = loadRawResourceAsString(resourceId);
+        String json;
+        //noinspection CharsetObjectCanBeUsed
+        try (InputStream inputStream = Utils.getContext().getResources().openRawResource(resourceId);
+             Scanner scanner = new Scanner(inputStream, StandardCharsets.UTF_8.name()).useDelimiter("\\A")) {
+            json = scanner.next();
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not load resource: " + resourceId);
+        }
         String replacement = json;
 
         for (Map.Entry<String, String> entry : replacements.entrySet()) {
@@ -249,14 +260,6 @@ public class SplashAnimationPatch {
         view.patch_setAnimation(new ByteArrayInputStream(replacement.getBytes()), null);
     }
 
-    private static String getGradientStringArray(int color) {
-        final String stop = Color.red(color) / 255.0 + ", "
-                + Color.green(color) / 255.0 + ", "
-                + Color.blue(color) / 255.0;
-
-        return "[0, " + stop + ", 1, " + stop + "]";
-    }
-
     private static String getColorStringArray(int color) {
         return Arrays.toString(new double[]{
                 Color.red(color) / 255.0,
@@ -264,15 +267,5 @@ public class SplashAnimationPatch {
                 Color.blue(color) / 255.0,
                 Color.alpha(color) / 255.0
         });
-    }
-
-    private static String loadRawResourceAsString(int resourceId) {
-        //noinspection CharsetObjectCanBeUsed
-        try (InputStream inputStream = Utils.getContext().getResources().openRawResource(resourceId);
-             Scanner scanner = new Scanner(inputStream, StandardCharsets.UTF_8.name()).useDelimiter("\\A")) {
-            return scanner.next();
-        } catch (IOException e) {
-            throw new IllegalStateException("Could not load resource: " + resourceId);
-        }
     }
 }

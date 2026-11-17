@@ -32,7 +32,14 @@ public class PoTokenGenerator {
     }
 
     public PoTokenResult getWebClientPoToken(String videoId, String visitorId) throws Exception {
-        if (!isWebViewSupported() || webViewBadImpl) {
+        boolean isWebViewSupported;
+        try {
+            CookieManager.getInstance();
+            isWebViewSupported = true;
+        } catch (Exception e) {
+            isWebViewSupported = false;
+        }
+        if (!isWebViewSupported || webViewBadImpl) {
             return null;
         }
 
@@ -42,15 +49,6 @@ public class PoTokenGenerator {
             Logger.printException(() -> "Could not obtain poToken because WebView is broken", ex);
             webViewBadImpl = true;
             return null;
-        }
-    }
-
-    private boolean isWebViewSupported() {
-        try {
-            CookieManager.getInstance();
-            return true;
-        } catch (Exception e) {
-            return false;
         }
     }
 

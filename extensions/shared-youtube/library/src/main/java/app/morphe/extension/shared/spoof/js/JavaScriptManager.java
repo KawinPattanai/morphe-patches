@@ -195,93 +195,112 @@ public final class JavaScriptManager {
     @Nullable
     private static String getPlayerJs() {
         synchronized (PLAYER_JS_LOCK) {
-            return getPlayerJsLocked();
-        }
-    }
+            if (cachedPlayerJs == null) {
+                if (cachedPlayerJsUrl == null) {
+                    long currentTime = System.currentTimeMillis();
+                    long lastSavedTime = PLAYER_JS_SAVED_MILLISECONDS.get();
 
-    @Nullable
-    private static String getPlayerJsLocked() {
-        if (cachedPlayerJs == null) {
-            String playerJsUrl = getPlayerJsUrl();
-            if (isNotEmpty(playerJsUrl)) {
-                File cacheFile = Objects.requireNonNull(cachedPlayerJsFile);
-                String cacheFileName = cacheFile.getName();
-                long currentTime = System.currentTimeMillis();
-
-                // There is a player JavaScript saved in the cache, and it was saved within 3 days.
-                // Use the player JavaScript saved in the cache.
-                if (cacheFile.exists() && (currentTime - cacheFile.lastModified()) < PLAYER_JS_CACHE_EXPIRATION_MILLISECONDS) {
-                    String cachedData = readFromFile(cacheFile);
-                    if (isNotEmpty(cachedData)) {
-                        Logger.printDebug(() -> "Player js cache found: " + cacheFileName);
-                        cachedPlayerJs = cachedData;
-                        return cachedData;
-                    }
-                }
-
-                // There is no player JavaScript save in the cache,
-                // or if there is a player JavaScript, it has been more than 3 days since it was last saved.
-                // Download the latest player JavaScript.
-                if (!Utils.isNetworkConnected()) {
-                    Logger.printInfo(() -> "Cannot download playerJs (network disconnected)");
-                    return null;
-                }
-
-                String playerJs = downloadUrl(playerJsUrl);
-                if (isNotEmpty(playerJs)) {
-                    cachedPlayerJs = playerJs;
-                    saveToFile(cacheFile, playerJs);
-                    Logger.printDebug(() -> "Saved Player js cache: " + cacheFileName);
-                    deleteOtherPlayerJsFiles(cacheFile);
-                }
-            } else {
-                Logger.printException(() -> "playerJsUrl not found");
-            }
-        }
-
-        return cachedPlayerJs;
-    }
-
-    @Nullable
-    private static String getPlayerJsUrl() {
-        if (cachedPlayerJsUrl == null) {
-            long currentTime = System.currentTimeMillis();
-            long lastSavedTime = PLAYER_JS_SAVED_MILLISECONDS.get();
-
-            if (!PLAYER_JS_HASH.get().isEmpty()
-                    && currentTime - lastSavedTime < PLAYER_JS_CACHE_EXPIRATION_MILLISECONDS) {
-                // There is a hash saved in the settings and it was saved within 3 days.
-                // Use the hash saved in the settings.
-                cachedPlayerJsHash = PLAYER_JS_HASH.get();
-                String playerJsHash = cachedPlayerJsHash;
-                Logger.printDebug(() -> "Player js hash found in cache: " + playerJsHash);
-            } else {
-                // There is no hash save in the settings,
-                // or if there is a hash, it has been more than 3 days since it was last saved.
-                // To get the latest hash, fetch the iframe API.
-                String iframeContent = downloadUrl(IFRAME_API_URL);
-                if (isNotEmpty(iframeContent)) {
-                    Matcher matcher = PLAYER_JS_HASH_PATTERN.matcher(iframeContent);
-                    if (matcher.find()) {
-                        cachedPlayerJsHash = matcher.group(1);
-
-                        PLAYER_JS_HASH.save(cachedPlayerJsHash);
-
-                        PLAYER_JS_SAVED_MILLISECONDS.save(currentTime);
+                    if (!PLAYER_JS_HASH.get().isEmpty()
+                            && currentTime - lastSavedTime < PLAYER_JS_CACHE_EXPIRATION_MILLISECONDS) {
+                        // There is a hash saved in the settings and it was saved within 3 days.
+                        // Use the hash saved in the settings.
+                        cachedPlayerJsHash = PLAYER_JS_HASH.get();
+                        String playerJsHash = cachedPlayerJsHash;
+                        Logger.printDebug(() -> "Player js hash found in cache: " + playerJsHash);
                     } else {
-                        Logger.printException(() -> "iframeContent not found");
+                        // There is no hash save in the settings,
+                        // or if there is a hash, it has been more than 3 days since it was last saved.
+                        // To get the latest hash, fetch the iframe API.
+                        String iframeContent = downloadUrl(IFRAME_API_URL);
+                        if (isNotEmpty(iframeContent)) {
+                            Matcher matcher = PLAYER_JS_HASH_PATTERN.matcher(iframeContent);
+                            if (matcher.find()) {
+                                cachedPlayerJsHash = matcher.group(1);
+
+                                PLAYER_JS_HASH.save(cachedPlayerJsHash);
+
+                                PLAYER_JS_SAVED_MILLISECONDS.save(currentTime);
+                            } else {
+                                Logger.printException(() -> "iframeContent not found");
+                            }
+                        }
                     }
+
+                    if (isNotEmpty(cachedPlayerJsHash)) {
+                        cachedPlayerJsFile = new File(Utils.getContext().getCacheDir(),
+                                getPlayerJsFilePrefix(PLAYER_JS_VARIANT) + cachedPlayerJsHash + ".js");
+                        cachedPlayerJsUrl = String.format(BASE_JS_PLAYER_URL_FORMAT, cachedPlayerJsHash);
+                    }
+                }
+                String playerJsUrl = cachedPlayerJsUrl;
+                if (isNotEmpty(playerJsUrl)) {
+                    File cacheFile = Objects.requireNonNull(cachedPlayerJsFile);
+                    String cacheFileName = cacheFile.getName();
+                    long currentTime = System.currentTimeMillis();
+
+                    // There is a player JavaScript saved in the cache, and it was saved within 3 days.
+                    // Use the player JavaScript saved in the cache.
+                    if (cacheFile.exists() && (currentTime - cacheFile.lastModified()) < PLAYER_JS_CACHE_EXPIRATION_MILLISECONDS) {
+                        String cachedData;
+                        try {
+                            //noinspection ReadWriteStringCanBeUsed
+                            cachedData = new String(Files.readAllBytes(cacheFile.toPath()), StandardCharsets.UTF_8);
+                        } catch (IOException ex) {
+                            Logger.printException(() -> "Failed to read file", ex);
+                            cachedData = null;
+                        }
+                        if (isNotEmpty(cachedData)) {
+                            Logger.printDebug(() -> "Player js cache found: " + cacheFileName);
+                            cachedPlayerJs = cachedData;
+                            return cachedData;
+                        }
+                    }
+
+                    // There is no player JavaScript save in the cache,
+                    // or if there is a player JavaScript, it has been more than 3 days since it was last saved.
+                    // Download the latest player JavaScript.
+                    if (!Utils.isNetworkConnected()) {
+                        Logger.printInfo(() -> "Cannot download playerJs (network disconnected)");
+                        return null;
+                    }
+
+                    String playerJs = downloadUrl(playerJsUrl);
+                    if (isNotEmpty(playerJs)) {
+                        cachedPlayerJs = playerJs;
+                        try (FileOutputStream fos = new FileOutputStream(cacheFile)) {
+                            fos.write(playerJs.getBytes(StandardCharsets.UTF_8));
+                        } catch (IOException ex) {
+                            Logger.printException(() -> "Failed to save file", ex);
+                        }
+                        Logger.printDebug(() -> "Saved Player js cache: " + cacheFileName);
+                        // A new player is released every few days, so the old ones of every variant would pile up.
+                        deleteOtherPlayerJsFiles: {
+                            File directory = cacheFile.getParentFile();
+                            if (directory == null) {
+                                break deleteOtherPlayerJsFiles;
+                            }
+                            File[] files = directory.listFiles((dir, name) -> {
+                                if (name.equals(cacheFile.getName())) return false;
+                                for (JavaScriptVariant variant : JavaScriptVariant.values()) {
+                                    if (name.startsWith(getPlayerJsFilePrefix(variant))) return true;
+                                }
+                                return false;
+                            });
+                            if (files != null) {
+                                for (File old : files) {
+                                    Logger.printDebug(() -> "Deleting old Player js cache: " + old.getName());
+                                    Utils.deleteQuietly(old);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Logger.printException(() -> "playerJsUrl not found");
                 }
             }
 
-            if (isNotEmpty(cachedPlayerJsHash)) {
-                cachedPlayerJsFile = new File(Utils.getContext().getCacheDir(),
-                        getPlayerJsFilePrefix(PLAYER_JS_VARIANT) + cachedPlayerJsHash + ".js");
-                cachedPlayerJsUrl = String.format(BASE_JS_PLAYER_URL_FORMAT, cachedPlayerJsHash);
-            }
+            return cachedPlayerJs;
         }
-
-        return cachedPlayerJsUrl;
     }
 
     @Nullable
@@ -564,48 +583,7 @@ public final class JavaScriptManager {
         return urlDecoded;
     }
 
-    private static String readFromFile(File file) {
-        try {
-            //noinspection ReadWriteStringCanBeUsed
-            return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            Logger.printException(() -> "Failed to read file", ex);
-            return null;
-        }
-    }
-
-    /**
-     * A new player is released every few days, so the old ones of every variant would pile up.
-     */
-    private static void deleteOtherPlayerJsFiles(File current) {
-        File directory = current.getParentFile();
-        if (directory == null) {
-            return;
-        }
-        File[] files = directory.listFiles((dir, name) -> {
-            if (name.equals(current.getName())) return false;
-            for (JavaScriptVariant variant : JavaScriptVariant.values()) {
-                if (name.startsWith(getPlayerJsFilePrefix(variant))) return true;
-            }
-            return false;
-        });
-        if (files != null) {
-            for (File old : files) {
-                Logger.printDebug(() -> "Deleting old Player js cache: " + old.getName());
-                Utils.deleteQuietly(old);
-            }
-        }
-    }
-
     private static String getPlayerJsFilePrefix(JavaScriptVariant variant) {
         return "player_js_" + variant.name().toLowerCase(Locale.ROOT) + "_";
-    }
-
-    private static void saveToFile(File file, String content) {
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(content.getBytes(StandardCharsets.UTF_8));
-        } catch (IOException ex) {
-            Logger.printException(() -> "Failed to save file", ex);
-        }
     }
 }

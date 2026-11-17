@@ -58,7 +58,17 @@ public final class SnackbarPatch {
             DARK_BACKGROUND_COLOR = loadColor(Settings.CUSTOM_SNACKBAR_COLOR_DARK);
             LIGHT_BACKGROUND_COLOR = loadColor(Settings.CUSTOM_SNACKBAR_COLOR_LIGHT);
             STROKE_COLOR = loadColor(Settings.CUSTOM_SNACKBAR_STROKE_COLOR);
-            CORNER_RADIUS = Dim.dp(loadCornerRadius());
+            int cornerRadius;
+            loadCornerRadius: {
+                final int radius = Settings.CUSTOM_SNACKBAR_CORNER_RADIUS.get();
+                if (radius < 0) {
+                    Logger.printException(() -> "Invalid snackbar corner radius: " + radius);
+                    cornerRadius = Settings.CUSTOM_SNACKBAR_CORNER_RADIUS.resetToDefault();
+                    break loadCornerRadius;
+                }
+                cornerRadius = radius;
+            }
+            CORNER_RADIUS = Dim.dp(cornerRadius);
         } else {
             DARK_BACKGROUND_COLOR = 0;
             LIGHT_BACKGROUND_COLOR = 0;
@@ -83,15 +93,6 @@ public final class SnackbarPatch {
             Logger.printException(() -> "Invalid snackbar color: " + setting.get(), ex);
             return Color.parseColor(setting.resetToDefault());
         }
-    }
-
-    private static int loadCornerRadius() {
-        final int radius = Settings.CUSTOM_SNACKBAR_CORNER_RADIUS.get();
-        if (radius < 0) {
-            Logger.printException(() -> "Invalid snackbar corner radius: " + radius);
-            return Settings.CUSTOM_SNACKBAR_CORNER_RADIUS.resetToDefault();
-        }
-        return radius;
     }
 
     @ColorInt
@@ -162,7 +163,13 @@ public final class SnackbarPatch {
                     try {
                         // The theme can change while the snackbar is kept.
                         final int backgroundColor = getBackgroundColor();
-                        view.setBackground(createBackground(backgroundColor));
+                        GradientDrawable background = new GradientDrawable();
+                        background.setColor(backgroundColor);
+                        background.setCornerRadius(CORNER_RADIUS);
+                        if (Color.alpha(STROKE_COLOR) != 0) {
+                            background.setStroke(STROKE_WIDTH, STROKE_COLOR);
+                        }
+                        view.setBackground(background);
                         if (view instanceof ViewGroup group) {
                             setContentColors(group, getTextColor(backgroundColor));
                         }
@@ -260,16 +267,6 @@ public final class SnackbarPatch {
             callback = parent.getCallback();
         }
         return callback instanceof View view ? view : null;
-    }
-
-    private static GradientDrawable createBackground(@ColorInt int backgroundColor) {
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(backgroundColor);
-        background.setCornerRadius(CORNER_RADIUS);
-        if (Color.alpha(STROKE_COLOR) != 0) {
-            background.setStroke(STROKE_WIDTH, STROKE_COLOR);
-        }
-        return background;
     }
 
     private static void setCornerRadius(View view) {

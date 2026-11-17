@@ -70,24 +70,20 @@ public class PlayerOverlayButton {
                 animated.registerAnimationCallback(new Animatable2.AnimationCallback() {
                     @Override
                     public void onAnimationEnd(Drawable drawable) {
-                        fadeInShadow();
+                        // Showing the whole shadow in one frame reads as a flicker.
+                        if (shadowFade != null) {
+                            shadowFade.cancel();
+                        }
+                        shadowFade = ValueAnimator.ofInt(0, 255);
+                        shadowFade.setDuration(SHADOW_FADE_IN_DURATION);
+                        shadowFade.addUpdateListener(animation -> {
+                            shadowPaint.setAlpha((int) animation.getAnimatedValue());
+                            invalidateSelf();
+                        });
+                        shadowFade.start();
                     }
                 });
             }
-        }
-
-        // Showing the whole shadow in one frame reads as a flicker.
-        private void fadeInShadow() {
-            if (shadowFade != null) {
-                shadowFade.cancel();
-            }
-            shadowFade = ValueAnimator.ofInt(0, 255);
-            shadowFade.setDuration(SHADOW_FADE_IN_DURATION);
-            shadowFade.addUpdateListener(animation -> {
-                shadowPaint.setAlpha((int) animation.getAnimatedValue());
-                invalidateSelf();
-            });
-            shadowFade.start();
         }
 
         @Override
@@ -102,7 +98,13 @@ public class PlayerOverlayButton {
             final boolean animating = getDrawable() instanceof Animatable animated && animated.isRunning();
             if (!animating) {
                 if (shadow == null) {
-                    buildShadow();
+                    buildShadow: {
+                        Drawable icon = getDrawable();
+                        Rect bounds = getBounds();
+                        if (icon == null || bounds.isEmpty()) break buildShadow;
+
+                        shadow = IconShadow.build(icon, bounds.width(), bounds.height());
+                    }
                 }
                 if (shadow != null) {
                     Rect bounds = getBounds();
@@ -111,27 +113,6 @@ public class PlayerOverlayButton {
             }
 
             super.draw(canvas);
-        }
-
-        private void buildShadow() {
-            Drawable icon = getDrawable();
-            Rect bounds = getBounds();
-            if (icon == null || bounds.isEmpty()) return;
-
-            shadow = IconShadow.build(icon, bounds.width(), bounds.height());
-        }
-    }
-
-    /**
-     * Wraps the current icon so it keeps the shadow after a button swaps its own drawable,
-     * which the mute and video scale buttons do when their state changes.
-     */
-    private static void applyIconShadow(View button) {
-        if (!IconShadow.isAvailable() || !(button instanceof ImageView imageView)) return;
-
-        Drawable icon = imageView.getDrawable();
-        if (icon != null && !(icon instanceof ShadowedIconDrawable)) {
-            imageView.setImageDrawable(new ShadowedIconDrawable(icon));
         }
     }
 
@@ -255,19 +236,6 @@ public class PlayerOverlayButton {
             return isEnabled == null || isEnabled.isButtonCurrentlyEnabled();
         }
 
-        private int getEnabledButtonIndex() {
-            int count = 0;
-            for (PlayerOverlayButtonController controller : buttonControllers) {
-                if (controller == this) {
-                    return count;
-                }
-                if (controller.isEnabled()) {
-                    count++;
-                }
-            }
-            return count;
-        }
-
         private void updateLayoutFromSourceButton() {
             View source = ytSourceButtonRef.get();
             View button = buttonRef.get();
@@ -326,7 +294,22 @@ public class PlayerOverlayButton {
             final float spacingPercentage = getButtonWidthPercentage(effectiveCustomButtons, source);
 
             // Convert from 0 indexing to 1 indexing.
-            final int buttonNumber = getEnabledButtonIndex() + (HIDE_FULLSCREEN_BUTTON_ENABLED ? 0 : 1);
+            int enabledButtonIndex;
+            getEnabledButtonIndex: {
+                int count = 0;
+                for (PlayerOverlayButtonController controller : buttonControllers) {
+                    if (controller == this) {
+                        enabledButtonIndex = count;
+                        break getEnabledButtonIndex;
+                    }
+                    if (controller.isEnabled()) {
+                        count++;
+                    }
+                }
+                enabledButtonIndex = count;
+            }
+
+            final int buttonNumber = enabledButtonIndex + (HIDE_FULLSCREEN_BUTTON_ENABLED ? 0 : 1);
             final float xOffset = (int) (source.getX()
                     - (buttonNumber * (spacingPercentage * source.getWidth())));
 
@@ -360,7 +343,14 @@ public class PlayerOverlayButton {
                 sourceBackgroundSnapshot = newConstantState;
             }
 
-            applyIconShadow(button);
+            // Wraps the current icon so it keeps the shadow after a button swaps its own drawable,
+            // which the mute and video scale buttons do when their state changes.
+            if (!(!IconShadow.isAvailable() || !(button instanceof ImageView imageView))) {
+                Drawable icon = imageView.getDrawable();
+                if (icon != null && !(icon instanceof ShadowedIconDrawable)) {
+                    imageView.setImageDrawable(new ShadowedIconDrawable(icon));
+                }
+            }
 
             final float sourceButtonAlpha = source.getAlpha();
             if (button.getAlpha() != sourceButtonAlpha) {
@@ -392,25 +382,6 @@ public class PlayerOverlayButton {
     /** ConstantState of the fullscreen button background the opacity was last applied to. */
     @Nullable
     private static Drawable.ConstantState sourceButtonBackgroundSnapshot;
-
-    /**
-     * The app assigns the circle background after the view exists, so this re-checks on every
-     * pre-draw pass and only does work when the drawable is actually replaced.
-     */
-    private static void styleSourceButtonBackground(View sourceButton) {
-        Drawable background = sourceButton.getBackground();
-        if (background == null) return;
-
-        // A null state cannot be tracked, so fall through and rely on mutate() being idempotent.
-        Drawable.ConstantState state = background.getConstantState();
-        if (state != null && state == sourceButtonBackgroundSnapshot) return;
-
-        Drawable styled = HidePlayerOverlayButtonsPatch.applyControlButtonsBackgroundOpacity(background);
-        if (styled != background) {
-            sourceButton.setBackground(styled);
-        }
-        sourceButtonBackgroundSnapshot = styled.getConstantState();
-    }
 
     /**
      * Returns the button width percentage based on the number of extra button slots needed,
@@ -664,7 +635,22 @@ public class PlayerOverlayButton {
             chapterTitleContainer.updateContainerRef(controlsViewGroup);
             controlsViewGroup.getViewTreeObserver().addOnPreDrawListener(() -> {
                 try {
-                    styleSourceButtonBackground(controlsViewGroup);
+                    // The app assigns the circle background after the view exists, so this re-checks on every
+                    // pre-draw pass and only does work when the drawable is actually replaced.
+                    styleSourceButtonBackground: {
+                        Drawable background = controlsViewGroup.getBackground();
+                        if (background == null) break styleSourceButtonBackground;
+
+                        // A null state cannot be tracked, so fall through and rely on mutate() being idempotent.
+                        Drawable.ConstantState state = background.getConstantState();
+                        if (state != null && state == sourceButtonBackgroundSnapshot) break styleSourceButtonBackground;
+
+                        Drawable styled = HidePlayerOverlayButtonsPatch.applyControlButtonsBackgroundOpacity(background);
+                        if (styled != background) {
+                            controlsViewGroup.setBackground(styled);
+                        }
+                        sourceButtonBackgroundSnapshot = styled.getConstantState();
+                    }
 
                     final int effectiveCustomButtons = Math.max(0, getNumberOfEnabledButtons()
                             - (Settings.HIDE_FULLSCREEN_BUTTON.get() ? 1 : 0));

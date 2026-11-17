@@ -95,27 +95,33 @@ final class CommentSchedule {
 
         if (liveCount > 0) {
             nextLiveStartTimeMs = liveCursorMs;
-            trimLiveOverflow(videoTimeMs);
-        }
-        recalculateLiveCursor(videoTimeMs, liveStepMs);
-    }
+            trimLiveOverflow: {
+                List<ScheduledComment> live = new ArrayList<>();
+                for (ScheduledComment scheduled : comments) {
+                    if (scheduled.comment.videoOffsetMs() < 0) live.add(scheduled);
+                }
+                if (live.size() <= MAX_LIVE_COMMENTS) break trimLiveOverflow;
 
-    private void trimLiveOverflow(long videoTimeMs) {
-        List<ScheduledComment> live = new ArrayList<>();
+                // Keep recent visible comments, then the nearest upcoming live comments.
+                live.sort(Comparator
+                        .comparingInt((ScheduledComment comment) -> comment.startTimeMs > videoTimeMs ? 1 : 0)
+                        .thenComparing((left, right) -> left.startTimeMs > videoTimeMs
+                                ? Long.compare(left.startTimeMs, right.startTimeMs)
+                                : Long.compare(right.startTimeMs, left.startTimeMs)));
+                Set<ScheduledComment> dropped = new HashSet<>(live.subList(MAX_LIVE_COMMENTS, live.size()));
+                // Replay lookahead is not disposable: its continuation has already advanced.
+                comments.removeIf(dropped::contains);
+            }
+        }
+        long latestPendingLiveMs = Long.MIN_VALUE;
         for (ScheduledComment scheduled : comments) {
-            if (scheduled.comment.videoOffsetMs() < 0) live.add(scheduled);
+            if (scheduled.comment.videoOffsetMs() < 0 && scheduled.startTimeMs > videoTimeMs) {
+                latestPendingLiveMs = Math.max(latestPendingLiveMs, scheduled.startTimeMs);
+            }
         }
-        if (live.size() <= MAX_LIVE_COMMENTS) return;
-
-        // Keep recent visible comments, then the nearest upcoming live comments.
-        live.sort(Comparator
-                .comparingInt((ScheduledComment comment) -> comment.startTimeMs > videoTimeMs ? 1 : 0)
-                .thenComparing((left, right) -> left.startTimeMs > videoTimeMs
-                        ? Long.compare(left.startTimeMs, right.startTimeMs)
-                        : Long.compare(right.startTimeMs, left.startTimeMs)));
-        Set<ScheduledComment> dropped = new HashSet<>(live.subList(MAX_LIVE_COMMENTS, live.size()));
-        // Replay lookahead is not disposable: its continuation has already advanced.
-        comments.removeIf(dropped::contains);
+        nextLiveStartTimeMs = latestPendingLiveMs == Long.MIN_VALUE
+                ? videoTimeMs
+                : latestPendingLiveMs + Math.max(LIVE_SPREAD_MIN_STEP_MS, liveStepMs);
     }
 
     void removeExpired(long videoTimeMs) {
@@ -162,7 +168,10 @@ final class CommentSchedule {
     }
 
     void redistributeLanes(int laneCount) {
-        resetLaneShuffle();
+        shuffledLanes = new int[0];
+        shuffledLaneCount = 0;
+        shuffledLaneIndex = 0;
+        lastLane = -1;
         List<ScheduledComment> scheduled = new ArrayList<>(comments);
         scheduled.sort(Comparator.comparingLong(comment -> comment.startTimeMs));
         comments.clear();
@@ -183,18 +192,77 @@ final class CommentSchedule {
      */
     private ScheduledComment place(NiconicoComment comment, long startTimeMs, int requestedLaneCount, boolean newComment) {
         int laneCount = Math.max(1, requestedLaneCount);
-        int preferredLane = nextLane(laneCount);
+        if (laneCount != shuffledLaneCount || shuffledLaneIndex >= shuffledLanes.length) {
+            List<Integer> shuffled = new ArrayList<>(laneCount);
+            for (int lane = 0; lane < laneCount; lane++) {
+                shuffled.add(lane);
+            }
+            Collections.shuffle(shuffled, random);
+            if (laneCount > 1 && shuffled.get(0) == lastLane) {
+                Collections.swap(shuffled, 0, 1);
+            }
+            shuffledLanes = new int[laneCount];
+            for (int index = 0; index < laneCount; index++) {
+                shuffledLanes[index] = shuffled.get(index);
+            }
+            shuffledLaneCount = laneCount;
+            shuffledLaneIndex = 0;
+        }
+        int preferredLane = shuffledLanes[shuffledLaneIndex++];
+        lastLane = preferredLane;
         float width = measure(comment);
         if (widthMeasurer == null || viewWidth <= 0 || commentDurationMs <= 0) {
             return new ScheduledComment(comment, startTimeMs, preferredLane, width);
         }
 
         long maxDelayMs = newComment ? LANE_MAX_DELAY_MS : 0;
-        List<List<ScheduledComment>> lanes = getNearbyByLane(startTimeMs, startTimeMs + maxDelayMs, laneCount);
-        int[] laneOrder = getLaneOrder(preferredLane, laneCount);
+        // For each lane, the comments that can meet a comment starting up to maxDelayMs after startTimeMs.
+        List<List<ScheduledComment>> lanes = new ArrayList<>(laneCount);
+        for (int lane = 0; lane < laneCount; lane++) {
+            lanes.add(new ArrayList<>());
+        }
+        for (ScheduledComment other : comments) {
+            if (other.startTimeMs > startTimeMs - commentDurationMs
+                    && other.startTimeMs < startTimeMs + maxDelayMs + commentDurationMs) {
+                lanes.get(Math.floorMod(other.lane, laneCount)).add(other);
+            }
+        }
+        List<Integer> otherLanes = new ArrayList<>(laneCount);
+        for (int lane = 0; lane < laneCount; lane++) {
+            if (lane != preferredLane) {
+                otherLanes.add(lane);
+            }
+        }
+        Collections.shuffle(otherLanes, random);
+        int[] laneOrder = new int[laneCount];
+        laneOrder[0] = preferredLane;
+        for (int index = 1; index < laneCount; index++) {
+            laneOrder[index] = otherLanes.get(index - 1);
+        }
         for (long delayMs = 0; delayMs <= maxDelayMs; delayMs += LANE_DELAY_STEP_MS) {
             for (int lane : laneOrder) {
-                if (isLaneFree(lanes.get(lane), startTimeMs + delayMs, width)) {
+                boolean isLaneFree;
+                isLaneFree: {
+                    List<ScheduledComment> laneComments = lanes.get(lane);
+                    long laneStartTimeMs = startTimeMs + delayMs;
+                    for (ScheduledComment other : laneComments) {
+                        boolean otherFirst = other.startTimeMs <= laneStartTimeMs;
+                        if (!canFollow(
+                                otherFirst ? other.startTimeMs : laneStartTimeMs,
+                                otherFirst ? other.width : width,
+                                otherFirst ? laneStartTimeMs : other.startTimeMs,
+                                otherFirst ? width : other.width,
+                                viewWidth,
+                                commentDurationMs,
+                                minGap
+                        )) {
+                            isLaneFree = false;
+                            break isLaneFree;
+                        }
+                    }
+                    isLaneFree = true;
+                }
+                if (isLaneFree) {
                     return new ScheduledComment(comment, startTimeMs + delayMs, lane, width);
                 }
             }
@@ -218,59 +286,6 @@ final class CommentSchedule {
             }
         }
         return new ScheduledComment(comment, startTimeMs, leastCrowdedLane, width);
-    }
-
-    /**
-     * @return The preferred lane, then the other lanes in random order, so the free lanes are used evenly.
-     */
-    private int[] getLaneOrder(int preferredLane, int laneCount) {
-        List<Integer> otherLanes = new ArrayList<>(laneCount);
-        for (int lane = 0; lane < laneCount; lane++) {
-            if (lane != preferredLane) {
-                otherLanes.add(lane);
-            }
-        }
-        Collections.shuffle(otherLanes, random);
-        int[] laneOrder = new int[laneCount];
-        laneOrder[0] = preferredLane;
-        for (int index = 1; index < laneCount; index++) {
-            laneOrder[index] = otherLanes.get(index - 1);
-        }
-        return laneOrder;
-    }
-
-    /**
-     * @return For each lane, the comments that can meet a comment starting between the two times.
-     */
-    private List<List<ScheduledComment>> getNearbyByLane(long fromMs, long toMs, int laneCount) {
-        List<List<ScheduledComment>> lanes = new ArrayList<>(laneCount);
-        for (int lane = 0; lane < laneCount; lane++) {
-            lanes.add(new ArrayList<>());
-        }
-        for (ScheduledComment other : comments) {
-            if (other.startTimeMs > fromMs - commentDurationMs && other.startTimeMs < toMs + commentDurationMs) {
-                lanes.get(Math.floorMod(other.lane, laneCount)).add(other);
-            }
-        }
-        return lanes;
-    }
-
-    private boolean isLaneFree(List<ScheduledComment> laneComments, long startTimeMs, float width) {
-        for (ScheduledComment other : laneComments) {
-            boolean otherFirst = other.startTimeMs <= startTimeMs;
-            if (!canFollow(
-                    otherFirst ? other.startTimeMs : startTimeMs,
-                    otherFirst ? other.width : width,
-                    otherFirst ? startTimeMs : other.startTimeMs,
-                    otherFirst ? width : other.width,
-                    viewWidth,
-                    commentDurationMs,
-                    minGap
-            )) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
@@ -317,49 +332,6 @@ final class CommentSchedule {
                 LIVE_SPREAD_MIN_STEP_MS,
                 Math.min(LIVE_SPREAD_MAX_STEP_MS, usableWindowMs / commentCount)
         );
-    }
-
-    private int nextLane(int requestedLaneCount) {
-        int laneCount = Math.max(1, requestedLaneCount);
-        if (laneCount != shuffledLaneCount || shuffledLaneIndex >= shuffledLanes.length) {
-            List<Integer> lanes = new ArrayList<>(laneCount);
-            for (int lane = 0; lane < laneCount; lane++) {
-                lanes.add(lane);
-            }
-            Collections.shuffle(lanes, random);
-            if (laneCount > 1 && lanes.get(0) == lastLane) {
-                Collections.swap(lanes, 0, 1);
-            }
-            shuffledLanes = new int[laneCount];
-            for (int index = 0; index < laneCount; index++) {
-                shuffledLanes[index] = lanes.get(index);
-            }
-            shuffledLaneCount = laneCount;
-            shuffledLaneIndex = 0;
-        }
-
-        int lane = shuffledLanes[shuffledLaneIndex++];
-        lastLane = lane;
-        return lane;
-    }
-
-    private void resetLaneShuffle() {
-        shuffledLanes = new int[0];
-        shuffledLaneCount = 0;
-        shuffledLaneIndex = 0;
-        lastLane = -1;
-    }
-
-    private void recalculateLiveCursor(long videoTimeMs, long liveStepMs) {
-        long latestPendingLiveMs = Long.MIN_VALUE;
-        for (ScheduledComment scheduled : comments) {
-            if (scheduled.comment.videoOffsetMs() < 0 && scheduled.startTimeMs > videoTimeMs) {
-                latestPendingLiveMs = Math.max(latestPendingLiveMs, scheduled.startTimeMs);
-            }
-        }
-        nextLiveStartTimeMs = latestPendingLiveMs == Long.MIN_VALUE
-                ? videoTimeMs
-                : latestPendingLiveMs + Math.max(LIVE_SPREAD_MIN_STEP_MS, liveStepMs);
     }
 
     record ScheduledComment(NiconicoComment comment, long startTimeMs, int lane, float width) {

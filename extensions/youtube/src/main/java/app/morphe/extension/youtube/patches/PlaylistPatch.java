@@ -267,7 +267,28 @@ public final class PlaylistPatch {
         try {
             final int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
-                onRowTouchDown(host, event);
+                onRowTouchDown: {
+                    // A row that was recycled during a touch may not have seen the end of that touch.
+                    if (rowLongPress != null && rowLongPress.hostRef.get() == host) {
+                        rowLongPress = null;
+                    }
+                    if (!isPlaylistShown()) break onRowTouchDown;
+
+                    View handle = findDragHandle(host);
+                    if (handle == null) break onRowTouchDown;
+
+                    // The drag handle and the menu button keep their own touches.
+                    final int hostWidth = host.getWidth();
+                    final float x = host.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
+                            ? hostWidth - event.getX()
+                            : event.getX();
+                    if (x < dipToPixels(host, DRAG_HANDLE_WIDTH_DIP)
+                            || x > hostWidth - dipToPixels(host, MENU_BUTTON_WIDTH_DIP)) {
+                        break onRowTouchDown;
+                    }
+
+                    rowLongPress = new RowLongPress(host, handle);
+                }
             }
 
             RowLongPress longPress = rowLongPress;
@@ -287,29 +308,6 @@ public final class PlaylistPatch {
             Logger.printException(() -> "onComponentHostTouch failure", ex);
             return false;
         }
-    }
-
-    private static void onRowTouchDown(ComponentHost host, MotionEvent event) {
-        // A row that was recycled during a touch may not have seen the end of that touch.
-        if (rowLongPress != null && rowLongPress.hostRef.get() == host) {
-            rowLongPress = null;
-        }
-        if (!isPlaylistShown()) return;
-
-        View handle = findDragHandle(host);
-        if (handle == null) return;
-
-        // The drag handle and the menu button keep their own touches.
-        final int hostWidth = host.getWidth();
-        final float x = host.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
-                ? hostWidth - event.getX()
-                : event.getX();
-        if (x < dipToPixels(host, DRAG_HANDLE_WIDTH_DIP)
-                || x > hostWidth - dipToPixels(host, MENU_BUTTON_WIDTH_DIP)) {
-            return;
-        }
-
-        rowLongPress = new RowLongPress(host, handle);
     }
 
     /**

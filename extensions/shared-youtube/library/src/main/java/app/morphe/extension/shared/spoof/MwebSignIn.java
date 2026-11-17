@@ -288,7 +288,9 @@ public final class MwebSignIn {
                     final boolean signedOutPage = LOGGED_OUT_PATTERN.matcher(page).find();
                     Logger.printDebug(() -> "No DataSyncId in the page, signed out page: " + signedOutPage);
                     if (signedOutPage) {
-                        onSignInExpired();
+                        Logger.printDebug(() -> "Mobile Web sign in is no longer valid");
+                        clearAll();
+                        Utils.showToastLong(str("morphe_spoof_video_streams_sign_in_mweb_toast_expired"));
                     }
                     return null;
                 }
@@ -371,12 +373,6 @@ public final class MwebSignIn {
         }
     }
 
-    private static void onSignInExpired() {
-        Logger.printDebug(() -> "Mobile Web sign in is no longer valid");
-        clearAll();
-        Utils.showToastLong(str("morphe_spoof_video_streams_sign_in_mweb_toast_expired"));
-    }
-
     /**
      * Signs out on the server, then removes the cookies and everything made from them.
      * Main thread only.
@@ -411,7 +407,36 @@ public final class MwebSignIn {
                 CookieManager cookieManager = CookieManager.getInstance();
                 WebStorage webStorage = WebStorage.getInstance();
                 for (String url : SIGN_IN_URLS) {
-                    removeCookies(cookieManager, url);
+                    // Removes the cookies sent to a url, without the cookies of other sites the app may have.
+                    // Cookies cannot be removed by domain, so each one is replaced with an expired cookie.
+                    removeCookies: {
+                        String cookies = cookieManager.getCookie(url);
+                        if (cookies == null) {
+                            break removeCookies;
+                        }
+                        String host = Uri.parse(url).getHost();
+                        for (String cookie : cookies.split(";")) {
+                            final int separator = cookie.indexOf('=');
+                            String name = (separator < 0 ? cookie : cookie.substring(0, separator)).trim();
+                            if (name.isEmpty()) {
+                                continue;
+                            }
+                            String expired = name + "=; Max-Age=0; Path=/; Secure";
+                            // A cookie of the host and a cookie of its parent domains can have the same name.
+                            cookieManager.setCookie(url, expired);
+                            if (host != null && !name.startsWith("__Host-")) {
+                                for (int dot = host.indexOf('.'); dot >= 0; dot = host.indexOf('.', dot + 1)) {
+                                    String domain = host.substring(dot);
+                                    if (domain.indexOf('.', 1) < 0) {
+                                        // Not a top level domain.
+                                        break;
+                                    }
+                                    cookieManager.setCookie(url, expired + "; Domain=" + domain);
+                                }
+                                cookieManager.setCookie(url, expired + "; Domain=" + host);
+                            }
+                        }
+                    }
                     webStorage.deleteOrigin(url);
                 }
                 cookieManager.flush();
@@ -419,38 +444,5 @@ public final class MwebSignIn {
                 Logger.printInfo(() -> "Could not remove the cookies", ex);
             }
         });
-    }
-
-    /**
-     * Removes the cookies sent to a url, without the cookies of other sites the app may have.
-     * Cookies cannot be removed by domain, so each one is replaced with an expired cookie.
-     */
-    private static void removeCookies(CookieManager cookieManager, String url) {
-        String cookies = cookieManager.getCookie(url);
-        if (cookies == null) {
-            return;
-        }
-        String host = Uri.parse(url).getHost();
-        for (String cookie : cookies.split(";")) {
-            final int separator = cookie.indexOf('=');
-            String name = (separator < 0 ? cookie : cookie.substring(0, separator)).trim();
-            if (name.isEmpty()) {
-                continue;
-            }
-            String expired = name + "=; Max-Age=0; Path=/; Secure";
-            // A cookie of the host and a cookie of its parent domains can have the same name.
-            cookieManager.setCookie(url, expired);
-            if (host != null && !name.startsWith("__Host-")) {
-                for (int dot = host.indexOf('.'); dot >= 0; dot = host.indexOf('.', dot + 1)) {
-                    String domain = host.substring(dot);
-                    if (domain.indexOf('.', 1) < 0) {
-                        // Not a top level domain.
-                        break;
-                    }
-                    cookieManager.setCookie(url, expired + "; Domain=" + domain);
-                }
-                cookieManager.setCookie(url, expired + "; Domain=" + host);
-            }
-        }
     }
 }

@@ -99,10 +99,6 @@ public final class FeedVideoActionsPatch {
             && AddToQueuePatch.isPatchIncluded() && NativePlaylistQueuePatch.isPatchIncluded();
     private static final boolean ENABLED = LONG_PRESS_MENU || WATCH_LATER_BUTTON || QUEUE_BUTTON_ENABLED;
 
-    private static boolean isQueueButtonEnabled() {
-        return QUEUE_BUTTON_ENABLED && AddToQueuePatch.isNativeQueueEnabled();
-    }
-
     private static final boolean USE_EXPERIMENTAL_ICONS = VersionCheckPatch.IS_20_31_OR_GREATER
             && !SpoofAppVersionPatch.isSpoofingToLessThan("20.31.00");
 
@@ -234,21 +230,6 @@ public final class FeedVideoActionsPatch {
         String patch_getBrowseId();
     }
 
-    /**
-     * The page of the view, and not the page that was opened last, decides it,
-     * as the related videos below the player are shown on top of the page they were opened from.
-     */
-    private static boolean isOnPlaylistPage(View view) {
-        for (View current = view; current != null;
-             current = current.getParent() instanceof View parent ? parent : null) {
-            if (current.getTag(FRAGMENT_VIEW_TAG) instanceof BrowsePage page) {
-                String browseId = page.patch_getBrowseId();
-                return browseId != null && browseId.startsWith(PLAYLIST_BROWSE_ID_PREFIX);
-            }
-        }
-        return false;
-    }
-
     private static final class VideoCard {
         WeakReference<View> menuButtonRef = new WeakReference<>(null);
         final ThumbnailButtonContainer buttons = new ThumbnailButtonContainer();
@@ -287,7 +268,21 @@ public final class FeedVideoActionsPatch {
         }
 
         void place(ComponentHost host, @Nullable View side, int thumbnailTop, int thumbnailInset) {
-            if (isOnPlaylistPage(host)) {
+            // The page of the view, and not the page that was opened last, decides it,
+            // as the related videos below the player are shown on top of the page they were opened from.
+            boolean isOnPlaylistPage;
+            isOnPlaylistPage: {
+                for (View current = host; current != null;
+                     current = current.getParent() instanceof View parent ? parent : null) {
+                    if (current.getTag(FRAGMENT_VIEW_TAG) instanceof BrowsePage page) {
+                        String browseId = page.patch_getBrowseId();
+                        isOnPlaylistPage = browseId != null && browseId.startsWith(PLAYLIST_BROWSE_ID_PREFIX);
+                        break isOnPlaylistPage;
+                    }
+                }
+                isOnPlaylistPage = false;
+            }
+            if (isOnPlaylistPage) {
                 remove();
                 return;
             }
@@ -468,7 +463,7 @@ public final class FeedVideoActionsPatch {
             }
 
             boolean isShown() {
-                return isQueue ? isQueueButtonEnabled() : WATCH_LATER_BUTTON;
+                return isQueue ? (QUEUE_BUTTON_ENABLED && AddToQueuePatch.isNativeQueueEnabled()) : WATCH_LATER_BUTTON;
             }
 
             void setPressed(boolean pressed) {
@@ -485,8 +480,31 @@ public final class FeedVideoActionsPatch {
                 canvas.drawCircle(bounds.exactCenterX(), bounds.exactCenterY(),
                         bounds.width() / 2f, backgroundPaint);
 
-                Drawable icon = isQueue ? getQueueIcon()
-                        : getWatchLaterIcon(videoId != null && savedVideos.containsKey(videoId));
+                Drawable icon;
+                if (isQueue) {
+                    if (queueIcon == null) {
+                        queueIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
+                                ? "yt_outline_experimental_queue_vd_theme_24" : "yt_outline_list_view_black_24");
+                    }
+                    icon = queueIcon;
+                } else {
+                    getWatchLaterIcon: {
+                        boolean isSaved = videoId != null && savedVideos.containsKey(videoId);
+                        if (isSaved) {
+                            if (checkIcon == null) {
+                                checkIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
+                                        ? "yt_outline_experimental_check_vd_theme_24" : "yt_outline_check_black_24");
+                            }
+                            icon = checkIcon;
+                            break getWatchLaterIcon;
+                        }
+                        if (clockIcon == null) {
+                            clockIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
+                                    ? "yt_outline_experimental_clock_vd_theme_24" : "yt_outline_clock_black_24");
+                        }
+                        icon = clockIcon;
+                    }
+                }
                 if (icon != null) {
                     final int iconSize = bounds.width() * BADGE_ICON_DP / BADGE_SIZE_DP;
                     final int left = bounds.centerX() - iconSize / 2;
@@ -510,31 +528,6 @@ public final class FeedVideoActionsPatch {
                 return PixelFormat.TRANSLUCENT;
             }
         }
-    }
-
-    @Nullable
-    private static Drawable getQueueIcon() {
-        if (queueIcon == null) {
-            queueIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
-                    ? "yt_outline_experimental_queue_vd_theme_24" : "yt_outline_list_view_black_24");
-        }
-        return queueIcon;
-    }
-
-    @Nullable
-    private static Drawable getWatchLaterIcon(boolean saved) {
-        if (saved) {
-            if (checkIcon == null) {
-                checkIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
-                        ? "yt_outline_experimental_check_vd_theme_24" : "yt_outline_check_black_24");
-            }
-            return checkIcon;
-        }
-        if (clockIcon == null) {
-            clockIcon = loadBadgeIcon(USE_EXPERIMENTAL_ICONS
-                    ? "yt_outline_experimental_clock_vd_theme_24" : "yt_outline_clock_black_24");
-        }
-        return clockIcon;
     }
 
     @Nullable
@@ -718,52 +711,6 @@ public final class FeedVideoActionsPatch {
     }
 
     /**
-     * The thumbnail of a video card is at the top, but the video of a post is below the
-     * header and the text of the post. The duration badge is at the bottom of the thumbnail.
-     * Thumbnails can be square, such as of music, so a thumbnail is at the top of the card
-     * unless a text is shown above it.
-     *
-     * <p>
-     * The thumbnail of the cards of the "Feed card layout" patch is narrower than the host,
-     * and its duration can be drawn by the host of the whole thumbnail, so it is found
-     * the same way as for the view count badge.
-     *
-     * @param inset Set to the space between the end of the button and the edge of the host,
-     *              without the margin of the button.
-     * @return The top of the thumbnail in the host, or -1 if it is not known.
-     */
-    private static int findThumbnailTop(ComponentHost host, View menuButton, int[] inset) {
-        final int width = host.getWidth();
-        inset[0] = 0;
-        FeedViewCountPatch.ThumbnailFrame frame = FeedViewCountPatch.findThumbnailFrame(host);
-        Rect thumbnail = frame.thumbnail();
-        if (thumbnail != null && thumbnail.top >= 0 && thumbnail.width() < width
-                && thumbnail.width() > width * 3 / 4) {
-            Rect duration = frame.duration();
-            // The end of the button lines up with the end of the duration badge.
-            inset[0] = duration != null && !FeedViewCountPatch.isRtl(host)
-                    && duration.right <= thumbnail.right && duration.right > thumbnail.centerX()
-                    ? width - duration.right - dp(host, BADGE_RIGHT_MARGIN_DP)
-                    : width - thumbnail.right;
-            return thumbnail.top;
-        }
-
-        final int thumbnailHeight = Math.round(width * THUMBNAIL_RATIO);
-        Rect rect = new Rect();
-        final int durationBottom = findDurationBottom(host, host, rect);
-        if (durationBottom >= 0) {
-            final int top = durationBottom + dp(host, DURATION_BOTTOM_MARGIN_DP) - thumbnailHeight;
-            return top > 0 && hasTextAbove(host, host, top, rect) ? top : 0;
-        }
-
-        // Live videos have no duration. The thumbnail is above the menu button,
-        // and at most as tall as it is wide.
-        setRectInRoot(host, menuButton, rect);
-        final int highestTop = rect.top - width - dp(host, MAX_MENU_BUTTON_BELOW_THUMBNAIL_DP);
-        return highestTop > 0 && hasTextAbove(host, host, highestTop, rect) ? -1 : 0;
-    }
-
-    /**
      * @return The language of the app, which the description of the menu button is in.
      */
     private static String getLanguage(View view) {
@@ -800,38 +747,6 @@ public final class FeedVideoActionsPatch {
             }
         }
         return NOT_LETTERS_PATTERN.matcher(pattern).replaceAll(" ").trim();
-    }
-
-    /**
-     * If a text of the video is not drawn by Litho, it is still in the description.
-     * The fixed part of the description is then at its start or at its end.
-     * The case is ignored, as the layouts can use another case for the same words,
-     * such as "Action menu" and "action menu for [title]", and the pattern can be
-     * learned on another layout.
-     */
-    private static boolean isSamePattern(String pattern, String learned) {
-        if (pattern.isEmpty() || learned.isEmpty()) {
-            return false;
-        }
-        pattern = pattern.toLowerCase(Locale.ROOT);
-        learned = learned.toLowerCase(Locale.ROOT);
-        if (pattern.equals(learned)) {
-            return true;
-        }
-        final int length = Math.min(pattern.length(), learned.length());
-        if (length < MIN_SHARED_LENGTH) {
-            return false;
-        }
-        int prefix = 0;
-        while (prefix < length && pattern.charAt(prefix) == learned.charAt(prefix)) {
-            prefix++;
-        }
-        int suffix = 0;
-        while (suffix < length && pattern.charAt(pattern.length() - 1 - suffix)
-                == learned.charAt(learned.length() - 1 - suffix)) {
-            suffix++;
-        }
-        return prefix >= MIN_SHARED_LENGTH || suffix >= MIN_SHARED_LENGTH;
     }
 
     /**
@@ -897,10 +812,46 @@ public final class FeedVideoActionsPatch {
             if (child.isClickable() && isMenuButtonShaped(root, child, rect, sideThumbnail)) {
                 if (!learned.isEmpty()) {
                     CharSequence description = child.getContentDescription();
-                    if (Utils.isNotEmpty(description)
-                            && isSamePattern(getDescriptionPattern(description, videoTexts), learned)) {
-                        bestMatch[0] = child;
-                        return true;
+                    if (Utils.isNotEmpty(description)) {
+                        // If a text of the video is not drawn by Litho, it is still in the description.
+                        // The fixed part of the description is then at its start or at its end.
+                        // The case is ignored, as the layouts can use another case for the same words,
+                        // such as "Action menu" and "action menu for [title]", and the pattern can be
+                        // learned on another layout.
+                        boolean isSamePattern;
+                        isSamePattern: {
+                            String pattern = getDescriptionPattern(description, videoTexts);
+                            if (pattern.isEmpty() || learned.isEmpty()) {
+                                isSamePattern = false;
+                                break isSamePattern;
+                            }
+                            pattern = pattern.toLowerCase(Locale.ROOT);
+                            learned = learned.toLowerCase(Locale.ROOT);
+                            if (pattern.equals(learned)) {
+                                isSamePattern = true;
+                                break isSamePattern;
+                            }
+
+                            final int length = Math.min(pattern.length(), learned.length());
+                            if (length < MIN_SHARED_LENGTH) {
+                                isSamePattern = false;
+                                break isSamePattern;
+                            }
+                            int prefix = 0;
+                            while (prefix < length && pattern.charAt(prefix) == learned.charAt(prefix)) {
+                                prefix++;
+                            }
+                            int suffix = 0;
+                            while (suffix < length && pattern.charAt(pattern.length() - 1 - suffix)
+                                    == learned.charAt(learned.length() - 1 - suffix)) {
+                                suffix++;
+                            }
+                            isSamePattern = prefix >= MIN_SHARED_LENGTH || suffix >= MIN_SHARED_LENGTH;
+                        }
+                        if (isSamePattern) {
+                            bestMatch[0] = child;
+                            return true;
+                        }
                     }
                 } else if (bestMatch[0] == null) {
                     bestMatch[0] = child;
@@ -1024,8 +975,52 @@ public final class FeedVideoActionsPatch {
         card.menuButtonRef = new WeakReference<>(menuButton);
         if (WATCH_LATER_BUTTON || QUEUE_BUTTON_ENABLED) {
             final int[] thumbnailInset = new int[1];
-            final int thumbnailTop = sideThumbnail == null
-                    ? findThumbnailTop(host, menuButton, thumbnailInset) : 0;
+            int thumbnailTop;
+            if (sideThumbnail == null) {
+                // The thumbnail of a video card is at the top, but the video of a post is below the
+                // header and the text of the post. The duration badge is at the bottom of the thumbnail.
+                // Thumbnails can be square, such as of music, so a thumbnail is at the top of the card
+                // unless a text is shown above it.
+                // The thumbnail of the cards of the "Feed card layout" patch is narrower than the host,
+                // and its duration can be drawn by the host of the whole thumbnail, so it is found
+                // the same way as for the view count badge.
+                // The top of the thumbnail in the host, or -1 if it is not known.
+                findThumbnailTop: {
+                    final int width = host.getWidth();
+                    thumbnailInset[0] = 0;
+                    FeedViewCountPatch.ThumbnailFrame frame = FeedViewCountPatch.findThumbnailFrame(host);
+                    Rect thumbnail = frame.thumbnail();
+                    if (thumbnail != null && thumbnail.top >= 0 && thumbnail.width() < width
+                            && thumbnail.width() > width * 3 / 4) {
+                        Rect duration = frame.duration();
+                        // The end of the button lines up with the end of the duration badge.
+                        thumbnailInset[0] = duration != null && !FeedViewCountPatch.isRtl(host)
+                                && duration.right <= thumbnail.right && duration.right > thumbnail.centerX()
+                                ? width - duration.right - dp(host, BADGE_RIGHT_MARGIN_DP)
+                                : width - thumbnail.right;
+                        thumbnailTop = thumbnail.top;
+                        break findThumbnailTop;
+                    }
+
+                    final int thumbnailHeight = Math.round(width * THUMBNAIL_RATIO);
+                    Rect rect = new Rect();
+                    final int durationBottom = findDurationBottom(host, host, rect);
+                    if (durationBottom >= 0) {
+                        final int top = durationBottom + dp(host, DURATION_BOTTOM_MARGIN_DP) - thumbnailHeight;
+                        thumbnailTop = top > 0 && hasTextAbove(host, host, top, rect) ? top : 0;
+                        break findThumbnailTop;
+                    }
+
+                    // Live videos have no duration. The thumbnail is above the menu button,
+                    // and at most as tall as it is wide.
+                    setRectInRoot(host, menuButton, rect);
+                    final int highestTop = rect.top - width - dp(host, MAX_MENU_BUTTON_BELOW_THUMBNAIL_DP);
+                    thumbnailTop = highestTop > 0 && hasTextAbove(host, host, highestTop, rect) ? -1 : 0;
+                }
+            } else {
+                thumbnailTop = 0;
+            }
+
             // Litho mounts only the part of a card that is shown, so the duration badge
             // may not be mounted. The thumbnail of the same video does not move.
             if (thumbnailTop >= 0 || !sameMenuButton) {
@@ -1040,7 +1035,38 @@ public final class FeedVideoActionsPatch {
                     card.buttons.invalidateSelf();
                 }
                 if (WATCH_LATER_BUTTON && card.buttons.added) {
-                    fetchSavedVideosIfNeeded();
+                    // Loads the saved videos, if they are not loaded yet or the account has changed.
+                    fetchSavedVideosIfNeeded: {
+                        if (savedVideosFetching || AuthUtils.isNotLoggedIn()) {
+                            break fetchSavedVideosIfNeeded;
+                        }
+
+                        final Map<String, String> requestHeader = AuthUtils.getRequestHeader();
+                        final long now = System.currentTimeMillis();
+                        if (savedVideosFetchTime != 0 && requestHeader.equals(savedVideosRequestHeader)
+                                && now - savedVideosFetchTime < SAVED_VIDEOS_REFRESH_INTERVAL_MS) {
+                            break fetchSavedVideosIfNeeded;
+                        }
+
+                        savedVideosFetching = true;
+                        savedVideosFetchTime = now;
+                        savedVideosRequestHeader = requestHeader;
+                        final int changes = savedVideosChanges.get();
+                        final String playlistId = getSavedVideosPlaylistId();
+                        Utils.runOnBackgroundThread(() -> {
+                            final Map<String, String> videos = GetPlaylistItemsRequest.fetchVideoIds(playlistId, requestHeader);
+                            Utils.runOnMainThread(() -> {
+                                savedVideosFetching = false;
+                                if (changes != savedVideosChanges.get()) {
+                                    savedVideosFetchTime = 0; // The list may not have the change, so it's loaded again.
+                                } else if (videos != null) {
+                                    savedVideos.clear();
+                                    savedVideos.putAll(videos);
+                                    updateWatchLaterBadges();
+                                }
+                            });
+                        });
+                    }
                 }
             } else {
                 card.buttons.remove();
@@ -1099,7 +1125,39 @@ public final class FeedVideoActionsPatch {
         try {
             final int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
-                return onTouchDown(host, event);
+                resetGesture();
+
+                VideoCard card = cards.get(host);
+                if (card == null || card.getMenuButton() == null) {
+                    // The host may show another video since its last layout.
+                    card = updateCard(host);
+                    if (card == null) {
+                        return false;
+                    }
+                }
+
+                gestureHostRef = new WeakReference<>(host);
+                downX = event.getX();
+                downY = event.getY();
+                downRawX = event.getRawX();
+                downRawY = event.getRawY();
+                host.getLocationOnScreen(downLocation);
+
+                ThumbnailButtonContainer.ThumbnailButton button = card.buttons.hitButton(host, downX, downY);
+                if (button != null) {
+                    gestureMode = GESTURE_BADGE;
+                    gestureButton = button;
+                    button.setPressed(true);
+                    // Tapping and holding the button runs its other action.
+                    handler.postDelayed(badgeLongPressRunnable, BADGE_LONG_PRESS_TIMEOUT_MS);
+                    return true;
+                }
+
+                if (LONG_PRESS_MENU) {
+                    gestureMode = GESTURE_LONG_PRESS_PENDING;
+                    handler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS);
+                }
+                return false;
             }
             if (gestureHostRef.get() != host || gestureMode == GESTURE_NONE) {
                 return false;
@@ -1160,42 +1218,6 @@ public final class FeedVideoActionsPatch {
         } catch (Exception ex) {
             Logger.printException(() -> "onComponentHostTouch failure", ex);
             resetGesture();
-        }
-        return false;
-    }
-
-    private static boolean onTouchDown(ComponentHost host, MotionEvent event) {
-        resetGesture();
-
-        VideoCard card = cards.get(host);
-        if (card == null || card.getMenuButton() == null) {
-            // The host may show another video since its last layout.
-            card = updateCard(host);
-            if (card == null) {
-                return false;
-            }
-        }
-
-        gestureHostRef = new WeakReference<>(host);
-        downX = event.getX();
-        downY = event.getY();
-        downRawX = event.getRawX();
-        downRawY = event.getRawY();
-        host.getLocationOnScreen(downLocation);
-
-        ThumbnailButtonContainer.ThumbnailButton button = card.buttons.hitButton(host, downX, downY);
-        if (button != null) {
-            gestureMode = GESTURE_BADGE;
-            gestureButton = button;
-            button.setPressed(true);
-            // Tapping and holding the button runs its other action.
-            handler.postDelayed(badgeLongPressRunnable, BADGE_LONG_PRESS_TIMEOUT_MS);
-            return true;
-        }
-
-        if (LONG_PRESS_MENU) {
-            gestureMode = GESTURE_LONG_PRESS_PENDING;
-            handler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS);
         }
         return false;
     }
@@ -1343,40 +1365,6 @@ public final class FeedVideoActionsPatch {
                 : SaveToWatchLaterPatch.WATCH_LATER_PLAYLIST_ID;
     }
 
-    /**
-     * Loads the saved videos, if they are not loaded yet or the account has changed.
-     */
-    private static void fetchSavedVideosIfNeeded() {
-        if (savedVideosFetching || AuthUtils.isNotLoggedIn()) {
-            return;
-        }
-        final Map<String, String> requestHeader = AuthUtils.getRequestHeader();
-        final long now = System.currentTimeMillis();
-        if (savedVideosFetchTime != 0 && requestHeader.equals(savedVideosRequestHeader)
-                && now - savedVideosFetchTime < SAVED_VIDEOS_REFRESH_INTERVAL_MS) {
-            return;
-        }
-
-        savedVideosFetching = true;
-        savedVideosFetchTime = now;
-        savedVideosRequestHeader = requestHeader;
-        final int changes = savedVideosChanges.get();
-        final String playlistId = getSavedVideosPlaylistId();
-        Utils.runOnBackgroundThread(() -> {
-            final Map<String, String> videos = GetPlaylistItemsRequest.fetchVideoIds(playlistId, requestHeader);
-            Utils.runOnMainThread(() -> {
-                savedVideosFetching = false;
-                if (changes != savedVideosChanges.get()) {
-                    savedVideosFetchTime = 0; // The list may not have the change, so it's loaded again.
-                } else if (videos != null) {
-                    savedVideos.clear();
-                    savedVideos.putAll(videos);
-                    updateWatchLaterBadges();
-                }
-            });
-        });
-    }
-
     private static void updateWatchLaterBadges() {
         for (VideoCard card : cards.values()) {
             card.buttons.watchLater.invalidateSelf();
@@ -1441,7 +1429,51 @@ public final class FeedVideoActionsPatch {
             return;
         }
         if (!gestureButton.isQueue) {
-            runVideoCommand(host, longPress);
+            // Runs the command of the app that its own menu items run, with the video of the card.
+            runVideoCommand: {
+                final String videoId = findCardVideoId(host);
+                if (videoId == null) {
+                    Logger.printDebug(() -> "Video of the card not found");
+                    Utils.showSnackbarShort(VIDEO_ID_NOT_FOUND.toString());
+                    break runVideoCommand;
+                }
+
+                final boolean saved = savedVideos.containsKey(videoId);
+                Logger.printDebug(() -> (longPress ? "Opening Save to playlist: "
+                        : saved ? "Removing from Watch later: " : "Saving to Watch later: ") + videoId);
+                var command = PlaylistQueueRenderer.NavigationEndpoint.newBuilder();
+                if (longPress) {
+                    command.setAddToPlaylistEndpoint(PlaylistQueueRenderer.AddToPlaylistEndpoint.newBuilder()
+                            .setVideoId(videoId));
+                } else if (saved) {
+                    command.setPlaylistEditEndpoint(PlaylistQueueRenderer.PlaylistEditEndpoint.newBuilder()
+                            .setPlaylistId(getSavedVideosPlaylistId())
+                            .addActions(PlaylistQueueRenderer.PlaylistEditAction.newBuilder()
+                                    .setAction(PlaylistEdit.PlaylistEditActionType.ACTION_REMOVE_VIDEO_BY_VIDEO_ID_VALUE)
+                                    .setRemovedVideoId(videoId)));
+                } else {
+                    command.setPlaylistEditEndpoint(PlaylistQueueRenderer.PlaylistEditEndpoint.newBuilder()
+                            .setPlaylistId(SaveToWatchLaterPatch.WATCH_LATER_PLAYLIST_ID)
+                            .addActions(PlaylistQueueRenderer.PlaylistEditAction.newBuilder()
+                                    .setAction(PlaylistEdit.PlaylistEditActionType.ACTION_ADD_VIDEO_VALUE)
+                                    .setAddedVideoId(videoId)));
+                }
+                if (!CommandRouterPatch.executeCommand(command.build().toByteArray(), new HashMap<>())) {
+                    Logger.printDebug(() -> "No command router of a shown activity");
+                    break runVideoCommand;
+                }
+
+                if (!longPress) {
+                    // Updated right away. The command does not tell if it worked, but the app shows its own message.
+                    if (saved) {
+                        savedVideos.remove(videoId);
+                    } else {
+                        savedVideos.put(videoId, "");
+                    }
+                    savedVideosChanges.incrementAndGet();
+                    updateWatchLaterBadges();
+                }
+            }
             return;
         }
         final String videoId = findCardVideoId(host);
@@ -1453,57 +1485,6 @@ public final class FeedVideoActionsPatch {
         // Tapping adds the video to the end of the queue, and tapping and holding plays it next.
         final boolean playLast = longPress == Settings.NATIVE_QUEUE_THUMBNAIL_SWAP_ACTIONS.get();
         NativePlaylistQueuePatch.addThumbnailVideo(videoId, playLast);
-    }
-
-    /**
-     * Runs the command of the app that its own menu items run, with the video of the card.
-     *
-     * @param saveToPlaylist If the Save to playlist panel is opened.
-     *                       Otherwise, the video is saved to Watch later, or removed if it's saved.
-     */
-    private static void runVideoCommand(ComponentHost host, boolean saveToPlaylist) {
-        final String videoId = findCardVideoId(host);
-        if (videoId == null) {
-            Logger.printDebug(() -> "Video of the card not found");
-            Utils.showSnackbarShort(VIDEO_ID_NOT_FOUND.toString());
-            return;
-        }
-
-        final boolean saved = savedVideos.containsKey(videoId);
-        Logger.printDebug(() -> (saveToPlaylist ? "Opening Save to playlist: "
-                : saved ? "Removing from Watch later: " : "Saving to Watch later: ") + videoId);
-        var command = PlaylistQueueRenderer.NavigationEndpoint.newBuilder();
-        if (saveToPlaylist) {
-            command.setAddToPlaylistEndpoint(PlaylistQueueRenderer.AddToPlaylistEndpoint.newBuilder()
-                    .setVideoId(videoId));
-        } else if (saved) {
-            command.setPlaylistEditEndpoint(PlaylistQueueRenderer.PlaylistEditEndpoint.newBuilder()
-                    .setPlaylistId(getSavedVideosPlaylistId())
-                    .addActions(PlaylistQueueRenderer.PlaylistEditAction.newBuilder()
-                            .setAction(PlaylistEdit.PlaylistEditActionType.ACTION_REMOVE_VIDEO_BY_VIDEO_ID_VALUE)
-                            .setRemovedVideoId(videoId)));
-        } else {
-            command.setPlaylistEditEndpoint(PlaylistQueueRenderer.PlaylistEditEndpoint.newBuilder()
-                    .setPlaylistId(SaveToWatchLaterPatch.WATCH_LATER_PLAYLIST_ID)
-                    .addActions(PlaylistQueueRenderer.PlaylistEditAction.newBuilder()
-                            .setAction(PlaylistEdit.PlaylistEditActionType.ACTION_ADD_VIDEO_VALUE)
-                            .setAddedVideoId(videoId)));
-        }
-        if (!CommandRouterPatch.executeCommand(command.build().toByteArray(), new HashMap<>())) {
-            Logger.printDebug(() -> "No command router of a shown activity");
-            return;
-        }
-
-        if (!saveToPlaylist) {
-            // Updated right away. The command does not tell if it worked, but the app shows its own message.
-            if (saved) {
-                savedVideos.remove(videoId);
-            } else {
-                savedVideos.put(videoId, "");
-            }
-            savedVideosChanges.incrementAndGet();
-            updateWatchLaterBadges();
-        }
     }
 
     /**

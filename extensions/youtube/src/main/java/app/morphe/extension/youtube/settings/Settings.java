@@ -1096,16 +1096,52 @@ public class Settings extends SharedYouTubeSettings {
         migrateOldSettingToNew(DEPRECATED_ALT_THUMBNAIL_DEARROW_API_URL, DEARROW_API_URL);
         migrateOldSettingToNew(DEPRECATED_ALT_THUMBNAIL_DEARROW_CONNECTION_TOAST, DEARROW_CONNECTION_TOAST);
         migrateOldSettingToNew(DEPRECATED_ALT_THUMBNAIL_STILLS_TIME, DEARROW_THUMBNAIL_STILLS_TIME);
-        migrateDeArrowTitlesToNavigation();
+        // DeArrow titles were split into a setting for each navigation, like the DeArrow thumbnails.
+        if (!DEPRECATED_DEARROW_TITLES.isSetToDefault()) {
+            for (BooleanSetting setting : List.of(DEARROW_TITLES_HOME, DEARROW_TITLES_SUBSCRIPTIONS,
+                    DEARROW_TITLES_LIBRARY, DEARROW_TITLES_PLAYER, DEARROW_TITLES_SEARCH)) {
+                setting.save(DEPRECATED_DEARROW_TITLES.get());
+            }
+            DEPRECATED_DEARROW_TITLES.resetToDefault();
+        }
 
         migrateSwipeGestureToZone(DEPRECATED_SWIPE_BRIGHTNESS, SWIPE_LEFT_ZONE, SwipeZoneAction.BRIGHTNESS);
         migrateSwipeGestureToZone(DEPRECATED_SWIPE_VOLUME, SWIPE_RIGHT_ZONE, SwipeZoneAction.VOLUME);
         migrateSwipeGestureToZone(DEPRECATED_SWIPE_SPEED, SWIPE_TOP_ZONE, SwipeZoneAction.SPEED);
 
-        migrateWideSearchbarToType();
-        migrateForceSystemFontToType();
-        migrateForceCodecToVideoCodec();
-        migrateShortsFlyoutSettings();
+        // Older targets have no wide search bar of their own and always replace the logo with it.
+        if (!DEPRECATED_WIDE_SEARCHBAR.isSetToDefault()) {
+            if (SEARCHBAR_TYPE.isSetToDefault()) {
+                SEARCHBAR_TYPE.save(VersionCheckPatch.IS_20_31_OR_GREATER
+                        ? SearchbarType.WIDE
+                        : SearchbarType.EXTRA_WIDE);
+            }
+            DEPRECATED_WIDE_SEARCHBAR.resetToDefault();
+        }
+        if (!DEPRECATED_FORCE_SYSTEM_FONT.isSetToDefault()) {
+            if (CUSTOM_FONT_TYPE.isSetToDefault()) {
+                CUSTOM_FONT_TYPE.save(FontType.SYSTEM);
+            }
+            DEPRECATED_FORCE_SYSTEM_FONT.resetToDefault();
+        }
+        if (!(DEPRECATED_FORCE_AVC_CODEC.isSetToDefault() && DEPRECATED_FORCE_VP9_CODEC.isSetToDefault())) {
+            if (VIDEO_CODEC.isSetToDefault()) {
+                // Force AVC took priority if both were on.
+                VIDEO_CODEC.save(DEPRECATED_FORCE_AVC_CODEC.get()
+                        ? VideoCodec.AVC
+                        : VideoCodec.VP9);
+            }
+            DEPRECATED_FORCE_AVC_CODEC.resetToDefault();
+            DEPRECATED_FORCE_VP9_CODEC.resetToDefault();
+        }
+
+        // Shorts used the player flyout settings before they got their own, so copy them once.
+        // The player settings stay in use, so a marker is the only way to tell this already ran.
+        if (!SHORTS_FLYOUT_SETTINGS_MIGRATED.get()) {
+            HIDE_SHORTS_FLYOUT_AUDIO_TRACK.save(HIDE_PLAYER_FLYOUT_AUDIO_TRACK.get());
+            HIDE_SHORTS_FLYOUT_CAPTIONS.save(HIDE_PLAYER_FLYOUT_CAPTIONS.get());
+            SHORTS_FLYOUT_SETTINGS_MIGRATED.save(true);
+        }
         migrateDownloadButtonOverride();
 
         // SponsorBlock key namespace unification (sb_* -> morphe_sb_*).
@@ -1284,72 +1320,6 @@ public class Settings extends SharedYouTubeSettings {
 
         // Must run before any code reads a SegmentCategory setting.
         YouTubeSponsorBlockConfig.install();
-    }
-
-    /**
-     * DeArrow titles were split into a setting for each navigation, like the DeArrow thumbnails.
-     */
-    private static void migrateDeArrowTitlesToNavigation() {
-        if (DEPRECATED_DEARROW_TITLES.isSetToDefault()) {
-            return;
-        }
-        for (BooleanSetting setting : List.of(DEARROW_TITLES_HOME, DEARROW_TITLES_SUBSCRIPTIONS,
-                DEARROW_TITLES_LIBRARY, DEARROW_TITLES_PLAYER, DEARROW_TITLES_SEARCH)) {
-            setting.save(DEPRECATED_DEARROW_TITLES.get());
-        }
-        DEPRECATED_DEARROW_TITLES.resetToDefault();
-    }
-
-    /**
-     * Older targets have no wide search bar of their own and always replace the logo with it.
-     */
-    private static void migrateWideSearchbarToType() {
-        if (DEPRECATED_WIDE_SEARCHBAR.isSetToDefault()) {
-            return;
-        }
-        if (SEARCHBAR_TYPE.isSetToDefault()) {
-            SEARCHBAR_TYPE.save(VersionCheckPatch.IS_20_31_OR_GREATER
-                    ? SearchbarType.WIDE
-                    : SearchbarType.EXTRA_WIDE);
-        }
-        DEPRECATED_WIDE_SEARCHBAR.resetToDefault();
-    }
-
-    private static void migrateForceSystemFontToType() {
-        if (DEPRECATED_FORCE_SYSTEM_FONT.isSetToDefault()) {
-            return;
-        }
-        if (CUSTOM_FONT_TYPE.isSetToDefault()) {
-            CUSTOM_FONT_TYPE.save(FontType.SYSTEM);
-        }
-        DEPRECATED_FORCE_SYSTEM_FONT.resetToDefault();
-    }
-
-    private static void migrateForceCodecToVideoCodec() {
-        if (DEPRECATED_FORCE_AVC_CODEC.isSetToDefault() && DEPRECATED_FORCE_VP9_CODEC.isSetToDefault()) {
-            return;
-        }
-        if (VIDEO_CODEC.isSetToDefault()) {
-            // Force AVC took priority if both were on.
-            VIDEO_CODEC.save(DEPRECATED_FORCE_AVC_CODEC.get()
-                    ? VideoCodec.AVC
-                    : VideoCodec.VP9);
-        }
-        DEPRECATED_FORCE_AVC_CODEC.resetToDefault();
-        DEPRECATED_FORCE_VP9_CODEC.resetToDefault();
-    }
-
-    /**
-     * Shorts used the player flyout settings before they got their own, so copy them once.
-     * The player settings stay in use, so a marker is the only way to tell this already ran.
-     */
-    private static void migrateShortsFlyoutSettings() {
-        if (SHORTS_FLYOUT_SETTINGS_MIGRATED.get()) {
-            return;
-        }
-        HIDE_SHORTS_FLYOUT_AUDIO_TRACK.save(HIDE_PLAYER_FLYOUT_AUDIO_TRACK.get());
-        HIDE_SHORTS_FLYOUT_CAPTIONS.save(HIDE_PLAYER_FLYOUT_CAPTIONS.get());
-        SHORTS_FLYOUT_SETTINGS_MIGRATED.save(true);
     }
 
     /**

@@ -170,24 +170,7 @@ public final class CaptionMenu {
             toggle.setCompoundDrawablePadding(Dim.dp12);
         }
 
-        applySwitchStyle(toggle, context);
-        toggle.setGravity(Gravity.CENTER_VERTICAL);
-        toggle.setMinHeight(Dim.dp48);
-        toggle.setChecked(CaptionTracks.dualCaptionEnabled());
-        toggle.setOnCheckedChangeListener((button, enabled) -> {
-            try {
-                CaptionTracks.setDualCaptionsEnabled(enabled);
-            } catch (Exception ex) {
-                Logger.printException(() -> "setDualCaptionsEnabled failure", ex);
-            }
-        });
-        return toggle;
-    }
-
-    /**
-     * Uses the size and colors of the native 40x24dp switch glyph, including its transparent margins.
-     */
-    private static void applySwitchStyle(Switch toggle, Context context) {
+        // Uses the size and colors of the native 40x24dp switch glyph, including its transparent margins.
         final int light = switchColor(context, "yt_ref_color_constants_baseline_opaque_white1_overlay10", 0xFFE6E6E6);
         final int dark = switchColor(context, "yt_ref_color_constants_baseline_opaque_black3_overlay10", 0xFF272727);
         final int inactive = switchColor(context, "yt_ref_color_constants_default_grey50", 0xFF717171);
@@ -216,5 +199,16 @@ public final class CaptionMenu {
 
         toggle.setSwitchMinWidth(Dim.dp40);
         toggle.setShowText(false);
+        toggle.setGravity(Gravity.CENTER_VERTICAL);
+        toggle.setMinHeight(Dim.dp48);
+        toggle.setChecked(CaptionTracks.dualCaptionEnabled());
+        toggle.setOnCheckedChangeListener((button, enabled) -> {
+            try {
+                CaptionTracks.setDualCaptionsEnabled(enabled);
+            } catch (Exception ex) {
+                Logger.printException(() -> "setDualCaptionsEnabled failure", ex);
+            }
+        });
+        return toggle;
     }
 }

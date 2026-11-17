@@ -298,8 +298,45 @@ final class DeArrowVoteDialog {
                 Logger.printException(() -> "Could not fetch original title of: " + videoId, ex);
             }
 
-            List<ListedTitle> titles = listTitles(branding.titles(), original);
-            List<ListedThumbnail> thumbnails = listThumbnails(branding.thumbnails());
+            // The original title first, then the submitted titles in the order of the server.
+            // Titles that were downvoted below the unverified score are left out.
+            List<TitleSubmission> submissions = branding.titles();
+            List<ListedTitle> titles = new ArrayList<>(submissions.size() + 1);
+            ListedTitle listedOriginal = null;
+            for (TitleSubmission submission : submissions) {
+                ListedTitle listedTitle = new ListedTitle(submission.title(), submission.original(),
+                        true, submission.score(), submission.locked());
+                if (submission.original() && listedOriginal == null) {
+                    listedOriginal = listedTitle;
+                } else if (submission.original() || submission.locked()
+                        || submission.score() > HIDDEN_TITLE_MAX_SCORE) {
+                    titles.add(listedTitle);
+                }
+            }
+            if (listedOriginal == null && original != null) {
+                listedOriginal = new ListedTitle(original, true, false, 0, false);
+            }
+            if (listedOriginal != null) {
+                titles.add(0, listedOriginal);
+            }
+            // The original thumbnail first, then the submitted thumbnails in the order of the server.
+            List<ThumbnailSubmission> thumbnailSubmissions = branding.thumbnails();
+            List<ListedThumbnail> thumbnails = new ArrayList<>(thumbnailSubmissions.size() + 1);
+            ListedThumbnail listedOriginalThumbnail = null;
+            for (ThumbnailSubmission thumbnailSubmission : thumbnailSubmissions) {
+                ListedThumbnail listedThumbnail = new ListedThumbnail(thumbnailSubmission.timestamp(), thumbnailSubmission.original(),
+                        true, thumbnailSubmission.score(), thumbnailSubmission.locked());
+                if (thumbnailSubmission.original() && listedOriginalThumbnail == null) {
+                    listedOriginalThumbnail = listedThumbnail;
+                } else {
+                    thumbnails.add(listedThumbnail);
+                }
+            }
+            // The original thumbnail can always be voted for.
+            if (listedOriginalThumbnail == null) {
+                listedOriginalThumbnail = new ListedThumbnail(0, true, false, 0, false);
+            }
+            thumbnails.add(0, listedOriginalThumbnail);
             String fetchedOriginal = original;
             Utils.runOnMainThread(() -> {
                 originalTitle[0] = fetchedOriginal;
@@ -311,68 +348,57 @@ final class DeArrowVoteDialog {
                             str("morphe_dearrow_vote_no_titles"), foregroundColor));
                 }
                 for (ListedTitle title : titles) {
-                    listLayout.addView(createTitleRow(context, dialog, videoId, title,
-                            videoLength, foregroundColor));
+                    List<String> details = new ArrayList<>(3);
+                    if (title.original()) {
+                        details.add(str("morphe_dearrow_vote_original_title"));
+                    }
+                    if (title.submitted() && title.score() == UNVERIFIED_TITLE_SCORE) {
+                        // Not a downvote, so the score is not shown.
+                        details.add(str("morphe_dearrow_vote_unverified"));
+                        addVoteDetails(details, false, 0, title.locked());
+                    } else {
+                        addVoteDetails(details, title.submitted(), title.score(), title.locked());
+                    }
+                    View titleRow = createRow(context, null, title.shownTitle(), details, title.submitted(), foregroundColor,
+                            downvote -> vote(context, dialog, videoId, downvote, () -> DeArrowVoteRequest.voteTitle(
+                                    videoId, title.title(), title.original(), downvote, videoLength)));
+                    listLayout.addView(titleRow);
                 }
 
                 listLayout.addView(createSectionHeader(context, str("morphe_dearrow_vote_thumbnails"), foregroundColor));
                 for (ListedThumbnail thumbnail : thumbnails) {
-                    listLayout.addView(createThumbnailRow(context, dialog, videoId, thumbnail,
-                            videoLength, foregroundColor, missingFrames));
+                    ImageView imageView = new ImageView(context);
+                    imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    // Shown until the image loads, and if the thumbnail cache has no image of the frame yet.
+                    imageView.setBackgroundColor(foregroundColor);
+                    imageView.getBackground().setAlpha(0x20);
+                    imageView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                    if (thumbnail.original()) {
+                        loadImage(imageView, "https://i.ytimg.com/vi/" + videoId + "/mqdefault.jpg", null);
+                    } else {
+                        Bitmap localFrame = localFrames.get(new LocalFrame(videoId, thumbnail.timestamp()));
+                        if (localFrame != null) {
+                            imageView.setImageBitmap(localFrame);
+                        } else {
+                            missingFrames.loadStarted();
+                            loadImage(imageView, DeArrowPatch.getSubmittedThumbnailURL(videoId, thumbnail.timestamp()),
+                                    loaded -> missingFrames.loadFinished(thumbnail.timestamp(), imageView, loaded));
+                        }
+                    }
+
+                    String text = thumbnail.original()
+                            ? str("morphe_dearrow_vote_original_thumbnail")
+                            : str("morphe_dearrow_vote_thumbnail_time", formatTime(thumbnail.timestamp()));
+                    List<String> details = new ArrayList<>(2);
+                    addVoteDetails(details, thumbnail.submitted(), thumbnail.score(), thumbnail.locked());
+                    View thumbnailRow = createRow(context, imageView, text, details, thumbnail.submitted(), foregroundColor,
+                            downvote -> vote(context, dialog, videoId, downvote, () -> DeArrowVoteRequest.voteThumbnail(
+                                    videoId, thumbnail.original(), thumbnail.timestamp(), downvote, videoLength)));
+                    listLayout.addView(thumbnailRow);
                 }
                 missingFrames.allRowsAdded();
             });
         });
-    }
-
-    /**
-     * @param originalTitle The original title, or null if it failed to fetch.
-     * @return The original title first, then the submitted titles in the order of the server.
-     *         Titles that were downvoted below the unverified score are left out.
-     */
-    private static List<ListedTitle> listTitles(List<TitleSubmission> submissions, @Nullable String originalTitle) {
-        List<ListedTitle> titles = new ArrayList<>(submissions.size() + 1);
-        ListedTitle original = null;
-        for (TitleSubmission submission : submissions) {
-            ListedTitle title = new ListedTitle(submission.title(), submission.original(),
-                    true, submission.score(), submission.locked());
-            if (submission.original() && original == null) {
-                original = title;
-            } else if (submission.original() || submission.locked()
-                    || submission.score() > HIDDEN_TITLE_MAX_SCORE) {
-                titles.add(title);
-            }
-        }
-        if (original == null && originalTitle != null) {
-            original = new ListedTitle(originalTitle, true, false, 0, false);
-        }
-        if (original != null) {
-            titles.add(0, original);
-        }
-        return titles;
-    }
-
-    /**
-     * @return The original thumbnail first, then the submitted thumbnails in the order of the server.
-     */
-    private static List<ListedThumbnail> listThumbnails(List<ThumbnailSubmission> submissions) {
-        List<ListedThumbnail> thumbnails = new ArrayList<>(submissions.size() + 1);
-        ListedThumbnail original = null;
-        for (ThumbnailSubmission submission : submissions) {
-            ListedThumbnail thumbnail = new ListedThumbnail(submission.timestamp(), submission.original(),
-                    true, submission.score(), submission.locked());
-            if (submission.original() && original == null) {
-                original = thumbnail;
-            } else {
-                thumbnails.add(thumbnail);
-            }
-        }
-        // The original thumbnail can always be voted for.
-        if (original == null) {
-            original = new ListedThumbnail(0, true, false, 0, false);
-        }
-        thumbnails.add(0, original);
-        return thumbnails;
     }
 
     private static TextView createSectionHeader(Context context, String text, int foregroundColor) {
@@ -394,58 +420,6 @@ final class DeArrowVoteDialog {
         view.setGravity(Gravity.CENTER);
         view.setPadding(0, Dim.dp16, 0, Dim.dp16);
         return view;
-    }
-
-    private static View createTitleRow(Context context, SheetBottomDialog.SlideDialog dialog, String videoId,
-                                       ListedTitle title, long videoLength, int foregroundColor) {
-        List<String> details = new ArrayList<>(3);
-        if (title.original()) {
-            details.add(str("morphe_dearrow_vote_original_title"));
-        }
-        if (title.submitted() && title.score() == UNVERIFIED_TITLE_SCORE) {
-            // Not a downvote, so the score is not shown.
-            details.add(str("morphe_dearrow_vote_unverified"));
-            addVoteDetails(details, false, 0, title.locked());
-        } else {
-            addVoteDetails(details, title.submitted(), title.score(), title.locked());
-        }
-
-        return createRow(context, null, title.shownTitle(), details, title.submitted(), foregroundColor,
-                downvote -> vote(context, dialog, videoId, downvote, () -> DeArrowVoteRequest.voteTitle(
-                        videoId, title.title(), title.original(), downvote, videoLength)));
-    }
-
-    private static View createThumbnailRow(Context context, SheetBottomDialog.SlideDialog dialog, String videoId,
-                                           ListedThumbnail thumbnail, long videoLength, int foregroundColor,
-                                           MissingFrames missingFrames) {
-        ImageView imageView = new ImageView(context);
-        imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        // Shown until the image loads, and if the thumbnail cache has no image of the frame yet.
-        imageView.setBackgroundColor(foregroundColor);
-        imageView.getBackground().setAlpha(0x20);
-        imageView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        if (thumbnail.original()) {
-            loadImage(imageView, "https://i.ytimg.com/vi/" + videoId + "/mqdefault.jpg", null);
-        } else {
-            Bitmap localFrame = localFrames.get(new LocalFrame(videoId, thumbnail.timestamp()));
-            if (localFrame != null) {
-                imageView.setImageBitmap(localFrame);
-            } else {
-                missingFrames.loadStarted();
-                loadImage(imageView, DeArrowPatch.getSubmittedThumbnailURL(videoId, thumbnail.timestamp()),
-                        loaded -> missingFrames.loadFinished(thumbnail.timestamp(), imageView, loaded));
-            }
-        }
-
-        String text = thumbnail.original()
-                ? str("morphe_dearrow_vote_original_thumbnail")
-                : str("morphe_dearrow_vote_thumbnail_time", formatTime(thumbnail.timestamp()));
-        List<String> details = new ArrayList<>(2);
-        addVoteDetails(details, thumbnail.submitted(), thumbnail.score(), thumbnail.locked());
-
-        return createRow(context, imageView, text, details, thumbnail.submitted(), foregroundColor,
-                downvote -> vote(context, dialog, videoId, downvote, () -> DeArrowVoteRequest.voteThumbnail(
-                        videoId, thumbnail.original(), thumbnail.timestamp(), downvote, videoLength)));
     }
 
     private static void addVoteDetails(List<String> details, boolean submitted, int score, boolean locked) {
@@ -671,7 +645,18 @@ final class DeArrowVoteDialog {
                             null,
                             null,
                             str("morphe_dearrow_vote_submit"),
-                            () -> submitFrame(context, sheet, videoId, videoLength, chosen.videoTime, chosen.image),
+                            () -> {
+                                long chosenVideoTime = chosen.videoTime;
+                                Bitmap chosenImage = chosen.image;
+                                final double timestamp = chosenVideoTime / 1000.0;
+                                vote(context, sheet, videoId, false, () -> {
+                                    String error = DeArrowVoteRequest.voteThumbnail(videoId, false, timestamp, false, videoLength);
+                                    if (error == null && chosenImage != null) {
+                                        localFrames.put(new LocalFrame(videoId, timestamp), chosenImage);
+                                    }
+                                    return error;
+                                });
+                            },
                             () -> {},
                             null,
                             null,
@@ -709,8 +694,35 @@ final class DeArrowVoteDialog {
                     stepRow.setOrientation(LinearLayout.HORIZONTAL);
                     for (int i = 0, count = steps.length; i < count; i++) {
                         final long step = steps[i];
-                        Button button = CustomDialog.createButton(context, null, formatFrameStep(step),
-                                () -> stepFrame(playerButton, chosen, step, videoLength, updateViews),
+                        DecimalFormat format = new DecimalFormat("+0.###;-0.###");
+                        String stepText = str("morphe_dearrow_vote_frame_step", format.format(step / 1000.0));
+                        Button button = CustomDialog.createButton(context, null, stepText,
+                                () -> {
+                                    // Moves the video by a step and copies the frame it then shows.
+                                    long time = Math.max(0, chosen.videoTime + step);
+                                    if (videoLength > 0) {
+                                        time = Math.min(time, videoLength - 1);
+                                    }
+                                    if (time == chosen.videoTime) {
+                                        return;
+                                    }
+                                    if (!VideoInformation.seekTo(time)) {
+                                        Logger.printDebug(() -> "Could not seek to the next frame");
+                                        return;
+                                    }
+
+                                    chosen.videoTime = time;
+                                    final int stepNumber = ++chosen.stepNumber;
+                                    // Called when the time changes, and again when the frame is copied.
+                                    updateViews.run();
+
+                                    Utils.runOnMainThreadDelayed(() -> captureCurrentFrame(playerButton, frame -> {
+                                        // A newer step is shown instead.
+                                        if (stepNumber != chosen.stepNumber) return;
+                                        chosen.image = frame;
+                                        updateViews.run();
+                                    }), FRAME_STEP_COPY_DELAY_MILLISECONDS);
+                                },
                                 false, false);
                         LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(0, Dim.dp36, 1.0f);
                         buttonParams.setMargins(i == 0 ? 0 : Dim.dp4, 0, i == count - 1 ? 0 : Dim.dp4, 0);
@@ -749,64 +761,26 @@ final class DeArrowVoteDialog {
     }
 
     /**
-     * Moves the video by a step and copies the frame it then shows.
-     *
-     * @param onChanged Called when the time changes, and again when the frame is copied.
-     */
-    private static void stepFrame(View playerButton, ChosenFrame chosen, long stepMilliseconds,
-                                  long videoLength, Runnable onChanged) {
-        long time = Math.max(0, chosen.videoTime + stepMilliseconds);
-        if (videoLength > 0) {
-            time = Math.min(time, videoLength - 1);
-        }
-        if (time == chosen.videoTime) {
-            return;
-        }
-        if (!VideoInformation.seekTo(time)) {
-            Logger.printDebug(() -> "Could not seek to the next frame");
-            return;
-        }
-
-        chosen.videoTime = time;
-        final int stepNumber = ++chosen.stepNumber;
-        onChanged.run();
-
-        Utils.runOnMainThreadDelayed(() -> captureCurrentFrame(playerButton, image -> {
-            // A newer step is shown instead.
-            if (stepNumber != chosen.stepNumber) return;
-            chosen.image = image;
-            onChanged.run();
-        }), FRAME_STEP_COPY_DELAY_MILLISECONDS);
-    }
-
-    private static void submitFrame(Context context, SheetBottomDialog.SlideDialog sheet, String videoId,
-                                    long videoLength, long videoTime, @Nullable Bitmap image) {
-        final double timestamp = videoTime / 1000.0;
-        vote(context, sheet, videoId, false, () -> {
-            String error = DeArrowVoteRequest.voteThumbnail(videoId, false, timestamp, false, videoLength);
-            if (error == null && image != null) {
-                localFrames.put(new LocalFrame(videoId, timestamp), image);
-            }
-            return error;
-        });
-    }
-
-    /**
-     * @return The step as signed seconds, such as -1 s or +0.1 s.
-     */
-    private static String formatFrameStep(long stepMilliseconds) {
-        DecimalFormat format = new DecimalFormat("+0.###;-0.###");
-        return str("morphe_dearrow_vote_frame_step", format.format(stepMilliseconds / 1000.0));
-    }
-
-    /**
      * Copies the frame shown in the player. The thumbnail cache is not used, since it only has
      * images of submitted frames, and asking it for another frame makes and keeps an image of it.
      *
      * @param onCaptured Called on the main thread with the frame, or with null if it could not be copied.
      */
     private static void captureCurrentFrame(View playerButton, Consumer<Bitmap> onCaptured) {
-        View video = findVideoSurface(playerButton);
+        // or null if none is found.
+        View video;
+        findVideoSurface: {
+            ViewParent parent = playerButton.getParent();
+            for (int i = 0; i < MAX_PLAYER_ANCESTORS && parent instanceof ViewGroup group;
+                 i++, parent = parent.getParent()) {
+                View surface = findLargestSurface(group, null);
+                if (surface != null) {
+                    video = surface;
+                    break findVideoSurface;
+                }
+            }
+            video = null;
+        }
         if (video == null) {
             Logger.printDebug(() -> "Video surface not found");
             onCaptured.accept(null);
@@ -844,23 +818,6 @@ final class DeArrowVoteDialog {
             Logger.printInfo(() -> "Video surface went away during the copy", ex);
             onCaptured.accept(null);
         }
-    }
-
-    /**
-     * @return The largest shown video surface in the closest player layout above the button,
-     *         or null if none is found.
-     */
-    @Nullable
-    private static View findVideoSurface(View playerButton) {
-        ViewParent parent = playerButton.getParent();
-        for (int i = 0; i < MAX_PLAYER_ANCESTORS && parent instanceof ViewGroup group;
-             i++, parent = parent.getParent()) {
-            View surface = findLargestSurface(group, null);
-            if (surface != null) {
-                return surface;
-            }
-        }
-        return null;
     }
 
     @Nullable

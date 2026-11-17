@@ -65,51 +65,49 @@ final class EdgeTtsVoiceRepository {
             loading = true;
         }
         Context appContext = context.getApplicationContext();
-        EXECUTOR.execute(() -> loadAndRefresh(appContext));
-    }
-
-    private static void loadAndRefresh(Context context) {
-        try {
-            SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            if (!cacheLoaded) {
-                cacheLoaded = true;
-                String cached = prefs.getString(KEY_CATALOG, null);
-                if (cached != null) {
-                    try {
-                        VoiceCatalog.setAvailableVoices(parse(cached));
-                        notifyListeners(); // Do not wait for a potentially slow network refresh.
-                    } catch (Exception ex) {
-                        prefs.edit().remove(KEY_CATALOG).remove(KEY_FETCHED_AT).apply();
-                        Logger.printDebug(() -> "Ignoring invalid Edge voice cache: " + ex);
+        EXECUTOR.execute(() -> {
+            try {
+                SharedPreferences prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+                if (!cacheLoaded) {
+                    cacheLoaded = true;
+                    String cached = prefs.getString(KEY_CATALOG, null);
+                    if (cached != null) {
+                        try {
+                            VoiceCatalog.setAvailableVoices(parse(cached));
+                            notifyListeners(); // Do not wait for a potentially slow network refresh.
+                        } catch (Exception ex) {
+                            prefs.edit().remove(KEY_CATALOG).remove(KEY_FETCHED_AT).apply();
+                            Logger.printDebug(() -> "Ignoring invalid Edge voice cache: " + ex);
+                        }
                     }
                 }
-            }
 
-            long now = System.currentTimeMillis();
-            long savedAt = prefs.getLong(KEY_FETCHED_AT, 0);
-            if (savedAt > 0 && now >= savedAt && now - savedAt < CACHE_TTL_MS) return;
-            if (lastAttemptMs > 0 && now >= lastAttemptMs
-                    && now - lastAttemptMs < RETRY_DELAY_MS) return;
+                long now = System.currentTimeMillis();
+                long savedAt = prefs.getLong(KEY_FETCHED_AT, 0);
+                if (savedAt > 0 && now >= savedAt && now - savedAt < CACHE_TTL_MS) return;
+                if (lastAttemptMs > 0 && now >= lastAttemptMs
+                        && now - lastAttemptMs < RETRY_DELAY_MS) return;
 
-            lastAttemptMs = now;
-            String json = download();
-            List<VoiceCatalog.Voice> voices = parse(json);
-            // Persist a fully validated response before publishing the new snapshot.
-            if (!prefs.edit().putString(KEY_CATALOG, json)
-                    .putLong(KEY_FETCHED_AT, System.currentTimeMillis()).commit()) {
-                Logger.printDebug(() -> "Could not persist Edge voice catalog");
+                lastAttemptMs = now;
+                String json = download();
+                List<VoiceCatalog.Voice> voices = parse(json);
+                // Persist a fully validated response before publishing the new snapshot.
+                if (!prefs.edit().putString(KEY_CATALOG, json)
+                        .putLong(KEY_FETCHED_AT, System.currentTimeMillis()).commit()) {
+                    Logger.printDebug(() -> "Could not persist Edge voice catalog");
+                }
+                VoiceCatalog.setAvailableVoices(voices);
+                notifyListeners();
+            } catch (Exception ex) {
+                // Keep the last successfully cached snapshot (or an empty catalog on first run).
+                Logger.printDebug(() -> "Edge voice catalog download failed: " + ex);
+            } finally {
+                synchronized (LOCK) {
+                    loading = false;
+                    callbacks.clear();
+                }
             }
-            VoiceCatalog.setAvailableVoices(voices);
-            notifyListeners();
-        } catch (Exception ex) {
-            // Keep the last successfully cached snapshot (or an empty catalog on first run).
-            Logger.printDebug(() -> "Edge voice catalog download failed: " + ex);
-        } finally {
-            synchronized (LOCK) {
-                loading = false;
-                callbacks.clear();
-            }
-        }
+        });
     }
 
     private static void notifyListeners() {

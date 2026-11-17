@@ -111,26 +111,20 @@ public class PoTokenProviderPatch {
     }
 
     /**
-     * Settings that change this restart the app, so it is checked only once.
-     */
-    private static boolean isHelperInUse() {
-        Boolean inUse = helperInUse;
-        if (inUse == null) {
-            inUse = SharedYouTubeSettings.EXTERNAL_POTOKEN_PROVIDER.get()
-                    && SpoofVideoStreamsPatch.isPatchIncluded()
-                    && isPoTokenProviderAvailable();
-            helperInUse = inUse;
-        }
-        return inUse;
-    }
-
-    /**
      * Injection point.
      * Called off the main thread when a media request starts.
      */
     public static void onMediaRequest(MediaHttpRequest request, Object callbacks) {
         try {
-            if (!isHelperInUse()) {
+            // Settings that change this restart the app, so it is checked only once.
+            Boolean inUse = helperInUse;
+            if (inUse == null) {
+                inUse = SharedYouTubeSettings.EXTERNAL_POTOKEN_PROVIDER.get()
+                        && SpoofVideoStreamsPatch.isPatchIncluded()
+                        && isPoTokenProviderAvailable();
+                helperInUse = inUse;
+            }
+            if (!inUse) {
                 return;
             }
             String url = request.patch_getUrl();

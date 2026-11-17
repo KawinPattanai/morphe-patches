@@ -1026,25 +1026,21 @@ public final class FeedVideoCardsPatch {
             }
             return videoId;
         }
-        return scores.isEmpty() ? findVideoIdByFoundTitles(texts) : null;
-    }
+        if (!scores.isEmpty()) {
+            return null;
+        }
 
-    /**
-     * The texts of the element of the card were removed, so the card is found by the titles
-     * of the cards that were found before. A long text of the card can be shared with another
-     * video of the same channel that was found, such as the channel and the view count,
-     * so at least two texts must match.
-     */
-    @Nullable
-    private static String findVideoIdByFoundTitles(List<String> texts) {
-        Map<String, Integer> scores = new HashMap<>();
+        // The texts of the element of the card were removed, so the card is found by the titles
+        // of the cards that were found before. A long text of the card can be shared with another
+        // video of the same channel that was found, such as the channel and the view count,
+        // so at least two texts must match.
         for (String text : texts) {
             if (text.length() < TITLE_TEXT_LENGTH) {
                 continue;
             }
-            String videoId = foundTitleVideoIds.get(text);
-            if (videoId != null && !videoId.equals(AMBIGUOUS)) {
-                scores.merge(videoId, 1, Integer::sum);
+            String foundVideoId = foundTitleVideoIds.get(text);
+            if (foundVideoId != null && !foundVideoId.equals(AMBIGUOUS)) {
+                scores.merge(foundVideoId, 1, Integer::sum);
             }
         }
         return findBestMatch(scores);

@@ -18,7 +18,17 @@ public class ClearLogBufferPreference extends Preference {
 
     {
         setOnPreferenceClickListener(pref -> {
-            clearLogBuffer();
+            // Clears the internal log buffer and displays a toast with the result.
+            clearLogBuffer: {
+                if (!Logger.isDebugEnabled()) {
+                    Utils.showToastShort(str("morphe_debug_logs_disabled"));
+                    break clearLogBuffer;
+                }
+
+                // Show toast before clearing, otherwise toast log will still remain.
+                Utils.showToastShort(str("morphe_debug_logs_clear_toast"));
+                Logger.clearLogBufferData();
+            }
             return true;
         });
     }
@@ -34,19 +44,5 @@ public class ClearLogBufferPreference extends Preference {
     }
     public ClearLogBufferPreference(Context context) {
         super(context);
-    }
-
-    /**
-     * Clears the internal log buffer and displays a toast with the result.
-     */
-    public static void clearLogBuffer() {
-        if (!Logger.isDebugEnabled()) {
-            Utils.showToastShort(str("morphe_debug_logs_disabled"));
-            return;
-        }
-
-        // Show toast before clearing, otherwise toast log will still remain.
-        Utils.showToastShort(str("morphe_debug_logs_clear_toast"));
-        Logger.clearLogBufferData();
     }
 }

@@ -342,14 +342,6 @@ public final class SwipeZonePreference extends Preference {
             topZoneRect.set(padH + edgeW, padV, sRight - edgeW, padV + speedZoneH);
         }
 
-        private RectF rectOf(Zone zone) {
-            return switch (zone) {
-                case LEFT -> leftZoneRect;
-                case RIGHT -> rightZoneRect;
-                case TOP -> topZoneRect;
-            };
-        }
-
         /**
          * The top zone is checked first because it is painted over the side zones,
          * so a tap on the overlap hits whichever zone is visually on top.
@@ -476,7 +468,11 @@ public final class SwipeZonePreference extends Preference {
 
             if (pressedZone != null) {
                 fillPaint.setColor(pressedColor);
-                canvas.drawRect(rectOf(pressedZone), fillPaint);
+                canvas.drawRect(switch (pressedZone) {
+                    case LEFT -> leftZoneRect;
+                    case RIGHT -> rightZoneRect;
+                    case TOP -> topZoneRect;
+                }, fillPaint);
             }
 
             // Separator coordinates.

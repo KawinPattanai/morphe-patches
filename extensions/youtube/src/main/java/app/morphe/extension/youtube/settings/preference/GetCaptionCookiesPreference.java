@@ -66,28 +66,6 @@ public class GetCaptionCookiesPreference extends Preference implements Preferenc
 
     @Override
     public boolean onPreferenceClick(Preference preference) {
-        String newValue = fetchCookieString();
-
-        if (Utils.isNotEmpty(newValue)) {
-            String cookieString = Settings.CAPTION_COOKIES.get();
-            if (!newValue.equals(cookieString)) {
-                Logger.printDebug(() -> "new Cookies loaded: " + newValue);
-
-                Settings.CAPTION_COOKIES.save(newValue);
-                AbstractPreferenceFragment.setRestartNeeded();
-
-                Utils.showSnackbarShort(str("morphe_get_caption_cookies_success"));
-            } else {
-                Utils.showSnackbarShort(str("morphe_get_caption_cookies_duplicate"));
-            }
-        } else {
-            Utils.showSnackbarShort(str("morphe_get_caption_cookies_failed"));
-        }
-
-        return true;
-    }
-
-    private String fetchCookieString() {
         List<String> setCookies = null;
 
         try {
@@ -116,32 +94,49 @@ public class GetCaptionCookiesPreference extends Preference implements Preferenc
         } catch (ExecutionException | InterruptedException ex) {
             Logger.printException(() -> "Could not fetch cookie string", ex);
         }
+        String newValue;
+        parseSetCookieToCookieString: {
+            if (setCookies != null && !setCookies.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
 
-        return parseSetCookieToCookieString(setCookies);
-    }
+                for (String setCookie : setCookies) {
+                    String entry = setCookie.split(";")[0].trim();
+                    int equalIndex = entry.indexOf("=");
 
-    private String parseSetCookieToCookieString(List<String> setCookies) {
-        if (setCookies != null && !setCookies.isEmpty()) {
-            StringBuilder sb = new StringBuilder();
+                    if (equalIndex > 0) {
+                        String key = entry.substring(0, equalIndex).trim();
 
-            for (String setCookie : setCookies) {
-                String entry = setCookie.split(";")[0].trim();
-                int equalIndex = entry.indexOf("=");
-
-                if (equalIndex > 0) {
-                    String key = entry.substring(0, equalIndex).trim();
-
-                    if (COOKIES_HEADER_KEYS.contains(key)) {
-                        if (Utils.isNotEmpty(sb)) {
-                            sb.append("; ");
+                        if (COOKIES_HEADER_KEYS.contains(key)) {
+                            if (Utils.isNotEmpty(sb)) {
+                                sb.append("; ");
+                            }
+                            sb.append(entry);
                         }
-                        sb.append(entry);
                     }
                 }
-            }
 
-            return sb.toString();
+                newValue = sb.toString();
+                break parseSetCookieToCookieString;
+            }
+            newValue = "";
         }
-        return "";
+
+        if (Utils.isNotEmpty(newValue)) {
+            String cookieString = Settings.CAPTION_COOKIES.get();
+            if (!newValue.equals(cookieString)) {
+                Logger.printDebug(() -> "new Cookies loaded: " + newValue);
+
+                Settings.CAPTION_COOKIES.save(newValue);
+                AbstractPreferenceFragment.setRestartNeeded();
+
+                Utils.showSnackbarShort(str("morphe_get_caption_cookies_success"));
+            } else {
+                Utils.showSnackbarShort(str("morphe_get_caption_cookies_duplicate"));
+            }
+        } else {
+            Utils.showSnackbarShort(str("morphe_get_caption_cookies_failed"));
+        }
+
+        return true;
     }
 }

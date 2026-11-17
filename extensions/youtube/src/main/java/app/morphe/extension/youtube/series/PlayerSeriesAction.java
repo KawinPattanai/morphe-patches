@@ -50,7 +50,32 @@ final class PlayerSeriesAction {
                     // A player transition while storage was busy must not open the previous
                     // video's series.
                     if (!video.equals(activeVideo())) return;
-                    String followed = followedSeries(rows, playlist, video);
+                    String followed;
+                    followedSeries: {
+                        if (!playlist.isEmpty()) {
+                            for (TrackerModels.Series series : rows) {
+                                if (series.id().equals(playlist)) {
+                                    followed = series.id();
+                                    break followedSeries;
+                                }
+                            }
+                            followed = "";
+                            break followedSeries;
+                        }
+                        String match = "";
+                        for (TrackerModels.Series series : rows) {
+                            if (series.bookmarkId().equals(video)
+                                    || series.episodes().stream().anyMatch(e -> e.videoId.equals(video))) {
+                                // Do not arbitrarily pick between two saved playlists containing the same video.
+                                if (!match.isEmpty()) {
+                                    followed = "";
+                                    break followedSeries;
+                                }
+                                match = series.id();
+                            }
+                        }
+                        followed = match;
+                    }
                     if (!followed.isEmpty()) {
                         HistoryUi.openSeries(activity, followed);
                         return;
@@ -79,30 +104,6 @@ final class PlayerSeriesAction {
                     if (!activity.isFinishing() && !activity.isDestroyed())
                         Utils.showSnackbarLong(UiText.get(message));
                 });
-    }
-
-    static String followedSeries(
-            List<TrackerModels.Series> rows, String playlist, String video) {
-        if (!playlist.isEmpty()) {
-            for (TrackerModels.Series series : rows) {
-                if (series.id().equals(playlist)) {
-                    return series.id();
-                }
-            }
-            return "";
-        }
-        String match = "";
-        for (TrackerModels.Series series : rows) {
-            if (series.bookmarkId().equals(video)
-                    || series.episodes().stream().anyMatch(e -> e.videoId.equals(video))) {
-                // Do not arbitrarily pick between two saved playlists containing the same video.
-                if (!match.isEmpty()) {
-                    return "";
-                }
-                match = series.id();
-            }
-        }
-        return match;
     }
 
     static String activeVideo() {

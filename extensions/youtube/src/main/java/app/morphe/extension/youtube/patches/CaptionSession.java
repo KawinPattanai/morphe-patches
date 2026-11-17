@@ -203,42 +203,6 @@ final class CaptionSession {
                 && !secondaryLanguage.equalsIgnoreCase(sourceLanguage));
     }
 
-    /**
-     * @return The cues to translate next, marked as requested. Empty if there are none.
-     */
-    private List<Integer> nextBatch() {
-        List<Integer> batch = new ArrayList<>();
-        int first = 0;
-        while (first < source.size() && source.get(first).end <= position) first++;
-
-        final long prefetchEnd = position + (long) (PREFETCH_MS * Math.min(MAX_PREFETCH_SPEED, Math.max(1, playbackRate)));
-        // Never prefetch more blocks than can remain cached, or evictions requeue completed work.
-        final int limit = Math.min(source.size(), first + CACHE_CAPACITY);
-        for (int i = first; i < limit && batch.size() < CaptionBlockTranslator.MAX_BATCH_TEXTS; i++) {
-            StableCaptionBlockPolicy.Block cue = source.get(i);
-            if (cue.start > prefetchEnd) break;
-
-            if (cue.end <= position
-                    || status[i] == STATUS_REQUESTED
-                    || (status[i] == STATUS_READY && ready.get(i) != null)
-                    || (status[i] == STATUS_FAILED
-                    && (attempts[i] >= MAX_ATTEMPTS || clock.getAsLong() < retryAt[i]))) {
-                continue;
-            }
-
-            // Planning fit hints must not suppress valid native text translations.
-            if (cue.text.codePointCount(0, cue.text.length()) > StableCaptionBlockPolicy.MAX_BLOCK_CHARS) {
-                status[i] = STATUS_FAILED;
-                attempts[i] = MAX_ATTEMPTS;
-                continue;
-            }
-
-            status[i] = STATUS_REQUESTED;
-            batch.add(i);
-        }
-        return batch;
-    }
-
     private List<String> translated(@Nullable String target, List<Integer> batch, int slot) throws IOException {
         if (target == null) return Collections.nCopies(batch.size(), "");
 
@@ -314,40 +278,44 @@ final class CaptionSession {
         return retryDelay;
     }
 
-    /**
-     * Updates the status of the cues of a translated batch.
-     *
-     * @return If this is the first failure of the session.
-     */
-    private synchronized boolean finishBatch(List<Integer> batch, long retryDelay) {
-        boolean error = false;
-        for (int index : batch) {
-            String[] values = ready.get(index);
-            final boolean missing = (translatePrimary && (values == null || values[PRIMARY_SLOT] == null))
-                    || (translateSecondary && secondaryLanguage != null
-                    && (values == null || values[SECONDARY_SLOT] == null));
-            final boolean failedOutput = values != null && ((translatePrimary && FAILED_OUTPUT.equals(values[PRIMARY_SLOT]))
-                    || (translateSecondary && secondaryLanguage != null && FAILED_OUTPUT.equals(values[SECONDARY_SLOT])));
-            if (missing) {
-                attempts[index]++;
-                retryAt[index] = clock.getAsLong() + Math.max(retryDelay, RETRY_BASE_MS << (attempts[index] - 1));
-            } else {
-                attempts[index] = failedOutput ? MAX_ATTEMPTS : 0;
-            }
-            status[index] = missing || failedOutput ? STATUS_FAILED : STATUS_READY;
-            error |= missing || failedOutput;
-        }
-
-        final boolean firstFailure = error && !failureReported;
-        failureReported |= error;
-        return firstFailure;
-    }
-
     private void pump() {
         while (true) {
             List<Integer> batch;
             synchronized (this) {
-                batch = active ? nextBatch() : List.of();
+                // The cues to translate next, marked as requested. Empty if there are none.
+                if (active) {
+                    batch = new ArrayList<>();
+                    int first = 0;
+                    while (first < source.size() && source.get(first).end <= position) first++;
+
+                    final long prefetchEnd = position + (long) (PREFETCH_MS * Math.min(MAX_PREFETCH_SPEED, Math.max(1, playbackRate)));
+                    // Never prefetch more blocks than can remain cached, or evictions requeue completed work.
+                    final int limit = Math.min(source.size(), first + CACHE_CAPACITY);
+                    for (int i = first; i < limit && batch.size() < CaptionBlockTranslator.MAX_BATCH_TEXTS; i++) {
+                        StableCaptionBlockPolicy.Block cue = source.get(i);
+                        if (cue.start > prefetchEnd) break;
+
+                        if (cue.end <= position
+                                || status[i] == STATUS_REQUESTED
+                                || (status[i] == STATUS_READY && ready.get(i) != null)
+                                || (status[i] == STATUS_FAILED
+                                && (attempts[i] >= MAX_ATTEMPTS || clock.getAsLong() < retryAt[i]))) {
+                            continue;
+                        }
+
+                        // Planning fit hints must not suppress valid native text translations.
+                        if (cue.text.codePointCount(0, cue.text.length()) > StableCaptionBlockPolicy.MAX_BLOCK_CHARS) {
+                            status[i] = STATUS_FAILED;
+                            attempts[i] = MAX_ATTEMPTS;
+                            continue;
+                        }
+
+                        status[i] = STATUS_REQUESTED;
+                        batch.add(i);
+                    }
+                } else {
+                    batch = List.of();
+                }
                 if (batch.isEmpty()) {
                     running = false;
                     return;
@@ -365,7 +333,31 @@ final class CaptionSession {
                 if (!isActive()) return;
             }
 
-            if (finishBatch(batch, retryDelay)) failed.run();
+            // Updates the status of the cues of the translated batch.
+            final boolean firstFailure;
+            synchronized (this) {
+                boolean error = false;
+                for (int index : batch) {
+                    String[] values = ready.get(index);
+                    final boolean missing = (translatePrimary && (values == null || values[PRIMARY_SLOT] == null))
+                            || (translateSecondary && secondaryLanguage != null
+                            && (values == null || values[SECONDARY_SLOT] == null));
+                    final boolean failedOutput = values != null && ((translatePrimary && FAILED_OUTPUT.equals(values[PRIMARY_SLOT]))
+                            || (translateSecondary && secondaryLanguage != null && FAILED_OUTPUT.equals(values[SECONDARY_SLOT])));
+                    if (missing) {
+                        attempts[index]++;
+                        retryAt[index] = clock.getAsLong() + Math.max(retryDelay, RETRY_BASE_MS << (attempts[index] - 1));
+                    } else {
+                        attempts[index] = failedOutput ? MAX_ATTEMPTS : 0;
+                    }
+                    status[index] = missing || failedOutput ? STATUS_FAILED : STATUS_READY;
+                    error |= missing || failedOutput;
+                }
+
+                firstFailure = error && !failureReported;
+                failureReported |= error;
+            }
+            if (firstFailure) failed.run();
         }
     }
 
@@ -381,7 +373,21 @@ final class CaptionSession {
     synchronized Snapshot snapshot(long time, boolean paused) {
         if (!active) return null;
 
-        int found = indexOfCue(time);
+        int found;
+        indexOfCue: {
+            int low = 0, high = source.size() - 1;
+            while (low <= high) {
+                int mid = (low + high) >>> 1;
+                StableCaptionBlockPolicy.Block cue = source.get(mid);
+                if (time < cue.start) high = mid - 1;
+                else if (time >= cue.end) low = mid + 1;
+                else {
+                    found = mid;
+                    break indexOfCue;
+                }
+            }
+            found = -1;
+        }
         if (found < 0) {
             lastIndex = -1;
             displayed = null;
@@ -425,17 +431,5 @@ final class CaptionSession {
         lastIndex = found;
         lastDisplayTime = time;
         return displayed;
-    }
-
-    private int indexOfCue(long time) {
-        int low = 0, high = source.size() - 1;
-        while (low <= high) {
-            int mid = (low + high) >>> 1;
-            StableCaptionBlockPolicy.Block cue = source.get(mid);
-            if (time < cue.start) high = mid - 1;
-            else if (time >= cue.end) low = mid + 1;
-            else return mid;
-        }
-        return -1;
     }
 }

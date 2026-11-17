@@ -61,8 +61,85 @@ final class EdgeTtsV2Token {
         long seconds = Math.floorDiv(unixTimestampMillis, 1_000L) + WINDOWS_EPOCH_SECONDS;
         long ticks = Math.floorDiv(seconds, 300L) * 300L * 10_000_000L;
         byte[] data = (ticks + trustedClientToken).getBytes(StandardCharsets.US_ASCII);
-        byte[] digest = modifiedSha256(data);
-        int[] cs64 = cs64Digest(data, digest);
+        if (data.length < 7) throw new IllegalArgumentException("Token data too short");
+        long length = 57L + data.length;
+        int tail = data.length - 7;
+        int zeros = (int) Math.floorMod(55L - length, 64L);
+        byte[] padded = new byte[tail + 1 + zeros + 8];
+        System.arraycopy(data, 7, padded, 0, tail);
+        padded[tail] = (byte) 0x80;
+        long bits = length * 8;
+        for (int i = 0; i < 8; i++) {
+            padded[padded.length - 1 - i] = (byte) (bits >>> (8 * i));
+        }
+        int[] state = init(data);
+        for (int pos = 0; pos < padded.length; pos += 64) {
+            int[] w = new int[64];
+            for (int i = 0; i < 16; i++) w[i] = bigEndian(padded, pos + i * 4);
+            expand(w, 16);
+            int[] working = rounds(state, w, 0);
+            for (int i = 0; i < 8; i++) state[i] += working[i];
+        }
+        byte[] digest = new byte[32];
+        for (int i = 0; i < 8; i++) {
+            digest[i * 4] = (byte) (state[i] >>> 24);
+            digest[i * 4 + 1] = (byte) (state[i] >>> 16);
+            digest[i * 4 + 2] = (byte) (state[i] >>> 8);
+            digest[i * 4 + 3] = (byte) state[i];
+        }
+        int keyA = littleEndian(digest, 0) | 1;
+        int keyB = littleEndian(digest, 4) | 1;
+        int[] factors = {keyA * 0x82893933, keyB * 0x82893933};
+        byte[] prefixed = new byte[data.length + 1];
+        System.arraycopy(data, 0, prefixed, 1, data.length);
+        int wordCount = (prefixed.length + 3) / 4;
+        if (wordCount % 2 != 0) wordCount++;
+        int total = 14 + wordCount;
+        int[] terms = new int[total], offsets = new int[total];
+        for (int i = 0; i < 14; i++) {
+            terms[i] = CS64_COEFF[i][0] * factors[i % 2];
+            offsets[i] = CS64_COEFF[i][1];
+        }
+        for (int i = 0; i < wordCount; i++) {
+            int word = 0;
+            for (int j = 0; j < 4; j++) {
+                int idx = i * 4 + j;
+                if (idx < prefixed.length) word |= (prefixed[idx] & 255) << (8 * j);
+            }
+            int term = word * (i % 2 == 0 ? keyA : keyB);
+            int offset = Integer.rotateLeft(word, 16)
+                    * (i % 2 == 0 ? 0xEF0569FB : 0xC31713DB);
+            if (i == 0) {
+                term += 0xF2F90B1A * factors[0];
+                offset += 0x0B1A0000;
+            }
+            terms[14 + i] = term;
+            offsets[14 + i] = offset;
+        }
+        int swapAcc = 0, swapLast = 0, checksumState = 0, acc = 0;
+        for (int i = 0; i < total; i += 2) {
+            int x = terms[i], y = terms[i + 1];
+            int t = Integer.rotateLeft(offsets[i] + x, 16);
+            int q = t * 0x76F50F34;
+            swapAcc += Integer.rotateLeft(q, 16) * 0xC3EFEA97 + q;
+            t = Integer.rotateLeft(offsets[i + 1] + y, 16);
+            q = t * 0x1881CE3C;
+            swapLast = Integer.rotateLeft(q, 16) * 0x35BD1EC9 + q;
+            swapAcc += swapLast;
+            checksumState = checksumState * keyA + x;
+            checksumState = Integer.rotateLeft(checksumState, 16) * 0xCF98B111;
+            checksumState = Integer.rotateLeft(checksumState, 16) * 0x87085B9F;
+            checksumState = Integer.rotateLeft(checksumState, 16) * 0x12CEB96D;
+            checksumState = Integer.rotateLeft(checksumState, 16) * 0x257E1D83;
+            acc += checksumState;
+            t = checksumState * keyB + y;
+            t = Integer.rotateLeft(t, 16) * 0xA27416F5;
+            t = Integer.rotateLeft(t, 16) * 0xD38396FF;
+            checksumState = Integer.rotateLeft(Integer.rotateLeft(t, 16) * 0x7C932B89, 16)
+                    * 0xBFA49F69;
+            acc += checksumState;
+        }
+        int[] cs64 = new int[]{swapLast ^ checksumState, swapAcc ^ acc};
         return hexLE(cs64[0]) + hexLE(cs64[1]) + "-" + toHex(digest);
     }
 
@@ -116,90 +193,6 @@ final class EdgeTtsV2Token {
         int[] result = new int[8];
         for (int i = 0; i < 8; i++) result[i] = INITIAL[i] + working[i];
         return result;
-    }
-    private static byte[] modifiedSha256(byte[] data) {
-        if (data.length < 7) throw new IllegalArgumentException("Token data too short");
-        long length = 57L + data.length;
-        int tail = data.length - 7;
-        int zeros = (int) Math.floorMod(55L - length, 64L);
-        byte[] padded = new byte[tail + 1 + zeros + 8];
-        System.arraycopy(data, 7, padded, 0, tail);
-        padded[tail] = (byte) 0x80;
-        long bits = length * 8;
-        for (int i = 0; i < 8; i++) {
-            padded[padded.length - 1 - i] = (byte) (bits >>> (8 * i));
-        }
-        int[] state = init(data);
-        for (int pos = 0; pos < padded.length; pos += 64) {
-            int[] w = new int[64];
-            for (int i = 0; i < 16; i++) w[i] = bigEndian(padded, pos + i * 4);
-            expand(w, 16);
-            int[] working = rounds(state, w, 0);
-            for (int i = 0; i < 8; i++) state[i] += working[i];
-        }
-        byte[] result = new byte[32];
-        for (int i = 0; i < 8; i++) {
-            result[i * 4] = (byte) (state[i] >>> 24);
-            result[i * 4 + 1] = (byte) (state[i] >>> 16);
-            result[i * 4 + 2] = (byte) (state[i] >>> 8);
-            result[i * 4 + 3] = (byte) state[i];
-        }
-        return result;
-    }
-    private static int[] cs64Digest(byte[] data, byte[] digest) {
-        int keyA = littleEndian(digest, 0) | 1;
-        int keyB = littleEndian(digest, 4) | 1;
-        int[] factors = {keyA * 0x82893933, keyB * 0x82893933};
-        byte[] prefixed = new byte[data.length + 1];
-        System.arraycopy(data, 0, prefixed, 1, data.length);
-        int wordCount = (prefixed.length + 3) / 4;
-        if (wordCount % 2 != 0) wordCount++;
-        int total = 14 + wordCount;
-        int[] terms = new int[total], offsets = new int[total];
-        for (int i = 0; i < 14; i++) {
-            terms[i] = CS64_COEFF[i][0] * factors[i % 2];
-            offsets[i] = CS64_COEFF[i][1];
-        }
-        for (int i = 0; i < wordCount; i++) {
-            int word = 0;
-            for (int j = 0; j < 4; j++) {
-                int idx = i * 4 + j;
-                if (idx < prefixed.length) word |= (prefixed[idx] & 255) << (8 * j);
-            }
-            int term = word * (i % 2 == 0 ? keyA : keyB);
-            int offset = Integer.rotateLeft(word, 16)
-                    * (i % 2 == 0 ? 0xEF0569FB : 0xC31713DB);
-            if (i == 0) {
-                term += 0xF2F90B1A * factors[0];
-                offset += 0x0B1A0000;
-            }
-            terms[14 + i] = term;
-            offsets[14 + i] = offset;
-        }
-        int swapAcc = 0, swapLast = 0, state = 0, acc = 0;
-        for (int i = 0; i < total; i += 2) {
-            int x = terms[i], y = terms[i + 1];
-            int t = Integer.rotateLeft(offsets[i] + x, 16);
-            int q = t * 0x76F50F34;
-            swapAcc += Integer.rotateLeft(q, 16) * 0xC3EFEA97 + q;
-            t = Integer.rotateLeft(offsets[i + 1] + y, 16);
-            q = t * 0x1881CE3C;
-            swapLast = Integer.rotateLeft(q, 16) * 0x35BD1EC9 + q;
-            swapAcc += swapLast;
-            state = state * keyA + x;
-            state = Integer.rotateLeft(state, 16) * 0xCF98B111;
-            state = Integer.rotateLeft(state, 16) * 0x87085B9F;
-            state = Integer.rotateLeft(state, 16) * 0x12CEB96D;
-            state = Integer.rotateLeft(state, 16) * 0x257E1D83;
-            acc += state;
-            t = state * keyB + y;
-            t = Integer.rotateLeft(t, 16) * 0xA27416F5;
-            t = Integer.rotateLeft(t, 16) * 0xD38396FF;
-            state = Integer.rotateLeft(Integer.rotateLeft(t, 16) * 0x7C932B89, 16)
-                    * 0xBFA49F69;
-            acc += state;
-        }
-        return new int[]{swapLast ^ state, swapAcc ^ acc};
     }
     private static int bigEndian(byte[] data, int off) {
         return ((data[off] & 255) << 24) | ((data[off + 1] & 255) << 16)

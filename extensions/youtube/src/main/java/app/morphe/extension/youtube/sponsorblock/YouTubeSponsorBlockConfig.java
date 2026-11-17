@@ -78,27 +78,25 @@ public final class YouTubeSponsorBlockConfig implements Configuration {
             // Mirrors the side effects the legacy SponsorBlockPreferenceGroup applied from its
             // updateUI() pass when the user changed an SB setting.
             Setting.preferences.preferences.registerOnSharedPreferenceChangeListener(
-                    (prefs, key) -> Utils.runOnMainThread(() -> applySettingSideEffect(key)));
+                    (prefs, key) -> Utils.runOnMainThread(() -> {
+                        if (key == null) return;
+                        if (key.equals(Settings.SB_ENABLED.key)) {
+                            if (!Settings.SB_ENABLED.get()) {
+                                SponsorBlockViewController.hideAll();
+                                SegmentPlaybackController.setCurrentVideoId(null);
+                            }
+                            SponsorBlockViewController.updateLayout();
+                        } else if (key.equals(Settings.SB_CREATE_NEW_SEGMENT.key)) {
+                            if (!Settings.SB_CREATE_NEW_SEGMENT.get()) {
+                                SponsorBlockViewController.hideNewSegmentLayout();
+                            }
+                        } else if (key.equals(Settings.SB_SQUARE_LAYOUT.key)
+                                || key.equals(Settings.SB_COMPACT_SKIP_BUTTON.key)) {
+                            SponsorBlockViewController.updateLayout();
+                        }
+                    }));
 
             installed = true;
-        }
-    }
-
-    private static void applySettingSideEffect(String key) {
-        if (key == null) return;
-        if (key.equals(Settings.SB_ENABLED.key)) {
-            if (!Settings.SB_ENABLED.get()) {
-                SponsorBlockViewController.hideAll();
-                SegmentPlaybackController.setCurrentVideoId(null);
-            }
-            SponsorBlockViewController.updateLayout();
-        } else if (key.equals(Settings.SB_CREATE_NEW_SEGMENT.key)) {
-            if (!Settings.SB_CREATE_NEW_SEGMENT.get()) {
-                SponsorBlockViewController.hideNewSegmentLayout();
-            }
-        } else if (key.equals(Settings.SB_SQUARE_LAYOUT.key)
-                || key.equals(Settings.SB_COMPACT_SKIP_BUTTON.key)) {
-            SponsorBlockViewController.updateLayout();
         }
     }
 

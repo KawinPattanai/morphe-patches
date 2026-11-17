@@ -193,17 +193,13 @@ public final class DeArrowPatch {
     }
 
     public static final class StillImagesAvailability implements Setting.Availability {
-        public static boolean usingStillImagesAnywhere() {
-            return Settings.DEARROW_THUMBNAIL_HOME.get().useStillImages
+        @Override
+        public boolean isAvailable() {
+            return (Settings.DEARROW_THUMBNAIL_HOME.get().useStillImages
                     || Settings.DEARROW_THUMBNAIL_SUBSCRIPTIONS.get().useStillImages
                     || Settings.DEARROW_THUMBNAIL_LIBRARY.get().useStillImages
                     || Settings.DEARROW_THUMBNAIL_PLAYER.get().useStillImages
-                    || Settings.DEARROW_THUMBNAIL_SEARCH.get().useStillImages;
-        }
-
-        @Override
-        public boolean isAvailable() {
-            return usingStillImagesAnywhere();
+                    || Settings.DEARROW_THUMBNAIL_SEARCH.get().useStillImages);
         }
 
         @Override
@@ -479,22 +475,6 @@ public final class DeArrowPatch {
         return true;
     }
 
-    /**
-     * The thumbnail cache did not provide the crowdsourced thumbnail, such as a thumbnail
-     * that failed to generate or is not generated yet.
-     *
-     * @param url DeArrow thumbnail URL.
-     */
-    private static void setThumbnailUnavailable(String url) {
-        String videoId = Uri.parse(url).getQueryParameter("videoID");
-        if (videoId == null) {
-            return;
-        }
-        Logger.printDebug(() -> "DeArrow thumbnail not available for video: " + videoId);
-        unavailableThumbnailRetryTimes.put(videoId,
-                System.currentTimeMillis() + DEARROW_THUMBNAIL_RETRY_MILLISECONDS);
-    }
-
     private static boolean urlIsDeArrow(String imageURL) {
         return imageURL.startsWith(deArrowAPIURLPrefix);
     }
@@ -694,7 +674,17 @@ public final class DeArrowPatch {
                 if (statusCode == 204) {
                     // The thumbnail cache has no thumbnail, and does not redirect to fallback urls
                     // that are not of the primary thumbnail domain. Load the original thumbnail instead.
-                    setThumbnailUnavailable(url);
+                    // The thumbnail cache did not provide the crowdsourced thumbnail, such as a thumbnail
+                    // that failed to generate or is not generated yet.
+                    setThumbnailUnavailable: {
+                        String videoId = Uri.parse(url).getQueryParameter("videoID");
+                        if (videoId == null) {
+                            break setThumbnailUnavailable;
+                        }
+                        Logger.printDebug(() -> "DeArrow thumbnail not available for video: " + videoId);
+                        unavailableThumbnailRetryTimes.put(videoId,
+                                System.currentTimeMillis() + DEARROW_THUMBNAIL_RETRY_MILLISECONDS);
+                    }
                     LithoRelayoutPatch.remountListViews();
                     return;
                 }

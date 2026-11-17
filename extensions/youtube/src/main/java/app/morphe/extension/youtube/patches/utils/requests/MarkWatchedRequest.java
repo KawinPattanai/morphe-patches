@@ -123,8 +123,12 @@ public final class MarkWatchedRequest {
         }
         String position = String.valueOf(Math.max(0, length - 1));
 
+        StringBuilder cpn = new StringBuilder(CPN_LENGTH);
+        for (int i = 0; i < CPN_LENGTH; i++) {
+            cpn.append(CPN_ALPHABET.charAt(random.nextInt(256) & 63));
+        }
         parameters.put("ver", "2");
-        parameters.put("cpn", createCpn());
+        parameters.put("cpn", cpn.toString());
         parameters.put("cmt", position);
         // Otherwise the playback is reported as a Short.
         parameters.put("el", "detailpage");
@@ -160,13 +164,5 @@ public final class MarkWatchedRequest {
         } finally {
             connection.disconnect();
         }
-    }
-
-    private static String createCpn() {
-        StringBuilder cpn = new StringBuilder(CPN_LENGTH);
-        for (int i = 0; i < CPN_LENGTH; i++) {
-            cpn.append(CPN_ALPHABET.charAt(random.nextInt(256) & 63));
-        }
-        return cpn.toString();
     }
 }

@@ -281,7 +281,46 @@ public class LoopCountPatch {
             final boolean wasEnded = videoEnded;
             videoEnded = ended;
             if (ended && !wasEnded) {
-                onVideoEnded();
+                // Counts the play of the video that ended, before the app or another patch plays it again.
+                onVideoEnded: {
+                    if (ShortsPlayerState.isOpen()) {
+                        // The loop count does not apply to Shorts.
+                        countedVideoId = "";
+                        break onVideoEnded;
+                    }
+
+                    final long videoLength = VideoInformation.getVideoLength();
+                    if (videoLength > 0 && VideoInformation.getVideoTime() + END_OF_VIDEO_TOLERANCE_MILLISECONDS < videoLength) {
+                        break onVideoEnded;
+                    }
+
+                    final String videoId = VideoInformation.getVideoId();
+                    final String playlistId = VideoInformation.getPlaylistId();
+                    final int loopCount = getLoopCount(playlistId, videoId);
+                    if (videoId.isEmpty() || loopCount <= 0) {
+                        countedVideoId = "";
+                        break onVideoEnded;
+                    }
+
+                    final int mode = repeatMode;
+                    if (!videoId.equals(countedVideoId)) {
+                        countedVideoId = videoId;
+                        timesPlayed = 0;
+                        repeatModeAfterLoopCount = mode == REPEAT_MODE_VIDEO ? REPEAT_MODE_OFF : mode;
+                    }
+
+                    timesPlayed++;
+                    Logger.printDebug(() -> "Video " + videoId + " played " + timesPlayed + " of " + loopCount + " times");
+
+                    if (timesPlayed >= loopCount) {
+                        countedVideoId = "";
+                        loopCountReached = true;
+                        if (repeatMode == REPEAT_MODE_VIDEO) {
+                            // Before the app handles the end of the video, so it plays the next video if there is one.
+                            setAppRepeatMode(repeatModeAfterLoopCount);
+                        }
+                    }
+                }
             } else if ("PLAYBACK_PENDING".equals(statusName) && !ShortsPlayerState.isOpen()) {
                 // The app loads a video, even the same video again, so a saved loop count can turn on loop video.
                 loopVideoTurnedOnVideoId = "";
@@ -323,48 +362,6 @@ public class LoopCountPatch {
     }
 
     /**
-     * Counts the play of the video that ended, before the app or another patch plays it again.
-     */
-    private static void onVideoEnded() {
-        if (ShortsPlayerState.isOpen()) {
-            // The loop count does not apply to Shorts.
-            countedVideoId = "";
-            return;
-        }
-        final long videoLength = VideoInformation.getVideoLength();
-        if (videoLength > 0 && VideoInformation.getVideoTime() + END_OF_VIDEO_TOLERANCE_MILLISECONDS < videoLength) {
-            return;
-        }
-
-        final String videoId = VideoInformation.getVideoId();
-        final String playlistId = VideoInformation.getPlaylistId();
-        final int loopCount = getLoopCount(playlistId, videoId);
-        if (videoId.isEmpty() || loopCount <= 0) {
-            countedVideoId = "";
-            return;
-        }
-
-        final int mode = repeatMode;
-        if (!videoId.equals(countedVideoId)) {
-            countedVideoId = videoId;
-            timesPlayed = 0;
-            repeatModeAfterLoopCount = mode == REPEAT_MODE_VIDEO ? REPEAT_MODE_OFF : mode;
-        }
-
-        timesPlayed++;
-        Logger.printDebug(() -> "Video " + videoId + " played " + timesPlayed + " of " + loopCount + " times");
-
-        if (timesPlayed >= loopCount) {
-            countedVideoId = "";
-            loopCountReached = true;
-            if (repeatMode == REPEAT_MODE_VIDEO) {
-                // Before the app handles the end of the video, so it plays the next video if there is one.
-                setAppRepeatMode(repeatModeAfterLoopCount);
-            }
-        }
-    }
-
-    /**
      * @return If the video that ended has played as many times as its loop count, so it must not be looped again.
      */
     public static boolean isLoopCountReached() {
@@ -381,34 +378,33 @@ public class LoopCountPatch {
 
     private static Map<String, Integer> getSavedLoopCounts() {
         if (savedLoopCounts == null) {
-            savedLoopCounts = loadSavedLoopCounts();
+            loadSavedLoopCounts: {
+                Map<String, Integer> map = new LinkedHashMap<>();
+                String raw = Settings.LOOP_COUNT_PLAYLIST_COUNTS.get();
+                if (raw.isEmpty()) {
+                    savedLoopCounts = map;
+                    break loadSavedLoopCounts;
+                }
+
+                try {
+                    JSONObject json = new JSONObject(raw);
+                    Iterator<String> keys = json.keys();
+                    while (keys.hasNext()) {
+                        String key = keys.next();
+                        final int count = json.optInt(key, 0);
+                        if (count > 0) {
+                            map.put(key, count);
+                        }
+                    }
+                } catch (Exception ex) {
+                    Logger.printException(() -> "Failed to load saved loop counts", ex);
+                    Settings.LOOP_COUNT_PLAYLIST_COUNTS.resetToDefault();
+                    map.clear();
+                }
+                savedLoopCounts = map;
+            }
         }
         return savedLoopCounts;
-    }
-
-    private static Map<String, Integer> loadSavedLoopCounts() {
-        Map<String, Integer> map = new LinkedHashMap<>();
-        String raw = Settings.LOOP_COUNT_PLAYLIST_COUNTS.get();
-        if (raw.isEmpty()) {
-            return map;
-        }
-
-        try {
-            JSONObject json = new JSONObject(raw);
-            Iterator<String> keys = json.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                final int count = json.optInt(key, 0);
-                if (count > 0) {
-                    map.put(key, count);
-                }
-            }
-        } catch (Exception ex) {
-            Logger.printException(() -> "Failed to load saved loop counts", ex);
-            Settings.LOOP_COUNT_PLAYLIST_COUNTS.resetToDefault();
-            map.clear();
-        }
-        return map;
     }
 
     /**

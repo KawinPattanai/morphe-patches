@@ -269,7 +269,16 @@ public class VoiceOverTranslationPatch {
         }
         Utils.verifyOnMainThread();
 
-        propagatePlaybackSpeedIfChanged();
+        // Pushes a new MediaPlayer rate when video speed changes mid-utterance so the listener
+        // doesn't wait for the current one to finish. No-op for System TTS (Android TextToSpeech
+        // cannot change rate in-flight; the next utterance picks up the new value).
+        propagatePlaybackSpeedIfChanged: {
+            if (lastAppliedPlaybackSpeed < 0) break propagatePlaybackSpeedIfChanged;
+            final float current = VideoInformation.getPlaybackSpeed();
+            if (current == lastAppliedPlaybackSpeed) break propagatePlaybackSpeedIfChanged;
+            lastAppliedPlaybackSpeed = current;
+            ttsEngine.setPlaybackRate(currentTtsBaseRate * current);
+        }
 
         PlayerType currentPlayerType = PlayerType.getCurrent();
         if (!currentPlayerType.isMaximizedOrFullscreen()
@@ -381,7 +390,18 @@ public class VoiceOverTranslationPatch {
     public static void toggleTranslation() {
         Utils.verifyOnMainThread();
         if (sessionEnabled) {
-            deactivateTranslation();
+            // Explicitly disables the session and stops any in-progress TTS. No-op if already off.
+            // Unlike toggleTranslation(), this never turns the session on, so it is safe for
+            // another voice-over engine to call to enforce that only one engine speaks at a time.
+            deactivateTranslation: {
+                Utils.verifyOnMainThread();
+                if (!sessionEnabled) break deactivateTranslation;
+                sessionEnabled = false;
+                Settings.VOT_SESSION_ENABLED.save(false);
+                stopTts();
+                lastSpokenIndex = -1;
+                notifyStateChanged();
+            }
             return;
         }
         sessionEnabled = true;
@@ -389,21 +409,6 @@ public class VoiceOverTranslationPatch {
         if (!currentVideoId.isEmpty() && segments.isEmpty() && !isLoading) {
             loadTranscript(currentVideoId);
         }
-        notifyStateChanged();
-    }
-
-    /**
-     * Explicitly disables the session and stops any in-progress TTS. No-op if already off.
-     * Unlike {@link #toggleTranslation()}, this never turns the session on, so it is safe for
-     * another voice-over engine to call to enforce that only one engine speaks at a time.
-     */
-    public static void deactivateTranslation() {
-        Utils.verifyOnMainThread();
-        if (!sessionEnabled) return;
-        sessionEnabled = false;
-        Settings.VOT_SESSION_ENABLED.save(false);
-        stopTts();
-        lastSpokenIndex = -1;
         notifyStateChanged();
     }
 
@@ -616,14 +621,29 @@ public class VoiceOverTranslationPatch {
         String lang = resolveTargetLang();
         final float volume = Settings.VOT_TRANSLATION_VOLUME.get() / 100.0f;
 
-        String voice = resolveVoice(lang);
+        String voice;
+        resolveVoice: {
+            if (Settings.VOT_USE_NATIVE_TTS.get()) {
+                voice = TTS_ENGINE_SYSTEM;
+                break resolveVoice;
+            }
+            String edgeVoice = VoiceCatalog.resolve(lang, Settings.VOT_TTS_VOICE_TYPE.get());
+            // Do not persist the temporary fallback: retain the user's Edge voice choice.
+            voice = edgeVoice != null ? edgeVoice : TTS_ENGINE_SYSTEM;
+        }
         if (voice == null) return;
 
         final long speakFromMs = Math.max(lastVideoTimeMs, seg.playbackStartMs);
         final long availableMs = seg.playbackEndMs - speakFromMs;
 
         // Exact if cached, otherwise estimated from char count.
-        final long speechDurationMs = getSpeechDurationMs(seg, index, voice, lang);
+        long duration = seg.durationMs;
+        if (duration <= 0) {
+            duration = TTSCache.getDuration(currentVideoId, index, voice, lang, seg.text);
+            if (duration > 0) seg.durationMs = duration;
+        }
+
+        final long speechDurationMs = duration > 0 ? duration : (long) seg.text.length() * TTSEngine.ESTIMATED_MS_PER_CHAR;
 
         // Calculate if we should seek into the audio (e.g. after a short seek within segment).
         long startTimeMs = 0;
@@ -720,19 +740,6 @@ public class VoiceOverTranslationPatch {
     }
 
     /**
-     * Pushes a new MediaPlayer rate when video speed changes mid-utterance so the listener
-     * doesn't wait for the current one to finish. No-op for System TTS (Android TextToSpeech
-     * cannot change rate in-flight; the next utterance picks up the new value).
-     */
-    private static void propagatePlaybackSpeedIfChanged() {
-        if (lastAppliedPlaybackSpeed < 0) return;
-        final float current = VideoInformation.getPlaybackSpeed();
-        if (current == lastAppliedPlaybackSpeed) return;
-        lastAppliedPlaybackSpeed = current;
-        ttsEngine.setPlaybackRate(currentTtsBaseRate * current);
-    }
-
-    /**
      * Returns a speech rate multiplier that fits {@code speechDurationMs} into {@code availableMs}.
      * Never slows below normal speed and is capped by the user-configured max rate.
      */
@@ -740,15 +747,6 @@ public class VoiceOverTranslationPatch {
         final float maxRate = Settings.VOT_MAX_SPEECH_RATE.get() / 10.0f;
         if (availableMs <= 0) return maxRate;
         return Math.max(MIN_SPEECH_RATE, Math.min(maxRate, speechDurationMs / (float) availableMs));
-    }
-
-    private static long getSpeechDurationMs(TranscriptSegment seg, int index, String voice, String lang) {
-        long duration = seg.durationMs;
-        if (duration <= 0) {
-            duration = TTSCache.getDuration(currentVideoId, index, voice, lang, seg.text);
-            if (duration > 0) seg.durationMs = duration;
-        }
-        return duration > 0 ? duration : (long) seg.text.length() * TTSEngine.ESTIMATED_MS_PER_CHAR;
     }
 
     /**
@@ -886,16 +884,6 @@ public class VoiceOverTranslationPatch {
                 : Settings.VOT_CAPTION_LANGUAGE.get();
     }
 
-    /**
-     * @param lang ISO 639 (pt) or BCP 47 (pt-BR).
-     */
-    private static String resolveVoice(String lang) {
-        if (Settings.VOT_USE_NATIVE_TTS.get()) return TTS_ENGINE_SYSTEM;
-        String edgeVoice = VoiceCatalog.resolve(lang, Settings.VOT_TTS_VOICE_TYPE.get());
-        // Do not persist the temporary fallback: retain the user's Edge voice choice.
-        return edgeVoice != null ? edgeVoice : TTS_ENGINE_SYSTEM;
-    }
-
     static void notifyHttpError(int statusCode) {
         if (statusCode < 400 || statusCode >= 500) return;
         if (!Settings.VOT_SHOW_HTTP_ERROR_DIALOG.get()) return;
@@ -955,8 +943,21 @@ public class VoiceOverTranslationPatch {
         if (httpErrorDialogShownThisVideo) return;
         httpErrorDialogShownThisVideo = true;
         if (TranscriptTranslator.isMyMemoryQuotaError(responseStatus, details)) {
-            final String nextAvailableAt = formatNextAvailableClockTime(
-                    TranscriptTranslator.parseMyMemoryNextAvailableMinutes(details));
+            // Converts a wait duration to the wall-clock time the quota will reset, formatted as
+            // HH:mm in the device locale. Returns null when the duration is unknown so the
+            // dialog can omit the "next available at" line.
+            String nextAvailableAt;
+            formatNextAvailableClockTime: {
+                Long waitMinutes = TranscriptTranslator.parseMyMemoryNextAvailableMinutes(details);
+                if (waitMinutes == null) {
+                    nextAvailableAt = null;
+                    break formatNextAvailableClockTime;
+                }
+                Calendar c = Calendar.getInstance();
+                c.add(Calendar.MINUTE, waitMinutes.intValue());
+                nextAvailableAt = String.format(Locale.getDefault(), "%02d:%02d",
+                        c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE));
+            }
             Utils.runOnMainThread(() -> {
                 Activity activity = Utils.getActivity();
                 if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
@@ -965,20 +966,6 @@ public class VoiceOverTranslationPatch {
         } else {
             Utils.showSnackbarLong(str("morphe_vot_mymemory_error", responseStatus));
         }
-    }
-
-    /**
-     * Converts a wait duration to the wall-clock time the quota will reset, formatted as
-     * {@code HH:mm} in the device locale. Returns null when the duration is unknown so the
-     * dialog can omit the "next available at" line.
-     */
-    @Nullable
-    private static String formatNextAvailableClockTime(@Nullable Long waitMinutes) {
-        if (waitMinutes == null) return null;
-        Calendar c = Calendar.getInstance();
-        c.add(Calendar.MINUTE, waitMinutes.intValue());
-        return String.format(Locale.getDefault(), "%02d:%02d",
-                c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE));
     }
 
     private static void showMyMemoryQuotaDialog(Activity activity, @Nullable String nextAvailableAt) {

@@ -145,19 +145,6 @@ public final class ReturnYouTubeDislikeButtons {
     }
 
     /**
-     * The count of the segmented button is drawn by the layout engine and not by the text view
-     * beside it, so its color cannot be changed. YouTube uses the color of that view, while
-     * YouTube Music uses the app foreground color because its view can report black incorrectly.
-     */
-    private static int oldBarCountColor(View host) {
-        if (useAppForegroundForSegmentedCount) {
-            return ThemeUtils.getAppForegroundColor();
-        }
-        TextView text = barTextOf(barOf(host), 0);
-        return text == null ? ThemeUtils.getAppForegroundColor() : text.getCurrentTextColor();
-    }
-
-    /**
      * @return The first text of the bar, which is the count YouTube shows for the likes.
      */
     @Nullable
@@ -360,8 +347,40 @@ public final class ReturnYouTubeDislikeButtons {
     private static void addCountToUntaggedDislikeButton(ComponentHost host) {
         try {
             CharSequence description = host.getContentDescription();
-            if (description == null || iconButtonCounts.containsKey(host)
-                    || !isSegmentedDislikeButton(host)) {
+            if (description == null || iconButtonCounts.containsKey(host)) {
+                return;
+            }
+
+            // If the host is the dislike half of a segmented button: a single icon, widened by the
+            // margin, beside the like button with its animated icon. The like button is found by
+            // its place and not by the child order, which a like moves it to the end of.
+            boolean isSegmentedDislikeButton;
+            isSegmentedDislikeButton: {
+                if (!host.isClickable() || host.getWidth() <= host.getHeight()
+                        || host.getChildCount() != 1 || !(host.getChildAt(0) instanceof ImageView)
+                        || !(host.getParent() instanceof ViewGroup parent)) {
+                    isSegmentedDislikeButton = false;
+                    break isSegmentedDislikeButton;
+                }
+
+                final boolean rightToLeft = Utils.isRightToLeftLocale();
+                for (int i = 0, childCount = parent.getChildCount(); i < childCount; i++) {
+                    View sibling = parent.getChildAt(i);
+                    if (sibling == host) {
+                        continue;
+                    }
+
+                    final boolean before = rightToLeft
+                            ? sibling.getLeft() >= host.getRight()
+                            : sibling.getRight() <= host.getLeft();
+                    if (before && hasAnimatedIcon(sibling, 0)) {
+                        isSegmentedDislikeButton = true;
+                        break isSegmentedDislikeButton;
+                    }
+                }
+                isSegmentedDislikeButton = false;
+            }
+            if (!isSegmentedDislikeButton) {
                 return;
             }
 
@@ -375,33 +394,6 @@ public final class ReturnYouTubeDislikeButtons {
         } catch (Exception ex) {
             Logger.printException(() -> "addCountToUntaggedDislikeButton failure", ex);
         }
-    }
-
-    /**
-     * @return If the host is the dislike half of a segmented button: a single icon, widened by the
-     *         margin, beside the like button with its animated icon. The like button is found by
-     *         its place and not by the child order, which a like moves it to the end of.
-     */
-    private static boolean isSegmentedDislikeButton(ComponentHost host) {
-        if (!host.isClickable() || host.getWidth() <= host.getHeight()
-                || host.getChildCount() != 1 || !(host.getChildAt(0) instanceof ImageView)
-                || !(host.getParent() instanceof ViewGroup parent)) {
-            return false;
-        }
-        final boolean rightToLeft = Utils.isRightToLeftLocale();
-        for (int i = 0, childCount = parent.getChildCount(); i < childCount; i++) {
-            View sibling = parent.getChildAt(i);
-            if (sibling == host) {
-                continue;
-            }
-            final boolean before = rightToLeft
-                    ? sibling.getLeft() >= host.getRight()
-                    : sibling.getRight() <= host.getLeft();
-            if (before && hasAnimatedIcon(sibling, 0)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean hasAnimatedIcon(View view, int depth) {
@@ -431,7 +423,29 @@ public final class ReturnYouTubeDislikeButtons {
      */
     private static void addCountToUnlabeledLikeButton(ComponentHost dislikeHost) {
         try {
-            ComponentHost likeHost = buttonBefore(dislikeHost);
+            // Each button of the compact action bar sits in wrappers of its own width, so the first
+            // ancestor with an earlier sibling of that width holds the previous button.
+            ComponentHost likeHost;
+            buttonBefore: {
+                View view = dislikeHost;
+                for (int i = 0; i < MAX_BAR_PARENTS; i++) {
+                    if (!(view.getParent() instanceof ViewGroup parent)) {
+                        likeHost = null;
+                        break buttonBefore;
+                    }
+
+                    final int index = parent.indexOfChild(view);
+                    if (index > 0) {
+                        View sibling = parent.getChildAt(index - 1);
+                        likeHost = sibling.getWidth() == view.getWidth()
+                                ? clickableHostOfSize(sibling, dislikeHost, 0)
+                                : null;
+                        break buttonBefore;
+                    }
+                    view = parent;
+                }
+                likeHost = null;
+            }
             if (likeHost == null || iconButtonCounts.containsKey(likeHost)
                     || Utils.isNotEmpty(likeHost.getContentDescription())) {
                 return;
@@ -450,29 +464,6 @@ public final class ReturnYouTubeDislikeButtons {
         } catch (Exception ex) {
             Logger.printException(() -> "addCountToUnlabeledLikeButton failure", ex);
         }
-    }
-
-    /**
-     * Each button of the compact action bar sits in wrappers of its own width, so the first
-     * ancestor with an earlier sibling of that width holds the previous button.
-     */
-    @Nullable
-    private static ComponentHost buttonBefore(View button) {
-        View view = button;
-        for (int i = 0; i < MAX_BAR_PARENTS; i++) {
-            if (!(view.getParent() instanceof ViewGroup parent)) {
-                return null;
-            }
-            final int index = parent.indexOfChild(view);
-            if (index > 0) {
-                View sibling = parent.getChildAt(index - 1);
-                return sibling.getWidth() == view.getWidth()
-                        ? clickableHostOfSize(sibling, button, 0)
-                        : null;
-            }
-            view = parent;
-        }
-        return null;
     }
 
     @Nullable
@@ -516,55 +507,6 @@ public final class ReturnYouTubeDislikeButtons {
                 invalidateIconButtonCounts();
             });
         });
-    }
-
-    /**
-     * Reads the like count from a label such as "like this video along with 2,589 other people".
-     *
-     * @return The count, {@link #LIKES_HIDDEN} if the label has no number (hidden by the creator),
-     *         or {@link #LIKES_UNKNOWN} if the number is not a whole count, such as a compact "2,5K".
-     */
-    private static long parseLabelCount(String label) {
-        final int length = label.length();
-        int index = 0;
-        while (index < length && !Character.isDigit(label.charAt(index))) {
-            index++;
-        }
-        if (index == length) {
-            return LIKES_HIDDEN;
-        }
-
-        long count = 0;
-        int digitsSinceSeparator = 0;
-        boolean hasSeparator = false;
-        for (; index < length; index++) {
-            final char c = label.charAt(index);
-            if (Character.isDigit(c)) {
-                if (count > Long.MAX_VALUE / 10) {
-                    return LIKES_UNKNOWN;
-                }
-                count = count * 10 + Character.digit(c, 10);
-                digitsSinceSeparator++;
-                continue;
-            }
-            // Swiss style grouping uses either apostrophe.
-            final boolean isSeparator = c == ',' || c == '.' || c == '\'' || c == '’'
-                    || Character.isSpaceChar(c);
-            if (!isSeparator || index + 1 >= length || !Character.isDigit(label.charAt(index + 1))) {
-                break;
-            }
-            // Grouping separators always split groups of three, anything else is a decimal.
-            if (hasSeparator && digitsSinceSeparator != 3) {
-                return LIKES_UNKNOWN;
-            }
-            hasSeparator = true;
-            digitsSinceSeparator = 0;
-        }
-
-        if (hasSeparator && digitsSinceSeparator != 3) {
-            return LIKES_UNKNOWN;
-        }
-        return count;
     }
 
     private static final int MAX_BAR_PARENTS = 5;
@@ -665,7 +607,54 @@ public final class ReturnYouTubeDislikeButtons {
         void setButton(String label, boolean isLike) {
             this.label = label;
             this.isLike = isLike;
-            youTubeLikes = isLike ? parseLabelCount(label) : LIKES_UNKNOWN;
+            youTubeLikes = LIKES_UNKNOWN;
+            // Reads the like count from a label such as "like this video along with 2,589 other people":
+            // LIKES_HIDDEN if the label has no number (hidden by the creator),
+            // or LIKES_UNKNOWN if the number is not a whole count, such as a compact "2,5K".
+            parseLabelCount:
+            if (isLike) {
+                final int length = label.length();
+                int index = 0;
+                while (index < length && !Character.isDigit(label.charAt(index))) {
+                    index++;
+                }
+                if (index == length) {
+                    youTubeLikes = LIKES_HIDDEN;
+                    break parseLabelCount;
+                }
+
+                long count = 0;
+                int digitsSinceSeparator = 0;
+                boolean hasSeparator = false;
+                for (; index < length; index++) {
+                    final char c = label.charAt(index);
+                    if (Character.isDigit(c)) {
+                        if (count > Long.MAX_VALUE / 10) {
+                            break parseLabelCount;
+                        }
+                        count = count * 10 + Character.digit(c, 10);
+                        digitsSinceSeparator++;
+                        continue;
+                    }
+                    // Swiss style grouping uses either apostrophe.
+                    final boolean isSeparator = c == ',' || c == '.' || c == '\'' || c == '’'
+                            || Character.isSpaceChar(c);
+                    if (!isSeparator || index + 1 >= length || !Character.isDigit(label.charAt(index + 1))) {
+                        break;
+                    }
+                    // Grouping separators always split groups of three, anything else is a decimal.
+                    if (hasSeparator && digitsSinceSeparator != 3) {
+                        break parseLabelCount;
+                    }
+                    hasSeparator = true;
+                    digitsSinceSeparator = 0;
+                }
+
+                if (hasSeparator && digitsSinceSeparator != 3) {
+                    break parseLabelCount;
+                }
+                youTubeLikes = count;
+            }
             hasOwnLabel = null;
             spokenLabel = null;
             likeButtonSearched = false;
@@ -688,50 +677,36 @@ public final class ReturnYouTubeDislikeButtons {
 
         void refresh() {
             setBounds(0, 0, host.getWidth(), host.getHeight());
-            updateSpokenLabel();
+            // YouTube tells the like count to screen readers but never the dislike count,
+            // and the number drawn here is not something a screen reader can see.
+            updateSpokenLabel: {
+                if (isLike) {
+                    break updateSpokenLabel;
+                }
+                String dislikes = getText();
+                if (dislikes == null) {
+                    break updateSpokenLabel;
+                }
+
+                // YouTube says the likes of a video as "like this video along with 1,406 other
+                // people", and the dislikes are said the same way so that a screen reader announces
+                // both buttons alike.  A percentage is not a count of people and keeps its own wording.
+                String spoken = str((SharedYouTubeSettings.RYD_DISLIKE_PERCENTAGE.get()
+                        ? "morphe_ryd_accessibility_dislike_percentage"
+                        : "morphe_ryd_accessibility_dislike_count"), dislikes);
+                if (spoken.equals(spokenLabel) && TextUtils.equals(host.getContentDescription(), spoken)) {
+                    break updateSpokenLabel;
+                }
+
+                spokenLabel = spoken;
+                rewritingDescription = true;
+                try {
+                    host.setContentDescription(spoken);
+                } finally {
+                    rewritingDescription = false;
+                }
+            }
             invalidateSelf();
-        }
-
-        /**
-         * @return Where to center the count, in the space the margin freed. The insets the
-         *         button had while it was square cancel out, leaving half of the icon and the gap.
-         */
-        private float countCenterX() {
-            final int start = oldBarDislikeIconWidth
-                    + oldBarCountStartMargin - OLD_BAR_COUNT_END_MARGIN;
-            return (host.getWidth() + (Utils.isRightToLeftLocale() ? -start : start)) / 2f;
-        }
-
-        /**
-         * YouTube tells the like count to screen readers but never the dislike count,
-         * and the number drawn here is not something a screen reader can see.
-         */
-        private void updateSpokenLabel() {
-            if (isLike) {
-                return;
-            }
-            String dislikes = getText();
-            if (dislikes == null) {
-                return;
-            }
-
-            // YouTube says the likes of a video as "like this video along with 1,406 other
-            // people", and the dislikes are said the same way so that a screen reader announces
-            // both buttons alike.  A percentage is not a count of people and keeps its own wording.
-            String spoken = str((SharedYouTubeSettings.RYD_DISLIKE_PERCENTAGE.get()
-                    ? "morphe_ryd_accessibility_dislike_percentage"
-                    : "morphe_ryd_accessibility_dislike_count"), dislikes);
-            if (spoken.equals(spokenLabel) && TextUtils.equals(host.getContentDescription(), spoken)) {
-                return;
-            }
-
-            spokenLabel = spoken;
-            rewritingDescription = true;
-            try {
-                host.setContentDescription(spoken);
-            } finally {
-                rewritingDescription = false;
-            }
         }
 
         @Nullable
@@ -787,15 +762,23 @@ public final class ReturnYouTubeDislikeButtons {
             paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
                     beside ? oldBarCountTextSizeSp : ICON_BUTTON_COUNT_TEXT_SIZE_SP,
                     host.getResources().getDisplayMetrics()));
-            final int color = beside
-                    ? oldBarCountColor(host)
-                    : ThemeUtils.getAppForegroundColor();
+            // The count of the segmented button is drawn by the layout engine and not by the text view
+            // beside it, so its color cannot be changed. YouTube uses the color of that view, while
+            // YouTube Music uses the app foreground color because its view can report black incorrectly.
+            TextView barText = beside && !useAppForegroundForSegmentedCount ? barTextOf(barOf(host), 0) : null;
+            final int color = barText == null
+                    ? ThemeUtils.getAppForegroundColor()
+                    : barText.getCurrentTextColor();
             paint.setColor(color);
             paint.setAlpha(Color.alpha(color) * alpha / 255);
 
             if (beside) {
                 Paint.FontMetrics fm = paint.getFontMetrics();
-                canvas.drawText(text, countCenterX(),
+                // button had while it was square cancel out, leaving half of the icon and the gap.
+                final int start = oldBarDislikeIconWidth
+                        + oldBarCountStartMargin - OLD_BAR_COUNT_END_MARGIN;
+                float countCenterX = (host.getWidth() + (Utils.isRightToLeftLocale() ? -start : start)) / 2f;
+                canvas.drawText(text, countCenterX,
                         (host.getHeight() - fm.bottom - fm.top) / 2f, paint);
                 return;
             }

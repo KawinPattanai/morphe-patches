@@ -77,7 +77,53 @@ public final class NewSettingsIndicator {
             Set<String> currentIds = new HashSet<>();
             collectIds(screen, currentIds);
 
-            Map<String, Long> firstSeenTimes = updateFirstSeenTimes(currentIds);
+            // Saves ids seen for the first time, and removes first seen times older than the max days.
+            // The first seen times of the ids added within the max days.
+            Map<String, Long> firstSeenTimes;
+            updateFirstSeenTimes: {
+                if (!preferences.contains(KNOWN_IDS_KEY)) {
+                    Logger.printDebug(() -> "Saving " + currentIds.size() + " known settings");
+                    preferences.edit().putStringSet(KNOWN_IDS_KEY, currentIds).apply();
+                    firstSeenTimes = Collections.emptyMap();
+                    break updateFirstSeenTimes;
+                }
+
+                Set<String> knownIds = new HashSet<>(preferences.getStringSet(KNOWN_IDS_KEY, Collections.emptySet()));
+                SharedPreferences.Editor editor = preferences.edit();
+                boolean changed = false;
+                final long now = System.currentTimeMillis();
+                firstSeenTimes = new HashMap<>();
+                for (String id : currentIds) {
+                    if (knownIds.add(id)) {
+                        editor.putLong(FIRST_SEEN_KEY_PREFIX + id, now);
+                        firstSeenTimes.put(id, now);
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    editor.putStringSet(KNOWN_IDS_KEY, knownIds);
+                }
+
+                SeekBarPreference.SeekBarConfig config =
+                        SeekBarPreference.configFor(SharedYouTubeSettings.SETTINGS_NEW_INDICATOR_DAYS);
+                final long expiredBefore = now - TimeUnit.DAYS.toMillis(Objects.requireNonNull(config).max());
+                for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
+                    String key = entry.getKey();
+                    if (!key.startsWith(FIRST_SEEN_KEY_PREFIX)) continue;
+
+                    final long firstSeen = (Long) entry.getValue();
+                    if (firstSeen < expiredBefore) {
+                        editor.remove(key);
+                        changed = true;
+                    } else {
+                        firstSeenTimes.put(key.substring(FIRST_SEEN_KEY_PREFIX.length()), firstSeen);
+                    }
+                }
+
+                if (changed) {
+                    editor.apply();
+                }
+            }
 
             final int days = SeekBarPreference.clampToRange(SharedYouTubeSettings.SETTINGS_NEW_INDICATOR_DAYS);
             if (days == 0 || firstSeenTimes.isEmpty()) {
@@ -125,56 +171,6 @@ public final class NewSettingsIndicator {
                 }
             }
         }
-    }
-
-    /**
-     * Saves ids seen for the first time, and removes first seen times older than the max days.
-     *
-     * @return The first seen times of the ids added within the max days.
-     */
-    private static Map<String, Long> updateFirstSeenTimes(Set<String> currentIds) {
-        if (!preferences.contains(KNOWN_IDS_KEY)) {
-            Logger.printDebug(() -> "Saving " + currentIds.size() + " known settings");
-            preferences.edit().putStringSet(KNOWN_IDS_KEY, currentIds).apply();
-            return Collections.emptyMap();
-        }
-
-        Set<String> knownIds = new HashSet<>(preferences.getStringSet(KNOWN_IDS_KEY, Collections.emptySet()));
-        SharedPreferences.Editor editor = preferences.edit();
-        boolean changed = false;
-        final long now = System.currentTimeMillis();
-        Map<String, Long> firstSeenTimes = new HashMap<>();
-        for (String id : currentIds) {
-            if (knownIds.add(id)) {
-                editor.putLong(FIRST_SEEN_KEY_PREFIX + id, now);
-                firstSeenTimes.put(id, now);
-                changed = true;
-            }
-        }
-        if (changed) {
-            editor.putStringSet(KNOWN_IDS_KEY, knownIds);
-        }
-
-        SeekBarPreference.SeekBarConfig config =
-                SeekBarPreference.configFor(SharedYouTubeSettings.SETTINGS_NEW_INDICATOR_DAYS);
-        final long expiredBefore = now - TimeUnit.DAYS.toMillis(Objects.requireNonNull(config).max());
-        for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
-            String key = entry.getKey();
-            if (!key.startsWith(FIRST_SEEN_KEY_PREFIX)) continue;
-
-            final long firstSeen = (Long) entry.getValue();
-            if (firstSeen < expiredBefore) {
-                editor.remove(key);
-                changed = true;
-            } else {
-                firstSeenTimes.put(key.substring(FIRST_SEEN_KEY_PREFIX.length()), firstSeen);
-            }
-        }
-
-        if (changed) {
-            editor.apply();
-        }
-        return firstSeenTimes;
     }
 
     /**

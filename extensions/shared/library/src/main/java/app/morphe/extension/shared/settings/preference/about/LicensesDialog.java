@@ -15,8 +15,8 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Lists the software bundled with the patches or downloaded by them. Picking one opens its notices in
- * {@link LicenseTextDialog}, which is full screen because the texts run to hundreds of lines.
+ * Lists the software bundled with the patches or downloaded by them. Picking one opens its notices
+ * full screen, because the texts run to hundreds of lines.
  */
 class LicensesDialog extends AboutWebViewDialog {
 
@@ -51,7 +51,7 @@ class LicensesDialog extends AboutWebViewDialog {
     private static final String LICENSE_ROUTE_PREFIX = "https://license/";
 
     LicensesDialog(@NonNull Context context) {
-        super(context, buildListHtml(context));
+        super(context, buildListHtml(context), false);
     }
 
     @Override
@@ -86,19 +86,6 @@ class LicensesDialog extends AboutWebViewDialog {
         return html.toString();
     }
 
-    @Nullable
-    private static License licenseForRoute(String url) {
-        try {
-            final int index = Integer.parseInt(url.substring(LICENSE_ROUTE_PREFIX.length()));
-            if (index >= 0 && index < dependencies.size()) {
-                return dependencies.get(index);
-            }
-        } catch (NumberFormatException ex) {
-            // Not one of the rows, so it is handled as an ordinary link.
-        }
-        return null;
-    }
-
     /**
      * Opens the rows in a license dialog on top of this one, and leaves every other link to the
      * shared handling that sends it to a browser.
@@ -113,9 +100,33 @@ class LicensesDialog extends AboutWebViewDialog {
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             final String url = request.getUrl().toString();
             if (url.startsWith(LICENSE_ROUTE_PREFIX)) {
-                License license = licenseForRoute(url);
+                License license;
+                licenseForRoute: {
+                    try {
+                        final int index = Integer.parseInt(url.substring(LICENSE_ROUTE_PREFIX.length()));
+                        if (index >= 0 && index < dependencies.size()) {
+                            license = dependencies.get(index);
+                            break licenseForRoute;
+                        }
+                    } catch (NumberFormatException ex) {
+                        // Not one of the rows, so it is handled as an ordinary link.
+                    }
+                    license = null;
+                }
                 if (license != null) {
-                    new LicenseTextDialog(context, license.staticContent()).show();
+                    // The notices of the dependency, full screen because the texts run to hundreds of lines.
+                    // They are pre-formatted English whose alignment only holds left to right, so they
+                    // stay unmirrored even when the surrounding app language reads the other way.
+                    StringBuilder html = new StringBuilder(AboutDialogStyle.documentStart(context));
+                    html.append("<div class=\"license-body\" dir=\"ltr\">");
+                    for (LicenseContent item : license.staticContent()) {
+                        html.append("<h2>").append(AboutDialogStyle.escapeHtml(item.title())).append("</h2>");
+                        // Urls are turned into links, so the addresses named inside a license can be opened.
+                        html.append("<pre>").append(AboutDialogStyle.escapeHtml(item.content())
+                                .replaceAll("(https?://[^\\s<>\"]+)", "<a href='$1'>$1</a>")).append("</pre>");
+                    }
+                    html.append("</div>").append(AboutDialogStyle.DOCUMENT_END);
+                    new AboutWebViewDialog(context, html.toString(), true).show();
                     return true;
                 }
             }

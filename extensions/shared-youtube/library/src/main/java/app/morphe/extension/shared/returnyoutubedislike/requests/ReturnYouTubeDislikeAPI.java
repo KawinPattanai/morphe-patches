@@ -326,7 +326,16 @@ public class ReturnYouTubeDislikeAPI {
             if (checkIfRateLimitInEffect("registerAsNewUser")) {
                 return null;
             }
-            String userID = randomString(36);
+
+            // https://stackoverflow.com/a/157202
+            int len = 36;
+            String AB = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            SecureRandom rnd = new SecureRandom();
+
+            StringBuilder sb = new StringBuilder(len);
+            for (int i = 0; i < len; i++)
+                sb.append(AB.charAt(rnd.nextInt(AB.length())));
+            String userID = sb.toString();
             Logger.printDebug(() -> "Trying to register new user");
 
             HttpURLConnection connection = getRYDConnectionFromRoute(ReturnYouTubeDislikeRoutes.GET_REGISTRATION, userID);
@@ -410,28 +419,6 @@ public class ReturnYouTubeDislikeAPI {
         return null;
     }
 
-    /**
-     * Must call off main thread, as this will make a network call if user is not yet registered.
-     *
-     * @return ReturnYouTubeDislike user ID. If user registration has never happened
-     * and the network call fails, this returns NULL.
-     */
-    @Nullable
-    private static String getUserID() {
-        Utils.verifyOffMainThread();
-
-        String userID = SharedYouTubeSettings.RYD_USER_ID.get();
-        if (!userID.isEmpty()) {
-            return userID;
-        }
-
-        userID = registerAsNewUser();
-        if (userID != null) {
-            SharedYouTubeSettings.RYD_USER_ID.save(userID);
-        }
-        return userID;
-    }
-
     @SuppressWarnings("UnusedReturnValue")
     public static boolean sendVote(String videoId, ReturnYouTubeDislike.Vote vote) {
         Utils.verifyOffMainThread();
@@ -439,7 +426,23 @@ public class ReturnYouTubeDislikeAPI {
         Objects.requireNonNull(vote);
 
         try {
-            String userID = getUserID();
+            // Must call off main thread, as this will make a network call if user is not yet registered.
+            // ReturnYouTubeDislike user ID. If user registration has never happened
+            // and the network call fails, this returns NULL.
+            String userID;
+            getUserID: {
+                Utils.verifyOffMainThread();
+
+                userID = SharedYouTubeSettings.RYD_USER_ID.get();
+                if (!userID.isEmpty()) {
+                    break getUserID;
+                }
+
+                userID = registerAsNewUser();
+                if (userID != null) {
+                    SharedYouTubeSettings.RYD_USER_ID.save(userID);
+                }
+            }
             if (userID == null) return false;
 
             if (checkIfRateLimitInEffect("sendVote")) {
@@ -571,7 +574,26 @@ public class ReturnYouTubeDislikeAPI {
             buffer[3] = (byte) (i >> 24);
             byte[] messageDigest = md.digest(buffer);
 
-            if (countLeadingZeroes(messageDigest) >= difficulty) {
+            int zeroes = 0;
+            for (byte b : messageDigest) {
+                int value = b & 0xFF;
+                if (value == 0) {
+                    zeroes += 8;
+                } else {
+                    int count = 1;
+                    if (value >>> 4 == 0) {
+                        count += 4;
+                        value <<= 4;
+                    }
+                    if (value >>> 6 == 0) {
+                        count += 2;
+                        value <<= 2;
+                    }
+                    zeroes += count - (value >>> 7);
+                    break;
+                }
+            }
+            if (zeroes >= difficulty) {
                 String solution = Base64.encodeToString(new byte[]{buffer[0], buffer[1], buffer[2], buffer[3]}, Base64.NO_WRAP);
                 Logger.printDebug(() -> "Found puzzle solution: " + solution + " of difficulty: " + difficulty
                         + " in: " + (System.currentTimeMillis() - timeSolveStarted) + " ms");
@@ -581,40 +603,5 @@ public class ReturnYouTubeDislikeAPI {
 
         // should never be reached
         throw new IllegalStateException("Failed to solve puzzle challenge: " + challenge + " difficulty: " + difficulty);
-    }
-
-    // https://stackoverflow.com/a/157202
-    @SuppressWarnings("SameParameterValue")
-    private static String randomString(int len) {
-        String AB = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        SecureRandom rnd = new SecureRandom();
-
-        StringBuilder sb = new StringBuilder(len);
-        for (int i = 0; i < len; i++)
-            sb.append(AB.charAt(rnd.nextInt(AB.length())));
-        return sb.toString();
-    }
-
-    private static int countLeadingZeroes(byte[] uInt8View) {
-        int zeroes = 0;
-        for (byte b : uInt8View) {
-            int value = b & 0xFF;
-            if (value == 0) {
-                zeroes += 8;
-            } else {
-                int count = 1;
-                if (value >>> 4 == 0) {
-                    count += 4;
-                    value <<= 4;
-                }
-                if (value >>> 6 == 0) {
-                    count += 2;
-                    value <<= 2;
-                }
-                zeroes += count - (value >>> 7);
-                break;
-            }
-        }
-        return zeroes;
     }
 }

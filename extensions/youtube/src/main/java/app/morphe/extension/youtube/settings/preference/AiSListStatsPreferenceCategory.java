@@ -166,7 +166,19 @@ public class AiSListStatsPreferenceCategory extends PreferenceCategory {
      */
     private String channelsSummary(String cache) {
         if (cache != null && !cache.isBlank()) {
-            return nf.format(countHandles(cache));
+            int countHandles;
+            countHandles: {
+                if (cache == null || cache.isBlank()) {
+                    countHandles = 0;
+                    break countHandles;
+                }
+                int count = 0;
+                for (String line : cache.split("\n")) {
+                    if (!line.isEmpty() && line.charAt(0) == '@') count++;
+                }
+                countHandles = count;
+            }
+            return nf.format(countHandles);
         }
         if (Settings.HIDE_AISLIST_BLOCKLIST_HOME.get()
                 || Settings.HIDE_AISLIST_BLOCKLIST_SEARCH.get()
@@ -191,14 +203,5 @@ public class AiSListStatsPreferenceCategory extends PreferenceCategory {
                 true
         );
         dialogPair.first.show();
-    }
-
-    private static int countHandles(String raw) {
-        if (raw == null || raw.isBlank()) return 0;
-        int count = 0;
-        for (String line : raw.split("\n")) {
-            if (!line.isEmpty() && line.charAt(0) == '@') count++;
-        }
-        return count;
     }
 }

@@ -79,7 +79,15 @@ public final class BufferHideStatsTracker {
 
         data.put(videoId, new Entry(now, source.ordinal()));
         if (data.size() > MAX_TRACKED_VIDEOS) {
-            evictEldest();
+            String eldestKey = null;
+            long eldestTime = Long.MAX_VALUE;
+            for (Map.Entry<String, Entry> e : data.entrySet()) {
+                if (e.getValue().timestamp() < eldestTime) {
+                    eldestTime = e.getValue().timestamp();
+                    eldestKey = e.getKey();
+                }
+            }
+            if (eldestKey != null) data.remove(eldestKey);
         }
         save();
         return true;
@@ -113,18 +121,6 @@ public final class BufferHideStatsTracker {
 
     private void purgeOlderThan(long threshold) {
         data.entrySet().removeIf(e -> e.getValue().timestamp() < threshold);
-    }
-
-    private void evictEldest() {
-        String eldestKey = null;
-        long eldestTime = Long.MAX_VALUE;
-        for (Map.Entry<String, Entry> e : data.entrySet()) {
-            if (e.getValue().timestamp() < eldestTime) {
-                eldestTime = e.getValue().timestamp();
-                eldestKey = e.getKey();
-            }
-        }
-        if (eldestKey != null) data.remove(eldestKey);
     }
 
     private void save() {

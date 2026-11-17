@@ -118,7 +118,57 @@ public final class VideoDetailsRequest {
             executor.execute(() -> {
                 try {
                     if (!isCancelled.getAsBoolean()) {
-                        VideoDetails details = fetchDetails(videoId);
+                        VideoDetails details;
+                        fetchDetails: {
+                            Utils.verifyOffMainThread();
+
+                            try {
+                                JSONObject json = ChannelSearchRoutes.fetch(ChannelSearchRoutes.GET_VIDEO_DETAILS,
+                                        ChannelSearchRoutes.createVideoBody(videoId, Locale.US));
+                                if (json == null) {
+                                    details = null;
+                                    break fetchDetails;
+                                }
+
+                                JSONObject microformat = json.optJSONObject("microformat");
+                                JSONObject renderer = microformat == null ? null
+                                        : microformat.optJSONObject("playerMicroformatRenderer");
+                                String publishDate = renderer == null ? "" : renderer.optString("publishDate");
+                                if (publishDate.isEmpty()) {
+                                    // Videos that need a sign in, such as age restricted ones, have no details.
+                                    Logger.printDebug(() -> "Video has no details: " + videoId);
+                                    details = null;
+                                    break fetchDetails;
+                                }
+
+                                JSONObject videoDetails = json.optJSONObject("videoDetails");
+                                if (videoDetails == null) {
+                                    videoDetails = new JSONObject();
+                                }
+
+                                StringBuilder text = new StringBuilder(videoDetails.optString("shortDescription"));
+                                JSONArray keywords = videoDetails.optJSONArray("keywords");
+                                if (keywords != null) {
+                                    for (int i = 0, length = keywords.length(); i < length; i++) {
+                                        text.append(' ').append(keywords.optString(i));
+                                    }
+                                }
+                                if (text.length() > MAX_TEXT_LENGTH) {
+                                    text.setLength(MAX_TEXT_LENGTH);
+                                }
+
+                                details = new VideoDetails(
+                                        OffsetDateTime.parse(publishDate).toEpochSecond(),
+                                        videoDetails.optLong("viewCount"),
+                                        videoDetails.optLong("lengthSeconds"),
+                                        text.toString()
+                                );
+                                break fetchDetails;
+                            } catch (Exception ex) {
+                                Logger.printException(() -> "Video details failed: " + videoId, ex);
+                            }
+                            details = null;
+                        }
                         if (details != null) {
                             cache.put(videoId, details);
                         }
@@ -140,54 +190,5 @@ public final class VideoDetailsRequest {
         } else if (done.incrementAndGet() % PROGRESS_INTERVAL == 0) {
             callback.onProgress(false);
         }
-    }
-
-    @Nullable
-    private static VideoDetails fetchDetails(String videoId) {
-        Utils.verifyOffMainThread();
-
-        try {
-            JSONObject json = ChannelSearchRoutes.fetch(ChannelSearchRoutes.GET_VIDEO_DETAILS,
-                    ChannelSearchRoutes.createVideoBody(videoId, Locale.US));
-            if (json == null) {
-                return null;
-            }
-
-            JSONObject microformat = json.optJSONObject("microformat");
-            JSONObject renderer = microformat == null ? null
-                    : microformat.optJSONObject("playerMicroformatRenderer");
-            String publishDate = renderer == null ? "" : renderer.optString("publishDate");
-            if (publishDate.isEmpty()) {
-                // Videos that need a sign in, such as age restricted ones, have no details.
-                Logger.printDebug(() -> "Video has no details: " + videoId);
-                return null;
-            }
-
-            JSONObject videoDetails = json.optJSONObject("videoDetails");
-            if (videoDetails == null) {
-                videoDetails = new JSONObject();
-            }
-
-            StringBuilder text = new StringBuilder(videoDetails.optString("shortDescription"));
-            JSONArray keywords = videoDetails.optJSONArray("keywords");
-            if (keywords != null) {
-                for (int i = 0, length = keywords.length(); i < length; i++) {
-                    text.append(' ').append(keywords.optString(i));
-                }
-            }
-            if (text.length() > MAX_TEXT_LENGTH) {
-                text.setLength(MAX_TEXT_LENGTH);
-            }
-
-            return new VideoDetails(
-                    OffsetDateTime.parse(publishDate).toEpochSecond(),
-                    videoDetails.optLong("viewCount"),
-                    videoDetails.optLong("lengthSeconds"),
-                    text.toString()
-            );
-        } catch (Exception ex) {
-            Logger.printException(() -> "Video details failed: " + videoId, ex);
-        }
-        return null;
     }
 }

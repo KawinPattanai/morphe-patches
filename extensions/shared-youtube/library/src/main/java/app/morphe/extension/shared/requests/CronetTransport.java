@@ -113,50 +113,67 @@ public final class CronetTransport {
 
         return new DeferredHttpURLConnection(
                 url,
-                connectTimeout -> openConnectionAfterWaiting(
-                        url,
-                        requireProxy,
-                        allowDirectFallback,
-                        connectTimeout
-                )
-        );
-    }
+                connectTimeout -> {
+                    long waitTimeoutMilliseconds = connectTimeout > 0
+                            ? Math.min(connectTimeout, ENGINE_WAIT_TIMEOUT_MILLISECONDS)
+                            : ENGINE_WAIT_TIMEOUT_MILLISECONDS;
+                    List<CronetEngine> waitedEngines;
+                    awaitEngines: {
+                        long deadlineNanos = System.nanoTime()
+                                + TimeUnit.MILLISECONDS.toNanos(waitTimeoutMilliseconds);
 
-    private static HttpURLConnection openConnectionAfterWaiting(
-            URL url,
-            boolean requireProxy,
-            boolean allowDirectFallback,
-            int connectTimeoutMilliseconds
-    ) throws IOException {
-        long waitTimeoutMilliseconds = connectTimeoutMilliseconds > 0
-                ? Math.min(connectTimeoutMilliseconds, ENGINE_WAIT_TIMEOUT_MILLISECONDS)
-                : ENGINE_WAIT_TIMEOUT_MILLISECONDS;
-        List<CronetEngine> engines = awaitEngines(
-                requireProxy,
-                allowDirectFallback,
-                waitTimeoutMilliseconds
-        );
+                        synchronized (ENGINE_LOCK) {
+                            while (true) {
+                                List<CronetEngine> eligibleEngines = getEligibleEnginesLocked(
+                                        requireProxy,
+                                        allowDirectFallback
+                                );
+                                if (!eligibleEngines.isEmpty() || Utils.isCurrentlyOnMainThread()) {
+                                    waitedEngines = eligibleEngines;
+                                    break awaitEngines;
+                                }
 
-        HttpURLConnection connection = createCronetConnectionChain(url, engines);
-        if (connection != null) {
-            return addDirectHttpFallback(url, connection, allowDirectFallback);
-        }
+                                long remainingNanos = deadlineNanos - System.nanoTime();
+                                if (remainingNanos <= 0) {
+                                    waitedEngines = eligibleEngines;
+                                    break awaitEngines;
+                                }
 
-        boolean https = "https".equalsIgnoreCase(url.getProtocol());
-        if (allowDirectFallback && !https) {
-            return openDirectHttpConnection(url);
-        }
+                                try {
+                                    long waitMilliseconds = TimeUnit.NANOSECONDS.toMillis(remainingNanos);
+                                    int waitNanoseconds = (int) (remainingNanos
+                                            - TimeUnit.MILLISECONDS.toNanos(waitMilliseconds));
+                                    ENGINE_LOCK.wait(waitMilliseconds, waitNanoseconds);
+                                } catch (InterruptedException ex) {
+                                    Thread.currentThread().interrupt();
+                                    throw new IOException("Interrupted while waiting for a Cronet engine", ex);
+                                }
+                            }
+                        }
+                    }
 
-        if (connectTimeoutMilliseconds > 0
-                && waitTimeoutMilliseconds == connectTimeoutMilliseconds
-                && !Utils.isCurrentlyOnMainThread()) {
-            throw new SocketTimeoutException("Timed out waiting for a Cronet engine");
-        }
+                    HttpURLConnection cronetConnection = createCronetConnectionChain(url, waitedEngines);
+                    if (cronetConnection != null) {
+                        return addDirectHttpFallback(url, cronetConnection, allowDirectFallback);
+                    }
 
-        throw new IOException(
-                https
-                        ? "Cronet engine is not available; platform HTTPS fallback is disabled"
-                        : "Cronet engine is not available"
+                    boolean isHttps = "https".equalsIgnoreCase(url.getProtocol());
+                    if (allowDirectFallback && !isHttps) {
+                        return openDirectHttpConnection(url);
+                    }
+
+                    if (connectTimeout > 0
+                            && waitTimeoutMilliseconds == connectTimeout
+                            && !Utils.isCurrentlyOnMainThread()) {
+                        throw new SocketTimeoutException("Timed out waiting for a Cronet engine");
+                    }
+
+                    throw new IOException(
+                            isHttps
+                                    ? "Cronet engine is not available; platform HTTPS fallback is disabled"
+                                    : "Cronet engine is not available"
+                    );
+                }
         );
     }
 
@@ -177,42 +194,6 @@ public final class CronetTransport {
                         ex
                 )
         );
-    }
-
-    private static List<CronetEngine> awaitEngines(
-            boolean requireProxy,
-            boolean allowDirectFallback,
-            long waitTimeoutMilliseconds
-    ) throws IOException {
-        long deadlineNanos = System.nanoTime()
-                + TimeUnit.MILLISECONDS.toNanos(waitTimeoutMilliseconds);
-
-        synchronized (ENGINE_LOCK) {
-            while (true) {
-                List<CronetEngine> engines = getEligibleEnginesLocked(
-                        requireProxy,
-                        allowDirectFallback
-                );
-                if (!engines.isEmpty() || Utils.isCurrentlyOnMainThread()) {
-                    return engines;
-                }
-
-                long remainingNanos = deadlineNanos - System.nanoTime();
-                if (remainingNanos <= 0) {
-                    return engines;
-                }
-
-                try {
-                    long waitMilliseconds = TimeUnit.NANOSECONDS.toMillis(remainingNanos);
-                    int waitNanoseconds = (int) (remainingNanos
-                            - TimeUnit.MILLISECONDS.toNanos(waitMilliseconds));
-                    ENGINE_LOCK.wait(waitMilliseconds, waitNanoseconds);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    throw new IOException("Interrupted while waiting for a Cronet engine", ex);
-                }
-            }
-        }
     }
 
     private static List<CronetEngine> getEligibleEnginesLocked(

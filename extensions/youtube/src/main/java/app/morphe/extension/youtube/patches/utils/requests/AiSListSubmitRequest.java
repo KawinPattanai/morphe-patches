@@ -51,26 +51,6 @@ public final class AiSListSubmitRequest {
     private AiSListSubmitRequest() {
     }
 
-    private static String createPlayerBody(String videoId) throws JSONException {
-        JSONObject client = new JSONObject();
-        client.put("clientName", "WEB");
-        client.put("clientVersion", WEB_CLIENT_VERSION);
-        Locale locale = Locale.getDefault();
-        client.put("hl", locale.getLanguage());
-        client.put("gl", locale.getCountry());
-
-        JSONObject context = new JSONObject();
-        context.put("client", client);
-
-        JSONObject body = new JSONObject();
-        body.put("context", context);
-        body.put("contentCheckOk", true);
-        body.put("racyCheckOk", true);
-        body.put("videoId", videoId);
-
-        return body.toString();
-    }
-
     /**
      * @return The '@handle' of the channel that published the video, or null if it cannot be found.
      */
@@ -83,7 +63,23 @@ public final class AiSListSubmitRequest {
             connection = openPostConnection(PLAYER_URL);
             connection.setRequestProperty("X-YouTube-Client-Name", "1");
             connection.setRequestProperty("X-YouTube-Client-Version", WEB_CLIENT_VERSION);
-            writeBody(connection, createPlayerBody(videoId));
+            JSONObject client = new JSONObject();
+            client.put("clientName", "WEB");
+            client.put("clientVersion", WEB_CLIENT_VERSION);
+            Locale locale = Locale.getDefault();
+            client.put("hl", locale.getLanguage());
+            client.put("gl", locale.getCountry());
+
+            JSONObject context = new JSONObject();
+            context.put("client", client);
+
+            JSONObject body = new JSONObject();
+            body.put("context", context);
+            body.put("contentCheckOk", true);
+            body.put("racyCheckOk", true);
+            body.put("videoId", videoId);
+            String playerBody = body.toString();
+            writeBody(connection, playerBody);
 
             final int responseCode = connection.getResponseCode();
             if (responseCode != HttpURLConnection.HTTP_OK) {
@@ -103,7 +99,37 @@ public final class AiSListSubmitRequest {
             }
             String handle = Uri.decode(profileUrl.substring(handleIndex));
 
-            return isValidHandle(handle) ? handle : null;
+            // Mirrors the field rules of the API, which no longer rejects malformed handles itself.
+            boolean isValidHandle;
+            isValidHandle: {
+                final int codePointCount = handle.codePointCount(0, handle.length());
+                if (codePointCount < 4 || codePointCount > MAX_HANDLE_LENGTH) {
+                    isValidHandle = false;
+                    break isValidHandle;
+                }
+
+                for (int i = 1; i < handle.length();) {
+                    final int codePoint = handle.codePointAt(i);
+                    final int type = Character.getType(codePoint);
+
+                    if (!Character.isLetterOrDigit(codePoint)
+                            && type != Character.NON_SPACING_MARK
+                            && type != Character.COMBINING_SPACING_MARK
+                            && type != Character.ENCLOSING_MARK
+                            && codePoint != '_'
+                            && codePoint != '-'
+                            && codePoint != '.'
+                            && codePoint != '·') {
+                        isValidHandle = false;
+                        break isValidHandle;
+                    }
+
+                    i += Character.charCount(codePoint);
+                }
+
+                isValidHandle = true;
+            }
+            return isValidHandle ? handle : null;
         } catch (Exception ex) {
             Logger.printInfo(() -> "fetchChannelHandle failed for video: " + videoId, ex);
             return null;
@@ -158,36 +184,6 @@ public final class AiSListSubmitRequest {
         } finally {
             if (connection != null) connection.disconnect();
         }
-    }
-
-    /**
-     * Mirrors the field rules of the API, which no longer rejects malformed handles itself.
-     */
-    private static boolean isValidHandle(String handle) {
-        final int codePointCount = handle.codePointCount(0, handle.length());
-        if (codePointCount < 4 || codePointCount > MAX_HANDLE_LENGTH) {
-            return false;
-        }
-
-        for (int i = 1; i < handle.length();) {
-            final int codePoint = handle.codePointAt(i);
-            final int type = Character.getType(codePoint);
-
-            if (!Character.isLetterOrDigit(codePoint)
-                    && type != Character.NON_SPACING_MARK
-                    && type != Character.COMBINING_SPACING_MARK
-                    && type != Character.ENCLOSING_MARK
-                    && codePoint != '_'
-                    && codePoint != '-'
-                    && codePoint != '.'
-                    && codePoint != '·') {
-                return false;
-            }
-
-            i += Character.charCount(codePoint);
-        }
-
-        return true;
     }
 
     private static HttpURLConnection openPostConnection(String url) throws Exception {

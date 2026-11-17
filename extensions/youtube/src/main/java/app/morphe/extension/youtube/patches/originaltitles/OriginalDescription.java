@@ -80,7 +80,73 @@ final class OriginalDescription {
             Logger.printDebug(() -> "Description body not found");
             return false;
         }
-        List<String> originalTexts = splitAtAttachments(segments, originalDescription);
+
+        // is not found in the original description.
+        List<String> originalTexts;
+        splitAtAttachments: {
+            originalTexts = new ArrayList<>();
+            int textStart = 0;
+            boolean previousIsText = false;
+
+            for (ProtoNode segment : segments) {
+                List<ProtoNode> segmentFields = segment.children;
+                if (ProtoNode.field(segmentFields, SEGMENT_TEXT_FIELD) != null) {
+                    if (previousIsText) {
+                        originalTexts = null;
+                        break splitAtAttachments;
+                    }
+                    previousIsText = true;
+                    continue;
+                }
+
+                // The link is the first link that includes a text of the attachment
+                // as a part of the link, such as the handle or the channel id of a channel card.
+                int linkStart = originalDescription.length();
+                int linkEnd = -1;
+                for (ProtoNode node : ProtoNode.textNodes(segmentFields)) {
+                    String text = node.getText();
+                    final int textLength = text.length();
+                    for (int index = originalDescription.indexOf(text, textStart); index >= 0 && index < linkStart;
+                         index = originalDescription.indexOf(text, index + 1)) {
+                        final int end = index + textLength;
+                        final int start = tokenStart(originalDescription, index, textStart);
+                        // The text is a whole part of a link, such as a path segment or a query value.
+                        if (index > start
+                                && originalDescription.lastIndexOf('/', index - 1) >= start
+                                && !isNameCharacter(originalDescription.codePointBefore(index))
+                                && (end == originalDescription.length() || !isNameCharacter(originalDescription.codePointAt(end)))) {
+                            linkStart = start;
+                            // The link ends at the end of the token.
+                            linkEnd = end;
+                            final int length = originalDescription.length();
+                            while (linkEnd < length && !Character.isWhitespace(originalDescription.charAt(linkEnd))) {
+                                linkEnd++;
+                            }
+                            break;
+                        }
+                    }
+                }
+                int[] link = linkEnd < 0 ? null : new int[]{linkStart, linkEnd};
+                if (link == null) {
+                    originalTexts = null;
+                    break splitAtAttachments;
+                }
+                if (previousIsText) {
+                    // Attachments are shown on their own line.
+                    int textEnd = link[0];
+                    if (textEnd > textStart && originalDescription.charAt(textEnd - 1) == '\n') {
+                        textEnd--;
+                    }
+                    originalTexts.add(originalDescription.substring(textStart, textEnd));
+                }
+                textStart = link[1];
+                previousIsText = false;
+            }
+
+            if (previousIsText) {
+                originalTexts.add(originalDescription.substring(textStart));
+            }
+        }
         if (originalTexts == null) {
             // The shown description is not a translation of the original description,
             // such as a description localized by the uploader with other attachments.
@@ -167,78 +233,6 @@ final class OriginalDescription {
         return null;
     }
 
-    /**
-     * @return The original texts of the text segments, or null if an attachment
-     *         is not found in the original description.
-     */
-    @Nullable
-    private static List<String> splitAtAttachments(List<ProtoNode> segments, String description) {
-        List<String> texts = new ArrayList<>();
-        int textStart = 0;
-        boolean previousIsText = false;
-
-        for (ProtoNode segment : segments) {
-            List<ProtoNode> segmentFields = segment.children;
-            if (ProtoNode.field(segmentFields, SEGMENT_TEXT_FIELD) != null) {
-                if (previousIsText) {
-                    return null;
-                }
-                previousIsText = true;
-                continue;
-            }
-
-            int[] link = findAttachmentLink(segmentFields, description, textStart);
-            if (link == null) {
-                return null;
-            }
-            if (previousIsText) {
-                // Attachments are shown on their own line.
-                int textEnd = link[0];
-                if (textEnd > textStart && description.charAt(textEnd - 1) == '\n') {
-                    textEnd--;
-                }
-                texts.add(description.substring(textStart, textEnd));
-            }
-            textStart = link[1];
-            previousIsText = false;
-        }
-
-        if (previousIsText) {
-            texts.add(description.substring(textStart));
-        }
-        return texts;
-    }
-
-    /**
-     * @return The range of the link of the attachment, or null if not found.
-     *         The link is the first link that includes a text of the attachment
-     *         as a part of the link, such as the handle or the channel id of a channel card.
-     */
-    @Nullable
-    private static int[] findAttachmentLink(List<ProtoNode> attachment, String description, int from) {
-        int linkStart = description.length();
-        int linkEnd = -1;
-        for (ProtoNode node : ProtoNode.textNodes(attachment)) {
-            String text = node.getText();
-            final int textLength = text.length();
-            for (int index = description.indexOf(text, from); index >= 0 && index < linkStart;
-                 index = description.indexOf(text, index + 1)) {
-                final int end = index + textLength;
-                final int start = tokenStart(description, index, from);
-                // The text is a whole part of a link, such as a path segment or a query value.
-                if (index > start
-                        && description.lastIndexOf('/', index - 1) >= start
-                        && !isNameCharacter(description.codePointBefore(index))
-                        && (end == description.length() || !isNameCharacter(description.codePointAt(end)))) {
-                    linkStart = start;
-                    linkEnd = tokenEnd(description, end);
-                    break;
-                }
-            }
-        }
-        return linkEnd < 0 ? null : new int[]{linkStart, linkEnd};
-    }
-
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private static boolean isNameCharacter(int codePoint) {
         return RestoreOriginalTitlesPatch.isWordCodePoint(codePoint) || codePoint == '_' || codePoint == '-' || codePoint == '.';
@@ -274,45 +268,8 @@ final class OriginalDescription {
         }
 
         final int translatedLength = translatedText.length();
-        List<Anchor> anchors = findAnchors(text, content, translatedLength);
-
-        // Runs are shown as in the translated text, such as shortened links and social icons.
-        StringBuilder restored = new StringBuilder();
-        int originalIndex = 0;
-        int anchorsEnd = 0;
-        for (Anchor anchor : anchors) {
-            if (anchor.start < anchorsEnd || anchor.end - anchor.start == translatedLength) {
-                continue; // Inside another run, or the entire text.
-            }
-            String runText = translatedText.substring(anchor.start, anchor.end);
-            int[] originalRun = findRunText(anchor.runs, runText, originalText, originalIndex);
-            if (originalRun == null) {
-                continue;
-            }
-
-            restored.append(originalText, originalIndex, originalRun[0]);
-            anchor.restoredStart = restored.length();
-            restored.append(runText);
-            originalIndex = originalRun[1];
-            anchorsEnd = anchor.end;
-        }
-        restored.append(originalText, originalIndex, originalText.length());
-        final int restoredLength = restored.length();
-
-        for (Anchor anchor : anchors) {
-            for (ProtoNode run : anchor.runs) {
-                moveRun(run, anchor, anchors, translatedLength, restoredLength);
-            }
-        }
-        content.setText(restored.toString());
-        return true;
-    }
-
-    /**
-     * @return The runs grouped by range, ordered by start and then by the longest range.
-     */
-    private static List<Anchor> findAnchors(List<ProtoNode> text, ProtoNode content, int textLength) {
-        Map<Long, Anchor> anchors = new LinkedHashMap<>();
+        // The runs grouped by range, ordered by start and then by the longest range.
+        Map<Long, Anchor> anchorsByRange = new LinkedHashMap<>();
         for (ProtoNode run : new ArrayList<>(text)) {
             List<ProtoNode> runFields = run.children;
             if (run == content || runFields == null) {
@@ -333,126 +290,138 @@ final class OriginalDescription {
             }
             final int start = rangeStart.intValue();
             final int end = (int) (rangeStart + rangeLength);
-            if (start < 0 || end < start || end > textLength) {
+            if (start < 0 || end < start || end > translatedLength) {
                 run.remove();
                 continue;
             }
-            anchors.computeIfAbsent(((long) start << 32) | end, key -> new Anchor(start, end))
+            anchorsByRange.computeIfAbsent(((long) start << 32) | end, key -> new Anchor(start, end))
                     .runs.add(run);
         }
 
-        List<Anchor> sorted = new ArrayList<>(anchors.values());
+        List<Anchor> sorted = new ArrayList<>(anchorsByRange.values());
         sorted.sort((a, b) -> a.start != b.start
                 ? Integer.compare(a.start, b.start)
                 : Integer.compare(b.end, a.end));
-        return sorted;
-    }
+        List<Anchor> anchors = sorted;
 
-    /**
-     * @return The range of the text of the runs in the original text, or null if not found.
-     *         Found with the text, or with the urls of the runs if the text is shortened.
-     */
-    @Nullable
-    private static int[] findRunText(List<ProtoNode> runs, String runText, String originalText, int from) {
-        final int originalLength = originalText.length();
-        int foundStart = originalLength;
-        int foundEnd = -1;
-
-        String trimmedText = trim(runText);
-        if (!trimmedText.isEmpty()) {
-            int index = originalText.indexOf(trimmedText, from);
-            if (index >= 0) {
-                foundStart = index;
-                foundEnd = index + trimmedText.length();
+        // Runs are shown as in the translated text, such as shortened links and social icons.
+        StringBuilder restored = new StringBuilder();
+        int originalIndex = 0;
+        int anchorsEnd = 0;
+        for (Anchor anchor : anchors) {
+            if (anchor.start < anchorsEnd || anchor.end - anchor.start == translatedLength) {
+                continue; // Inside another run, or the entire text.
             }
-        }
+            String runText = translatedText.substring(anchor.start, anchor.end);
+            // The range of the text of the runs in the original text, or null if not found.
+            // Found with the text, or with the urls of the runs if the text is shortened.
+            List<ProtoNode> anchorRuns = anchor.runs;
+            final int originalLength = originalText.length();
+            int foundStart = originalLength;
+            int foundEnd = -1;
 
-        for (ProtoNode run : runs) {
-            for (String url : findUrls(run.children)) {
-                int index = originalText.indexOf(url, from);
-                if (index < 0 || index >= foundStart) {
-                    continue;
+            String trimmedText = trim(runText);
+            if (!trimmedText.isEmpty()) {
+                int index = originalText.indexOf(trimmedText, originalIndex);
+                if (index >= 0) {
+                    foundStart = index;
+                    foundEnd = index + trimmedText.length();
                 }
-                int end = index + url.length();
-                // The trailing slash is not part of the url.
-                if (end < originalLength && originalText.charAt(end) == '/') {
-                    end++;
-                }
-                foundStart = tokenStart(originalText, index, from);
-                foundEnd = end;
             }
-        }
 
-        return foundEnd < 0 ? null : new int[]{foundStart, foundEnd};
-    }
+            for (ProtoNode run : anchorRuns) {
+                // The urls of the run, as shown: without the scheme, "www." and the last "/".
+                List<String> urls = new ArrayList<>();
+                for (ProtoNode node : ProtoNode.textNodes(run.children)) {
+                    Uri uri = Uri.parse(node.getText());
+                    String host = uri.getHost();
+                    if (host == null) {
+                        continue;
+                    }
+                    // Redirects include the url as a query parameter.
+                    String redirectUrl = uri.getQueryParameter("q");
+                    if (redirectUrl != null) {
+                        uri = Uri.parse(redirectUrl);
+                        host = uri.getHost();
+                        if (host == null) {
+                            continue;
+                        }
+                    }
 
-    /**
-     * @return The urls of the run without the scheme, the 'www.' host prefix and the trailing slash,
-     *         as the description can include the url with or without any of them.
-     */
-    private static List<String> findUrls(List<ProtoNode> run) {
-        List<String> urls = new ArrayList<>();
-        for (ProtoNode node : ProtoNode.textNodes(run)) {
-            Uri uri = Uri.parse(node.getText());
-            String host = uri.getHost();
-            if (host == null) {
+                    String url = uri.toString();
+                    url = url.substring(url.indexOf(host));
+                    if (url.startsWith("www.")) {
+                        url = url.substring("www.".length());
+                    }
+                    if (url.endsWith("/")) {
+                        url = url.substring(0, url.length() - 1);
+                    }
+                    urls.add(url);
+                }
+                for (String url : urls) {
+                    int index = originalText.indexOf(url, originalIndex);
+                    if (index < 0 || index >= foundStart) {
+                        continue;
+                    }
+                    int end = index + url.length();
+                    // The trailing slash is not part of the url.
+                    if (end < originalLength && originalText.charAt(end) == '/') {
+                        end++;
+                    }
+                    foundStart = tokenStart(originalText, index, originalIndex);
+                    foundEnd = end;
+                }
+            }
+            int[] originalRun = foundEnd < 0 ? null : new int[]{foundStart, foundEnd};
+            if (originalRun == null) {
                 continue;
             }
-            // Redirects include the url as a query parameter.
-            String redirectUrl = uri.getQueryParameter("q");
-            if (redirectUrl != null) {
-                uri = Uri.parse(redirectUrl);
-                host = uri.getHost();
-                if (host == null) {
-                    continue;
+
+            restored.append(originalText, originalIndex, originalRun[0]);
+            anchor.restoredStart = restored.length();
+            restored.append(runText);
+            originalIndex = originalRun[1];
+            anchorsEnd = anchor.end;
+        }
+        restored.append(originalText, originalIndex, originalText.length());
+        final int restoredLength = restored.length();
+
+        for (Anchor anchor : anchors) {
+            for (ProtoNode run : anchor.runs) {
+                // Moves the run to the same text in the restored text, or removes it if the text is not found.
+                moveRun: {
+                    int start = -1;
+                    int length = anchor.end - anchor.start;
+                    for (Anchor other : anchors) {
+                        if (other.restoredStart >= 0 && anchor.start >= other.start && anchor.end <= other.end) {
+                            start = other.restoredStart + anchor.start - other.start;
+                            break;
+                        }
+                    }
+                    if (start < 0 && length == translatedLength) {
+                        start = 0;
+                        length = restoredLength;
+                    }
+                    List<ProtoNode> runFields = run.children;
+                    List<ProtoNode> rangeMessage = runFields == null ? null : findRangeMessage(runFields);
+                    ProtoNode startNode = rangeMessage == null ? null : ProtoNode.field(rangeMessage, RANGE_START_FIELD);
+                    if (start < 0 || startNode == null) {
+                        run.remove();
+                        break moveRun;
+                    }
+
+                    ProtoNode lengthNode = ProtoNode.field(rangeMessage, RANGE_LENGTH_FIELD);
+                    if (!Long.valueOf(start).equals(startNode.getVarint())) {
+                        startNode.setVarint(start);
+                    }
+                    if (lengthNode != null && !Long.valueOf(length).equals(lengthNode.getVarint())) {
+                        lengthNode.setVarint(length);
+                    }
                 }
             }
-
-            String url = uri.toString();
-            url = url.substring(url.indexOf(host));
-            if (url.startsWith("www.")) {
-                url = url.substring("www.".length());
-            }
-            if (url.endsWith("/")) {
-                url = url.substring(0, url.length() - 1);
-            }
-            urls.add(url);
         }
-        return urls;
-    }
-
-    /**
-     * Moves the run to the same text in the restored text, or removes it if the text is not found.
-     */
-    private static void moveRun(ProtoNode run, Anchor anchor, List<Anchor> anchors,
-                                int translatedLength, int restoredLength) {
-        int start = -1;
-        int length = anchor.end - anchor.start;
-        for (Anchor other : anchors) {
-            if (other.restoredStart >= 0 && anchor.start >= other.start && anchor.end <= other.end) {
-                start = other.restoredStart + anchor.start - other.start;
-                break;
-            }
-        }
-        if (start < 0 && length == translatedLength) {
-            start = 0;
-            length = restoredLength;
-        }
-        List<ProtoNode> runFields = run.children;
-        List<ProtoNode> rangeMessage = runFields == null ? null : findRangeMessage(runFields);
-        ProtoNode startNode = rangeMessage == null ? null : ProtoNode.field(rangeMessage, RANGE_START_FIELD);
-        if (start < 0 || startNode == null) {
-            run.remove();
-            return;
-        }
-
-        ProtoNode lengthNode = ProtoNode.field(rangeMessage, RANGE_LENGTH_FIELD);
-        if (!Long.valueOf(start).equals(startNode.getVarint())) {
-            startNode.setVarint(start);
-        }
-        if (lengthNode != null && !Long.valueOf(length).equals(lengthNode.getVarint())) {
-            lengthNode.setVarint(length);
-        }
+        content.setText(restored.toString());
+        return true;
     }
 
     @Nullable
@@ -498,14 +467,6 @@ final class OriginalDescription {
     private static int tokenStart(String text, int index, int from) {
         while (index > from && !Character.isWhitespace(text.charAt(index - 1))) {
             index--;
-        }
-        return index;
-    }
-
-    private static int tokenEnd(String text, int index) {
-        final int length = text.length();
-        while (index < length && !Character.isWhitespace(text.charAt(index))) {
-            index++;
         }
         return index;
     }

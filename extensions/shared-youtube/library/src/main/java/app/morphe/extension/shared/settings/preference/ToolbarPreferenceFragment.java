@@ -75,10 +75,33 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
     protected void setPreferenceScreenToolbar(PreferenceScreen parentScreen) {
         for (int i = 0, count = parentScreen.getPreferenceCount(); i < count; i++) {
             Preference childPreference = parentScreen.getPreference(i);
-            setPreferenceIconColor(childPreference);
+            // Colors the icon of a preference, which is drawn with the text color of the platform and
+            // not with the color the app uses for its foreground.
+            setPreferenceIconColor: {
+                Drawable icon = childPreference.getIcon();
+                if (icon == null) {
+                    break setPreferenceIconColor;
+                }
+
+                // Mutate, otherwise every user of the same drawable is colored as well.
+                Drawable mutated = icon.mutate();
+                mutated.setTint(ThemeUtils.getAppForegroundColor());
+                childPreference.setIcon(mutated);
+            }
 
             if (childPreference instanceof PreferenceScreen) {
-                ScreenInfoCategory screenInfo = removeScreenInfo((PreferenceScreen) childPreference);
+                ScreenInfoCategory foundScreenInfo = null;
+                PreferenceScreen screen = (PreferenceScreen) childPreference;
+                for (int index = 0, preferenceCount = screen.getPreferenceCount(); index < preferenceCount; index++) {
+                    Preference preference = screen.getPreference(index);
+                    if (preference instanceof ScreenInfoCategory info) {
+                        // Removed before search collects the preferences, the text is only for the dialog.
+                        screen.removePreference(preference);
+                        foundScreenInfo = info;
+                        break;
+                    }
+                }
+                final ScreenInfoCategory screenInfo = foundScreenInfo;
 
                 // Recursively set sub preferences.
                 setPreferenceScreenToolbar((PreferenceScreen) childPreference);
@@ -91,7 +114,7 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
                                     .getParent();
 
                             // Allow package-specific background customization.
-                            customizeDialogBackground(rootView);
+                            rootView.setBackgroundColor(ThemeUtils.getAppBackgroundColor());
 
                             // Fix the system navigation bar color for submenus.
                             setNavigationBarColor(preferenceScreenDialog.getWindow());
@@ -156,19 +179,6 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
                 );
             }
         }
-    }
-
-    @Nullable
-    private static ScreenInfoCategory removeScreenInfo(PreferenceScreen screen) {
-        for (int i = 0, count = screen.getPreferenceCount(); i < count; i++) {
-            Preference preference = screen.getPreference(i);
-            if (preference instanceof ScreenInfoCategory) {
-                // Removed before search collects the preferences, the text is only for the dialog.
-                screen.removePreference(preference);
-                return (ScreenInfoCategory) preference;
-            }
-        }
-        return null;
     }
 
     /**
@@ -240,22 +250,6 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
     }
 
     /**
-     * Colors the icon of a preference, which is drawn with the text color of the platform and
-     * not with the color the app uses for its foreground.
-     */
-    private static void setPreferenceIconColor(Preference preference) {
-        Drawable icon = preference.getIcon();
-        if (icon == null) {
-            return;
-        }
-
-        // Mutate, otherwise every user of the same drawable is colored as well.
-        Drawable mutated = icon.mutate();
-        mutated.setTint(ThemeUtils.getAppForegroundColor());
-        preference.setIcon(mutated);
-    }
-
-    /**
      * Returns the drawable for the back button.
      */
     @SuppressLint("UseCompatLoadingForDrawables")
@@ -264,22 +258,8 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
                 Utils.appIsUsingBoldIcons()
                         ? "morphe_settings_toolbar_arrow_left_bold"
                         : "morphe_settings_toolbar_arrow_left");
-        customizeBackButtonDrawable(drawable);
-        return drawable;
-    }
-
-    /**
-     * Customizes the back button drawable.
-     */
-    protected static void customizeBackButtonDrawable(Drawable drawable) {
         drawable.setTint(ThemeUtils.getAppForegroundColor());
-    }
-
-    /**
-     * Allows subclasses to customize the dialog's root view background.
-     */
-    protected void customizeDialogBackground(ViewGroup rootView) {
-        rootView.setBackgroundColor(ThemeUtils.getAppBackgroundColor());
+        return drawable;
     }
 
     /**

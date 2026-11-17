@@ -247,7 +247,15 @@ public final class NewSegmentLayout extends FrameLayout {
             case MotionEvent.ACTION_UP:
                 isDragging = false;
                 clampTranslationToBounds();
-                saveRelativePosition();
+                saveRelativePosition: {
+                    ViewGroup parent = (ViewGroup) getParent();
+                    if (parent == null || parent.getWidth() == 0 || parent.getHeight() == 0) break saveRelativePosition;
+                    // Save as fractions of parent dimensions so the position scales correctly on rotation.
+                    // & 0xFFFFFFFFL prevents sign extension when widening the Y int bits to long.
+                    Settings.SB_NEW_SEGMENT_PANEL_POSITION.save(
+                            (long) Float.floatToIntBits(getTranslationX() / parent.getWidth()) << 32
+                                    | (Float.floatToIntBits(getTranslationY() / parent.getHeight()) & 0xFFFFFFFFL));
+                }
                 performClick();
                 return true;
             case MotionEvent.ACTION_CANCEL:
@@ -276,16 +284,6 @@ public final class NewSegmentLayout extends FrameLayout {
         final float transY = Math.max(-top, Math.min(getTranslationY(), parent.getHeight() - top - height));
         setTranslationX(transX);
         setTranslationY(transY);
-    }
-
-    private void saveRelativePosition() {
-        ViewGroup parent = (ViewGroup) getParent();
-        if (parent == null || parent.getWidth() == 0 || parent.getHeight() == 0) return;
-        // Save as fractions of parent dimensions so the position scales correctly on rotation.
-        // & 0xFFFFFFFFL prevents sign extension when widening the Y int bits to long.
-        Settings.SB_NEW_SEGMENT_PANEL_POSITION.save(
-                (long) Float.floatToIntBits(getTranslationX() / parent.getWidth()) << 32
-                        | (Float.floatToIntBits(getTranslationY() / parent.getHeight()) & 0xFFFFFFFFL));
     }
 
     void showWithAnimation() {

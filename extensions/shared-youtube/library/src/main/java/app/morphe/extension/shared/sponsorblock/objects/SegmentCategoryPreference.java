@@ -78,7 +78,22 @@ public class SegmentCategoryPreference extends ColorPickerPreference {
         super.onAttachedToHierarchy(preferenceManager);
         if (category == null) {
             String key = getKey();
-            SegmentCategory resolved = byColorSettingKey(key);
+            SegmentCategory resolved;
+            byColorSettingKey: {
+                if (key == null) {
+                    resolved = null;
+                    break byColorSettingKey;
+                }
+                // activeCategories() respects Configuration.includesHighlight(); the full set would call
+                // colorFor() on categories the host has not registered and throw.
+                for (SegmentCategory category : SegmentCategory.activeCategories()) {
+                    if (key.equals(category.colorSetting().key)) {
+                        resolved = category;
+                        break byColorSettingKey;
+                    }
+                }
+                resolved = null;
+            }
             if (resolved == null) {
                 throw new IllegalStateException(
                         "SegmentCategoryPreference: no SegmentCategory matches key: " + key);
@@ -191,7 +206,27 @@ public class SegmentCategoryPreference extends ColorPickerPreference {
         SpannableStringBuilder summary = new SpannableStringBuilder(behaviour.description.toString());
         // Accent shows the behavior is a changeable value, gray when it has no effect.
         if (isEnabled() && behaviour != CategoryBehaviour.IGNORE) {
-            summary.setSpan(new ForegroundColorSpan(getAccentColor()), 0, summary.length(),
+            // The color of the settings switches. The accent of the settings theme is the text color.
+            int accentColor;
+            getAccentColor: {
+                Context context = getContext();
+                TypedValue value = new TypedValue();
+                final int attribute = ResourceUtils.getIdentifier(ResourceType.ATTR, "colorControlActivated");
+                if (attribute != 0 && context.getTheme().resolveAttribute(attribute, value, true)) {
+                    if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT && value.type <= TypedValue.TYPE_LAST_COLOR_INT) {
+                        accentColor = value.data;
+                        break getAccentColor;
+                    }
+                    if (value.resourceId != 0) {
+                        accentColor = context.getColorStateList(value.resourceId).getDefaultColor();
+                        break getAccentColor;
+                    }
+                }
+
+                context.getTheme().resolveAttribute(android.R.attr.colorAccent, value, true);
+                accentColor = value.data;
+            }
+            summary.setSpan(new ForegroundColorSpan(accentColor), 0, summary.length(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         summary.append('\n').append(category.description.toString());
@@ -204,26 +239,6 @@ public class SegmentCategoryPreference extends ColorPickerPreference {
     private static CategoryBehaviour savedBehaviour(SegmentCategory category) {
         CategoryBehaviour behaviour = CategoryBehaviour.byMorpheKeyValue(category.behaviorSetting().get());
         return behaviour != null ? behaviour : category.behaviour;
-    }
-
-    /**
-     * The color of the settings switches. The accent of the settings theme is the text color.
-     */
-    private int getAccentColor() {
-        Context context = getContext();
-        TypedValue value = new TypedValue();
-        final int attribute = ResourceUtils.getIdentifier(ResourceType.ATTR, "colorControlActivated");
-        if (attribute != 0 && context.getTheme().resolveAttribute(attribute, value, true)) {
-            if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT && value.type <= TypedValue.TYPE_LAST_COLOR_INT) {
-                return value.data;
-            }
-            if (value.resourceId != 0) {
-                return context.getColorStateList(value.resourceId).getDefaultColor();
-            }
-        }
-
-        context.getTheme().resolveAttribute(android.R.attr.colorAccent, value, true);
-        return value.data;
     }
 
     @Override
@@ -281,18 +296,5 @@ public class SegmentCategoryPreference extends ColorPickerPreference {
                 preference.showDialog(null);
             }
         });
-    }
-
-    @Nullable
-    private static SegmentCategory byColorSettingKey(@Nullable String colorSettingKey) {
-        if (colorSettingKey == null) return null;
-        // activeCategories() respects Configuration.includesHighlight(); the full set would call
-        // colorFor() on categories the host has not registered and throw.
-        for (SegmentCategory category : SegmentCategory.activeCategories()) {
-            if (colorSettingKey.equals(category.colorSetting().key)) {
-                return category;
-            }
-        }
-        return null;
     }
 }

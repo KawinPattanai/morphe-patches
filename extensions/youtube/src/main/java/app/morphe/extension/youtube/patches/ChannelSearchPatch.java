@@ -107,7 +107,59 @@ public final class ChannelSearchPatch {
             final long now = System.currentTimeMillis() / 1000;
             Map<String, Long> keys = new HashMap<>(2 * results.size());
             for (ChannelSearchResult result : results) {
-                keys.put(result.videoId, sortKey(result, uploads, now));
+                // The value to sort by, or null if it is not known. The age of an upload is
+                // its place in the uploads, and uploads that are not listed are older than
+                // all listed ones, so they come after them by the age shown in the search.
+                Long sortKey;
+                sortKey: {
+                    switch (this) {
+                        case NEWEST, OLDEST -> {
+                            Integer position = uploads.positions.get(result.videoId);
+                            if (position != null) {
+                                sortKey = (long) position;
+                                break sortKey;
+                            }
+
+                            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                            final long ageSeconds = details != null
+                                    ? now - details.publishTimeSeconds
+                                    : result.publishedTimeSeconds;
+                            if (ageSeconds == Long.MAX_VALUE) {
+                                sortKey = null;
+                                break sortKey;
+                            }
+                            sortKey = uploads.positions.size() + Math.max(0, ageSeconds);
+                            break sortKey;
+                        }
+                        case MOST_VIEWED, LEAST_VIEWED -> {
+                            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                            if (details != null) {
+                                sortKey = details.viewCount;
+                                break sortKey;
+                            }
+                            if (result.viewCount >= 0) {
+                                sortKey = result.viewCount;
+                                break sortKey;
+                            }
+
+                            // The exact view count can be missing, such as when too many were fetched.
+                            sortKey = uploads.roundedViewCounts.get(result.videoId);
+                            break sortKey;
+                        }
+                        case SHORTEST, LONGEST -> {
+                            // Live streams, premieres and Shorts in the search results show no length.
+                            if (result.lengthSeconds > 0) {
+                                sortKey = result.lengthSeconds;
+                                break sortKey;
+                            }
+                            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                            sortKey = details != null && details.lengthSeconds > 0 ? details.lengthSeconds : null;
+                            break sortKey;
+                        }
+                    }
+                    sortKey = null;
+                }
+                keys.put(result.videoId, sortKey);
             }
 
             final boolean ascending = this == NEWEST || this == LEAST_VIEWED || this == SHORTEST;
@@ -125,42 +177,6 @@ public final class ChannelSearchPatch {
                 return cmp != 0 ? cmp : a.videoId.compareTo(b.videoId);
             });
             return results;
-        }
-
-        /**
-         * @return The value to sort by, or null if it is not known. The age of an upload is
-         *         its place in the uploads, and uploads that are not listed are older than
-         *         all listed ones, so they come after them by the age shown in the search.
-         */
-        @Nullable
-        private Long sortKey(ChannelSearchResult result, ChannelUploadsRequest.Uploads uploads, long now) {
-            switch (this) {
-                case NEWEST, OLDEST -> {
-                    Integer position = uploads.positions.get(result.videoId);
-                    if (position != null) return (long) position;
-
-                    VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                    final long ageSeconds = details != null
-                            ? now - details.publishTimeSeconds
-                            : result.publishedTimeSeconds;
-                    if (ageSeconds == Long.MAX_VALUE) return null;
-                    return uploads.positions.size() + Math.max(0, ageSeconds);
-                }
-                case MOST_VIEWED, LEAST_VIEWED -> {
-                    VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                    if (details != null) return details.viewCount;
-                    if (result.viewCount >= 0) return result.viewCount;
-                    // The exact view count can be missing, such as when too many were fetched.
-                    return uploads.roundedViewCounts.get(result.videoId);
-                }
-                case SHORTEST, LONGEST -> {
-                    // Live streams, premieres and Shorts in the search results show no length.
-                    if (result.lengthSeconds > 0) return result.lengthSeconds;
-                    VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                    return details != null && details.lengthSeconds > 0 ? details.lengthSeconds : null;
-                }
-            }
-            return null;
         }
     }
 
@@ -348,7 +364,27 @@ public final class ChannelSearchPatch {
             }
             if (!visible || originalParent == null || originalIcon == null || toolbar == null) return;
 
-            ViewGroup.LayoutParams buttonParams = copyLayoutParams(toolbarItem.getLayoutParams());
+            ViewGroup.LayoutParams buttonParams;
+            copyLayoutParams: {
+                ViewGroup.LayoutParams original = toolbarItem.getLayoutParams();
+                if (original == null) {
+                    buttonParams = new ViewGroup.LayoutParams(Dim.dp48, Dim.dp48);
+                    break copyLayoutParams;
+                }
+                if (original instanceof LinearLayout.LayoutParams linear) {
+                    buttonParams = new LinearLayout.LayoutParams(linear);
+                    break copyLayoutParams;
+                }
+                if (original instanceof FrameLayout.LayoutParams frame) {
+                    buttonParams = new FrameLayout.LayoutParams(frame);
+                    break copyLayoutParams;
+                }
+                if (original instanceof ViewGroup.MarginLayoutParams margins) {
+                    buttonParams = new ViewGroup.MarginLayoutParams(margins);
+                    break copyLayoutParams;
+                }
+                buttonParams = new ViewGroup.LayoutParams(original);
+            }
             if (buttonParams instanceof LinearLayout.LayoutParams linearParams) {
                 linearParams.width = Dim.dp48;
                 linearParams.weight = 0;
@@ -381,22 +417,6 @@ public final class ChannelSearchPatch {
         } catch (Exception ex) {
             Logger.printException(() -> "updateChannelSearchButton failure", ex);
         }
-    }
-
-    private static ViewGroup.LayoutParams copyLayoutParams(ViewGroup.LayoutParams original) {
-        if (original == null) {
-            return new ViewGroup.LayoutParams(Dim.dp48, Dim.dp48);
-        }
-        if (original instanceof LinearLayout.LayoutParams linear) {
-            return new LinearLayout.LayoutParams(linear);
-        }
-        if (original instanceof FrameLayout.LayoutParams frame) {
-            return new FrameLayout.LayoutParams(frame);
-        }
-        if (original instanceof ViewGroup.MarginLayoutParams margins) {
-            return new ViewGroup.MarginLayoutParams(margins);
-        }
-        return new ViewGroup.LayoutParams(original);
     }
 
     /**
@@ -466,7 +486,45 @@ public final class ChannelSearchPatch {
             SheetBottomDialog.DraggableLinearLayout mainLayout = SheetBottomDialog
                     .createMainLayout(activity, null);
             scopeView = new TextView(activity);
-            mainLayout.addView(createHeader(activity, query, scopeView));
+            // The query alone reads like a global search, so the channel it was scoped to is shown under it.
+            final int foregroundColor = ThemeUtils.getAppForegroundColor();
+
+            LinearLayout header = new LinearLayout(activity);
+            header.setOrientation(LinearLayout.HORIZONTAL);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+            header.setPadding(Dim.dp16, Dim.dp8, Dim.dp16, Dim.dp12);
+
+            ImageView icon = new ImageView(activity);
+            icon.setImageDrawable(BaseSearchViewController.getSearchIconDrawable());
+            LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(Dim.dp24, Dim.dp24);
+            iconParams.setMarginEnd(Dim.dp16);
+            icon.setLayoutParams(iconParams);
+            header.addView(icon);
+
+            LinearLayout text = new LinearLayout(activity);
+            text.setOrientation(LinearLayout.VERTICAL);
+            text.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+            TextView queryView = new TextView(activity);
+            queryView.setText(query);
+            queryView.setTextColor(foregroundColor);
+            queryView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+            queryView.setTypeface(Typeface.DEFAULT_BOLD);
+            queryView.setSingleLine();
+            queryView.setEllipsize(TextUtils.TruncateAt.END);
+            text.addView(queryView);
+
+            scopeView.setText(str("morphe_channel_search_results"));
+            scopeView.setTextColor(foregroundColor);
+            scopeView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            scopeView.setAlpha(0.7f);
+            scopeView.setSingleLine();
+            scopeView.setEllipsize(TextUtils.TruncateAt.END);
+            text.addView(scopeView);
+
+            header.addView(text);
+            mainLayout.addView(header);
             mainLayout.addView(createDivider(activity));
 
             sortLoadingView = createLoadingView(activity);
@@ -604,7 +662,17 @@ public final class ChannelSearchPatch {
             if (results.isEmpty() && uploadsComplete) {
                 assert lastResponse != null;
                 for (ChannelSearchResult result : lastResponse.results) {
-                    if (descriptionMatches(result)) {
+                    boolean descriptionMatches;
+                    descriptionMatches: {
+                        VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                        if (details == null) {
+                            // Kept until the details tell, unless they could not be fetched.
+                            descriptionMatches = pendingDetailFetches > 0;
+                            break descriptionMatches;
+                        }
+                        descriptionMatches = ChannelUploadsRequest.matches(details.text, query);
+                    }
+                    if (descriptionMatches) {
                         results.add(result);
                     }
                 }
@@ -626,15 +694,6 @@ public final class ChannelSearchPatch {
                 }
             }
             return results;
-        }
-
-        private boolean descriptionMatches(ChannelSearchResult result) {
-            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-            if (details == null) {
-                // Kept until the details tell, unless they could not be fetched.
-                return pendingDetailFetches > 0;
-            }
-            return ChannelUploadsRequest.matches(details.text, query);
         }
 
         /**
@@ -739,7 +798,34 @@ public final class ChannelSearchPatch {
 
             final int scrollY = scrollView.getScrollY();
             List<ChannelPostResult> posts = activePostSort.sort(new ArrayList<>(postsTabMatches));
-            populatePostList(activity, posts, query, listContainer, dialog);
+            final int count = listContainer.getChildCount();
+            Map<String, View> existingViews = new HashMap<>(2 * count);
+            for (int i = 0; i < count; i++) {
+                View child = listContainer.getChildAt(i);
+                if (child.getTag() instanceof String tag && tag.startsWith("post:")) {
+                    existingViews.put(tag, child);
+                }
+            }
+
+            listContainer.removeAllViews();
+
+            for (ChannelPostResult post : posts) {
+                String tag = "post:" + post.postId;
+                View row = existingViews.get(tag);
+                if (row == null) {
+                    row = createPostRow(activity, post, query);
+                    row.setTag(tag);
+                    String postId = post.postId;
+                    row.setOnClickListener(view -> {
+                        dialog.dismiss();
+                        Utils.runOnMainThreadDelayed(() -> {
+                            closeSearch(activity);
+                            LoadVideoPatch.openVideoIntent("https://www.youtube.com/post/" + postId, false);
+                        }, DIALOG_ANIMATION_DURATION_MILLISECONDS);
+                    });
+                }
+                listContainer.addView(row);
+            }
             if (scrollY > 0) {
                 scrollView.scrollTo(0, scrollY);
             }
@@ -951,38 +1037,6 @@ public final class ChannelSearchPatch {
         }
     }
 
-    private static void populatePostList(Activity activity, List<ChannelPostResult> posts, String query,
-                                         LinearLayout listContainer, SheetBottomDialog.SlideDialog dialog) {
-        final int count = listContainer.getChildCount();
-        Map<String, View> existingViews = new HashMap<>(2 * count);
-        for (int i = 0; i < count; i++) {
-            View child = listContainer.getChildAt(i);
-            if (child.getTag() instanceof String tag && tag.startsWith("post:")) {
-                existingViews.put(tag, child);
-            }
-        }
-
-        listContainer.removeAllViews();
-
-        for (ChannelPostResult post : posts) {
-            String tag = "post:" + post.postId;
-            View row = existingViews.get(tag);
-            if (row == null) {
-                row = createPostRow(activity, post, query);
-                row.setTag(tag);
-                String postId = post.postId;
-                row.setOnClickListener(view -> {
-                    dialog.dismiss();
-                    Utils.runOnMainThreadDelayed(() -> {
-                        closeSearch(activity);
-                        LoadVideoPatch.openVideoIntent("https://www.youtube.com/post/" + postId, false);
-                    }, DIALOG_ANIMATION_DURATION_MILLISECONDS);
-                });
-            }
-            listContainer.addView(row);
-        }
-    }
-
     private static View createPostRow(Activity activity, ChannelPostResult post, String query) {
         LinearLayout row = createResultRowContainer(activity);
         row.setGravity(Gravity.TOP);
@@ -1035,7 +1089,58 @@ public final class ChannelSearchPatch {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         TextView body = new TextView(activity);
-        body.setText(postSnippet(post.text, query));
+        // Text of the post from shortly before the first word of the search, with the words of
+        // the search in bold, so that a match deep in a long post is still shown.
+        CharSequence postSnippet;
+        postSnippet: {
+            String postText = post.text;
+            if (postText.isEmpty()) {
+                postSnippet = postText;
+                break postSnippet;
+            }
+
+            String foldedText = foldForHighlight(postText);
+            List<String> words = new ArrayList<>();
+            for (String word : foldForHighlight(query).split("\\s+")) {
+                if (!word.isEmpty()) words.add(word);
+            }
+
+            int firstMatch = -1;
+            for (String word : words) {
+                final int index = foldedText.indexOf(word);
+                if (index >= 0 && (firstMatch < 0 || index < firstMatch)) {
+                    firstMatch = index;
+                }
+            }
+
+            int start = 0;
+            if (firstMatch > POST_SNIPPET_LEAD_CHARACTERS) {
+                start = firstMatch - POST_SNIPPET_LEAD_CHARACTERS;
+                // Starts at a word, or at a line.
+                final int lineStart = postText.lastIndexOf('\n', firstMatch - 1);
+                if (lineStart >= start) {
+                    start = lineStart + 1;
+                } else {
+                    final int space = postText.indexOf(' ', start);
+                    if (space >= 0 && space < firstMatch) start = space + 1;
+                }
+            }
+
+            final String prefix = start > 0 ? "…" : "";
+            SpannableString snippet = new SpannableString(prefix + postText.substring(start));
+            String foldedSnippet = foldedText.substring(start);
+            for (String word : words) {
+                int index = foldedSnippet.indexOf(word);
+                while (index >= 0) {
+                    final int spanStart = prefix.length() + index;
+                    snippet.setSpan(new StyleSpan(Typeface.BOLD), spanStart, spanStart + word.length(),
+                            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    index = foldedSnippet.indexOf(word, index + word.length());
+                }
+            }
+            postSnippet = snippet;
+        }
+        body.setText(postSnippet);
         body.setTextColor(ThemeUtils.getAppForegroundColor());
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         body.setMaxLines(3);
@@ -1063,62 +1168,6 @@ public final class ChannelSearchPatch {
 
         row.addView(text);
         return row;
-    }
-
-    /**
-     * Text of the post from shortly before the first word of the search, with the words of
-     * the search in bold, so that a match deep in a long post is still shown.
-     */
-    private static CharSequence postSnippet(String text, String query) {
-        if (text.isEmpty()) {
-            return text;
-        }
-
-        String foldedText = foldForHighlight(text);
-        List<String> words = new ArrayList<>();
-        for (String word : foldForHighlight(query).split("\\s+")) {
-            if (!word.isEmpty()) words.add(word);
-        }
-
-        int start = getStart(text, words, foldedText);
-
-        final String prefix = start > 0 ? "…" : "";
-        SpannableString snippet = new SpannableString(prefix + text.substring(start));
-        String foldedSnippet = foldedText.substring(start);
-        for (String word : words) {
-            int index = foldedSnippet.indexOf(word);
-            while (index >= 0) {
-                final int spanStart = prefix.length() + index;
-                snippet.setSpan(new StyleSpan(Typeface.BOLD), spanStart, spanStart + word.length(),
-                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                index = foldedSnippet.indexOf(word, index + word.length());
-            }
-        }
-        return snippet;
-    }
-
-    private static int getStart(String text, List<String> words, String foldedText) {
-        int firstMatch = -1;
-        for (String word : words) {
-            final int index = foldedText.indexOf(word);
-            if (index >= 0 && (firstMatch < 0 || index < firstMatch)) {
-                firstMatch = index;
-            }
-        }
-
-        int start = 0;
-        if (firstMatch > POST_SNIPPET_LEAD_CHARACTERS) {
-            start = firstMatch - POST_SNIPPET_LEAD_CHARACTERS;
-            // Starts at a word, or at a line.
-            final int lineStart = text.lastIndexOf('\n', firstMatch - 1);
-            if (lineStart >= start) {
-                start = lineStart + 1;
-            } else {
-                final int space = text.indexOf(' ', start);
-                if (space >= 0 && space < firstMatch) start = space + 1;
-            }
-        }
-        return start;
     }
 
     /**
@@ -1150,7 +1199,47 @@ public final class ChannelSearchPatch {
         for (ChannelSearchResult result : results) {
             View row = existingViews.get(result.videoId);
             if (row == null) {
-                row = createResultRow(activity, result);
+                LinearLayout resultRow = createResultRowContainer(activity);
+                ImageView thumbnail = new ImageView(activity);
+                thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                thumbnail.setClipToOutline(true);
+                thumbnail.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
+                                THUMBNAIL_CORNER_RADIUS);
+                    }
+                });
+                LinearLayout.LayoutParams thumbnailParams =
+                        new LinearLayout.LayoutParams(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
+                thumbnailParams.setMarginEnd(Dim.dp12);
+                thumbnail.setLayoutParams(thumbnailParams);
+                loadThumbnail(thumbnail, result.thumbnailUrl);
+                resultRow.addView(thumbnail);
+                LinearLayout text = new LinearLayout(activity);
+                text.setOrientation(LinearLayout.VERTICAL);
+                text.setLayoutParams(new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+                TextView title = new TextView(activity);
+                title.setText(result.title);
+                RestoreOriginalTitlesPatch.restoreSearchResultTitle(title, result.videoId);
+                title.setTextColor(ThemeUtils.getAppForegroundColor());
+                title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                title.setMaxLines(2);
+                text.addView(title);
+
+                if (!result.metadata.isEmpty()) {
+                    TextView metadata = new TextView(activity);
+                    metadata.setText(result.metadata);
+                    metadata.setTextColor(ThemeUtils.getAppForegroundColor());
+                    metadata.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    metadata.setAlpha(0.7f);
+                    metadata.setSingleLine();
+                    text.addView(metadata);
+                }
+                resultRow.addView(text);
+                row = resultRow;
                 row.setTag(result.videoId);
                 String videoId = result.videoId;
                 row.setOnClickListener(view -> {
@@ -1165,52 +1254,6 @@ public final class ChannelSearchPatch {
         }
     }
 
-    /**
-     * The query alone reads like a global search, so the channel it was scoped to is shown under it.
-     *
-     * @param scopeView Shows the scope of the search, and later the name of the channel.
-     */
-    private static View createHeader(Activity activity, String query, TextView scopeView) {
-        final int foregroundColor = ThemeUtils.getAppForegroundColor();
-
-        LinearLayout header = new LinearLayout(activity);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(Dim.dp16, Dim.dp8, Dim.dp16, Dim.dp12);
-
-        ImageView icon = new ImageView(activity);
-        icon.setImageDrawable(BaseSearchViewController.getSearchIconDrawable());
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(Dim.dp24, Dim.dp24);
-        iconParams.setMarginEnd(Dim.dp16);
-        icon.setLayoutParams(iconParams);
-        header.addView(icon);
-
-        LinearLayout text = new LinearLayout(activity);
-        text.setOrientation(LinearLayout.VERTICAL);
-        text.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView queryView = new TextView(activity);
-        queryView.setText(query);
-        queryView.setTextColor(foregroundColor);
-        queryView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        queryView.setTypeface(Typeface.DEFAULT_BOLD);
-        queryView.setSingleLine();
-        queryView.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(queryView);
-
-        scopeView.setText(str("morphe_channel_search_results"));
-        scopeView.setTextColor(foregroundColor);
-        scopeView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        scopeView.setAlpha(0.7f);
-        scopeView.setSingleLine();
-        scopeView.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(scopeView);
-
-        header.addView(text);
-        return header;
-    }
-
     private static View createDivider(Activity activity) {
         View divider = new View(activity);
         divider.setBackgroundColor(ThemeUtils.getAppForegroundColor());
@@ -1220,13 +1263,6 @@ public final class ChannelSearchPatch {
         params.setMargins(0, 0, 0, Dim.dp4);
         divider.setLayoutParams(params);
         return divider;
-    }
-
-    private static View createResultRow(Activity activity, ChannelSearchResult result) {
-        LinearLayout row = createResultRowContainer(activity);
-        row.addView(createResultThumbnail(activity, result));
-        row.addView(createResultText(activity, result));
-        return row;
     }
 
     private static LinearLayout createResultRowContainer(Activity activity) {
@@ -1241,53 +1277,6 @@ public final class ChannelSearchPatch {
                 activity, android.R.attr.selectableItemBackground));
 
         return row;
-    }
-
-    private static View createResultThumbnail(Activity activity, ChannelSearchResult result) {
-        ImageView thumbnail = new ImageView(activity);
-        thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumbnail.setClipToOutline(true);
-        thumbnail.setOutlineProvider(new ViewOutlineProvider() {
-            @Override
-            public void getOutline(View view, Outline outline) {
-                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
-                        THUMBNAIL_CORNER_RADIUS);
-            }
-        });
-        LinearLayout.LayoutParams thumbnailParams =
-                new LinearLayout.LayoutParams(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
-        thumbnailParams.setMarginEnd(Dim.dp12);
-        thumbnail.setLayoutParams(thumbnailParams);
-        loadThumbnail(thumbnail, result.thumbnailUrl);
-
-        return thumbnail;
-    }
-
-    private static View createResultText(Activity activity, ChannelSearchResult result) {
-        LinearLayout text = new LinearLayout(activity);
-        text.setOrientation(LinearLayout.VERTICAL);
-        text.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView title = new TextView(activity);
-        title.setText(result.title);
-        RestoreOriginalTitlesPatch.restoreSearchResultTitle(title, result.videoId);
-        title.setTextColor(ThemeUtils.getAppForegroundColor());
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        title.setMaxLines(2);
-        text.addView(title);
-
-        if (!result.metadata.isEmpty()) {
-            TextView metadata = new TextView(activity);
-            metadata.setText(result.metadata);
-            metadata.setTextColor(ThemeUtils.getAppForegroundColor());
-            metadata.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            metadata.setAlpha(0.7f);
-            metadata.setSingleLine();
-            text.addView(metadata);
-        }
-
-        return text;
     }
 
     private static void loadThumbnail(ImageView view, String url) {

@@ -176,7 +176,38 @@ public class OAuth2Requester {
         Utils.runOnBackgroundThread(() -> {
             synchronized (OAuth2Requester.class) {
                 if (!refreshToken.isEmpty()) {
-                    if (!OAuth2Requester.revokeRefreshToken(refreshToken)) {
+                    boolean revokeRefreshToken;
+                    revokeRefreshToken: {
+                        Utils.verifyOffMainThread();
+
+                        try {
+                            HttpURLConnection connection = OAuth2Routes.getUrlConnectionFromRoute(OAuth2Routes.REVOKE_TOKEN);
+
+                            Uri bodyUri = new Uri.Builder()
+                                    .appendQueryParameter("token", refreshToken)
+                                    .build();
+                            String query = Objects.toString(bodyUri.getEncodedQuery());
+                            byte[] body = query.getBytes(StandardCharsets.UTF_8);
+                            connection.setFixedLengthStreamingMode(body.length);
+                            connection.getOutputStream().write(body);
+
+                            final int responseCode = connection.getResponseCode();
+
+                            if (responseCode == Requester.HTTP_STATUS_CODE_SUCCESS) {
+                                revokeRefreshToken = true;
+                                break revokeRefreshToken;
+                            }
+                            handleConnectionError(str("morphe_oauth2_connection_failure_status", responseCode), null, true);
+                        } catch (SocketTimeoutException ex) {
+                            handleConnectionError(str("morphe_oauth2_connection_failure_timeout"), ex, true);
+                        } catch (IOException ex) {
+                            handleConnectionError(str("morphe_oauth2_connection_failure_generic"), ex, true);
+                        } catch (Exception ex) {
+                            Logger.printException(() -> "revokeAccessToken failure", ex);
+                        }
+                        revokeRefreshToken = false;
+                    }
+                    if (!revokeRefreshToken) {
                         Logger.printException(() -> "Failed to revoke refresh token");
                     }
                 }
@@ -336,35 +367,5 @@ public class OAuth2Requester {
         } catch (Exception ex) {
             Logger.printException(() -> "updateAccessTokenData failure", ex);
         }
-    }
-
-    private static boolean revokeRefreshToken(String refreshToken) {
-        Utils.verifyOffMainThread();
-
-        try {
-            HttpURLConnection connection = OAuth2Routes.getUrlConnectionFromRoute(OAuth2Routes.REVOKE_TOKEN);
-
-            Uri bodyUri = new Uri.Builder()
-                    .appendQueryParameter("token", refreshToken)
-                    .build();
-            String query = Objects.toString(bodyUri.getEncodedQuery());
-            byte[] body = query.getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(body.length);
-            connection.getOutputStream().write(body);
-
-            final int responseCode = connection.getResponseCode();
-
-            if (responseCode == Requester.HTTP_STATUS_CODE_SUCCESS) {
-                return true;
-            }
-            handleConnectionError(str("morphe_oauth2_connection_failure_status", responseCode), null, true);
-        } catch (SocketTimeoutException ex) {
-            handleConnectionError(str("morphe_oauth2_connection_failure_timeout"), ex, true);
-        } catch (IOException ex) {
-            handleConnectionError(str("morphe_oauth2_connection_failure_generic"), ex, true);
-        } catch (Exception ex) {
-            Logger.printException(() -> "revokeAccessToken failure", ex);
-        }
-        return false;
     }
 }

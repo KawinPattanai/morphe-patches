@@ -154,6 +154,13 @@ public final class FeedViewCountPatch {
     /** Root hosts that show a view count. Used only on the main thread. */
     private static final Map<ComponentHost, ViewCountBadge> badges = new WeakHashMap<>();
 
+    /**
+     * Hosts of a video whose view count is not known yet, as the texts below the title are not shown,
+     * such as while the card enters from the bottom of the list behind the glass navigation bar.
+     * The like count badge shown next to the view count waits for it. Used only on the main thread.
+     */
+    private static final Map<ComponentHost, Boolean> pendingViewCounts = new WeakHashMap<>();
+
     /** Spaces, which texts of the same view count can show differently, such as "4.7 M" and "4.7M". */
     private static final Pattern SPACES_PATTERN = Pattern.compile("[\\s  ]+");
 
@@ -244,99 +251,20 @@ public final class FeedViewCountPatch {
 
     static {
         if (ENABLED) {
-            loadCardPaths();
-        }
-    }
-
-    private static void loadCardPaths() {
-        try {
-            for (String path : Settings.FEED_VIEW_COUNT_PATHS.get().split(PATH_SEPARATOR)) {
-                if (!path.isEmpty()) {
-                    cardPaths.add(path);
+            try {
+                for (String path : Settings.FEED_VIEW_COUNT_PATHS.get().split(PATH_SEPARATOR)) {
+                    if (!path.isEmpty()) {
+                        cardPaths.add(path);
+                    }
                 }
-            }
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not load the card paths", ex);
-            Settings.FEED_VIEW_COUNT_PATHS.resetToDefault();
-        }
-    }
-
-    /**
-     * A card shows the view count in its text, instead of the badge,
-     * so the view count is removed from the texts of this path from now on.
-     */
-    private static synchronized void addCardPath(String path) {
-        if (cardPaths.size() >= MAX_CARD_PATHS || !cardPaths.add(path)) {
-            return;
-        }
-        Logger.printDebug(() -> "Card text path: " + path);
-        Settings.FEED_VIEW_COUNT_PATHS.save(String.join(PATH_SEPARATOR, cardPaths));
-    }
-
-    /**
-     * @return The element names of the path, such as 'video_lockup_with_attachment.eml',
-     *         without the hashes and the types, which are the same for the same layout.
-     */
-    @Nullable
-    private static String getElementPath(@Nullable ContextInterface contextInterface) {
-        if (contextInterface == null) {
-            return null;
-        }
-        StringBuilder path = contextInterface.patch_getPathBuilder();
-        if (Utils.isEmpty(path)) {
-            return null;
-        }
-        StringJoiner elements = new StringJoiner("|");
-        for (String part : path.toString().split("\\|")) {
-            if (part.indexOf('.') > 0) {
-                elements.add(part);
+            } catch (Exception ex) {
+                Logger.printException(() -> "Could not load the card paths", ex);
+                Settings.FEED_VIEW_COUNT_PATHS.resetToDefault();
             }
         }
-        String joined = elements.toString();
-        if (joined.isEmpty() || joined.length() > MAX_PATH_LENGTH) {
-            return null;
-        }
-        return joined;
     }
 
     // region view count text
-
-    private static synchronized List<String> getUnits(Locale locale) {
-        if (units == null || !locale.equals(unitsLocale)) {
-            Set<String> found = new LinkedHashSet<>();
-            // Short units, such as M, and long units, such as million.
-            for (CompactDecimalFormat.CompactStyle style : CompactDecimalFormat.CompactStyle.values()) {
-                try {
-                    CompactDecimalFormat format = CompactDecimalFormat.getInstance(locale, style);
-                    // From a thousand up to a quadrillion.
-                    long value = 1_000;
-                    for (int i = 0; i < 13; i++) {
-                        // Units of more words keep the space between them, such as thousand crore.
-                        String unit = format.format(value).replaceAll("[\\p{Nd}.,'’]", "")
-                                .replaceAll("[\\s\u00A0\u202F]+", " ").trim();
-                        if (!unit.isEmpty()) {
-                            found.add(unit);
-                        }
-                        value *= 10;
-                    }
-                } catch (Exception ex) {
-                    Logger.printException(() -> "Units failure", ex);
-                }
-            }
-            // The app can be in another language than its locale.
-            found.add("K");
-            found.add("M");
-            found.add("B");
-            // English (India) shows lakh and crore, but abbreviates them as L and Cr.
-            found.add("lakh");
-            found.add("crore");
-            List<String> list = new ArrayList<>(found);
-            list.sort((a, b) -> b.length() - a.length());
-            units = list;
-            unitsLocale = locale;
-        }
-        return units;
-    }
 
     private static boolean isSeparator(char c) {
         return Character.isWhitespace(c) || c == '\u00A0' || c == '\u202F';
@@ -378,7 +306,44 @@ public final class FeedViewCountPatch {
         }
 
         String unit = "";
-        for (String candidate : getUnits(locale)) {
+        List<String> localeUnits;
+        synchronized (FeedViewCountPatch.class) {
+            if (units == null || !locale.equals(unitsLocale)) {
+                Set<String> found = new LinkedHashSet<>();
+                // Short units, such as M, and long units, such as million.
+                for (CompactDecimalFormat.CompactStyle style : CompactDecimalFormat.CompactStyle.values()) {
+                    try {
+                        CompactDecimalFormat format = CompactDecimalFormat.getInstance(locale, style);
+                        // From a thousand up to a quadrillion.
+                        long value = 1_000;
+                        for (int i = 0; i < 13; i++) {
+                            // Units of more words keep the space between them, such as thousand crore.
+                            String formattedUnit = format.format(value).replaceAll("[\\p{Nd}.,'’]", "")
+                                    .replaceAll("[\\s\u00A0\u202F]+", " ").trim();
+                            if (!formattedUnit.isEmpty()) {
+                                found.add(formattedUnit);
+                            }
+                            value *= 10;
+                        }
+                    } catch (Exception ex) {
+                        Logger.printException(() -> "Units failure", ex);
+                    }
+                }
+                // The app can be in another language than its locale.
+                found.add("K");
+                found.add("M");
+                found.add("B");
+                // English (India) shows lakh and crore, but abbreviates them as L and Cr.
+                found.add("lakh");
+                found.add("crore");
+                List<String> list = new ArrayList<>(found);
+                list.sort((a, b) -> b.length() - a.length());
+                units = list;
+                unitsLocale = locale;
+            }
+            localeUnits = units;
+        }
+        for (String candidate : localeUnits) {
             if (!text.regionMatches(true, index, candidate, 0, candidate.length())) {
                 continue;
             }
@@ -399,23 +364,6 @@ public final class FeedViewCountPatch {
         // Languages written without spaces show the unit attached to the number.
         final boolean attachUnit = unit.isEmpty() || isWrittenWithoutSpaces(unit.charAt(0));
         return new ParsedViewCount(attachUnit ? number + unit : number + "\u00A0" + unit, words);
-    }
-
-    private static void addViewWords(String words) {
-        if (words.isEmpty()) {
-            return;
-        }
-        synchronized (viewWords) {
-            if (viewWords.size() < MAX_VIEW_WORDS) {
-                viewWords.add(words);
-            }
-        }
-    }
-
-    private static boolean isViewWords(String words) {
-        synchronized (viewWords) {
-            return viewWords.contains(words);
-        }
     }
 
     /**
@@ -501,38 +449,51 @@ public final class FeedViewCountPatch {
             }
         }
 
-        final int index = findViewCountIndex(segments, parsed);
+        // Index of the segment that is the view count, or -1 if none is.
+        int index;
+        findViewCountIndex: {
+            for (int i = 0; i < size; i++) {
+                // Words of view counts that were seen before, such as "views".
+                if (parsed[i] != null && !parsed[i].words.isEmpty()) {
+                    synchronized (viewWords) {
+                        if (viewWords.contains(parsed[i].words)) {
+                            index = i;
+                            break findViewCountIndex;
+                        }
+                    }
+                }
+            }
+            if (size == 3) {
+                // The channel, the view count and the upload time.
+                if (parsed[1] != null && segments.get(2).hasNumber()) {
+                    index = 1;
+                    break findViewCountIndex;
+                }
+            } else if (parsed[0] != null && segments.get(0).startsWithNumber()
+                    && segments.get(1).hasNumber()) {
+                // The view count and the upload time, such as on the channel page and on the cards.
+                // Some languages show a word before the number of the upload time,
+                // such as "vor 2 Tagen" in German.
+                index = 0;
+                break findViewCountIndex;
+            }
+            index = -1;
+        }
         if (index < 0) {
             return findElementViewCount(text, segments, locale);
         }
-        addViewWords(parsed[index].words);
+        addViewWords: {
+            String newViewWords = parsed[index].words;
+            if (newViewWords.isEmpty()) {
+                break addViewWords;
+            }
+            synchronized (viewWords) {
+                if (viewWords.size() < MAX_VIEW_WORDS) {
+                    viewWords.add(newViewWords);
+                }
+            }
+        }
         return new ViewCountMatch(segments, index, parsed[index]);
-    }
-
-    /**
-     * @return Index of the segment that is the view count, or -1 if none is.
-     */
-    private static int findViewCountIndex(List<Segment> segments, ParsedViewCount[] parsed) {
-        final int size = segments.size();
-        for (int i = 0; i < size; i++) {
-            // Words of view counts that were seen before, such as "views".
-            if (parsed[i] != null && !parsed[i].words.isEmpty() && isViewWords(parsed[i].words)) {
-                return i;
-            }
-        }
-        if (size == 3) {
-            // The channel, the view count and the upload time.
-            if (parsed[1] != null && segments.get(2).hasNumber()) {
-                return 1;
-            }
-        } else if (parsed[0] != null && segments.get(0).startsWithNumber()
-                && segments.get(1).hasNumber()) {
-            // The view count and the upload time, such as on the channel page and on the cards.
-            // Some languages show a word before the number of the upload time,
-            // such as "vor 2 Tagen" in German.
-            return 0;
-        }
-        return -1;
     }
 
     /**
@@ -557,72 +518,6 @@ public final class FeedViewCountPatch {
             }
         }
         return null;
-    }
-
-    /**
-     * @return Where the icon right before the view count starts, or -1 if there is none.
-     *         Newer layouts draw icons as spans in place of spaces: the dots between the texts,
-     *         and a play icon before the view count. Older layouts show the dots as text.
-     */
-    private static int findIconBefore(Spanned text, List<Segment> segments, int index) {
-        final int runStart = index == 0 ? 0 : segments.get(index - 1).end;
-        final int runEnd = segments.get(index).start;
-        String run = text.subSequence(runStart, runEnd).toString();
-        if (run.indexOf('·') >= 0 || run.indexOf('•') >= 0) {
-            return -1;
-        }
-        int iconStart = -1;
-        for (Object span : text.getSpans(runStart, runEnd, Object.class)) {
-            final int spanStart = text.getSpanStart(span);
-            final int spanEnd = text.getSpanEnd(span);
-            // Only spans inside the spaces, not spans of the whole text.
-            if (spanStart >= runStart && spanEnd <= runEnd && spanEnd > spanStart
-                    && spanStart > iconStart) {
-                iconStart = spanStart;
-            }
-        }
-        return iconStart;
-    }
-
-    /**
-     * @return The text without the view count and the delimiter next to it,
-     *         or null if the text has no view count.
-     */
-    @Nullable
-    private static SpannableString removeViewCount(CharSequence text) {
-        ViewCountMatch match = findViewCount(text.toString(), Locale.getDefault());
-        if (match == null) {
-            return null;
-        }
-        List<Segment> segments = match.segments;
-        final int index = match.index;
-        // The view count and the delimiter after it, or before it if it is the last text.
-        Segment segment = segments.get(index);
-        int start;
-        final int end;
-        if (segments.size() == 1) {
-            start = segment.start;
-            end = segment.end;
-        } else if (index < segments.size() - 1) {
-            start = segment.start;
-            end = segments.get(index + 1).start;
-        } else {
-            start = segments.get(index - 1).end;
-            end = segment.end;
-        }
-        // Newer layouts show a play icon before the view count, which is removed with it.
-        if (text instanceof Spanned spanned) {
-            final int iconStart = findIconBefore(spanned, segments, index);
-            if (iconStart >= 0) {
-                start = Math.min(start, iconStart);
-            }
-        }
-        SpannableStringBuilder builder = new SpannableStringBuilder(text);
-        for (ViewCountSpan span : builder.getSpans(0, builder.length(), ViewCountSpan.class)) {
-            builder.removeSpan(span);
-        }
-        builder.delete(start, end);
-        return new SpannableString(builder);
     }
 
     @Nullable
@@ -899,12 +794,90 @@ public final class FeedViewCountPatch {
             if (span == null || span.removed) {
                 return text;
             }
-            String path = getElementPath(contextInterface);
+            // The element names of the path, such as 'video_lockup_with_attachment.eml',
+            // without the hashes and the types, which are the same for the same layout.
+            String path;
+            getElementPath: {
+                if (contextInterface == null) {
+                    path = null;
+                    break getElementPath;
+                }
+                StringBuilder pathBuilder = contextInterface.patch_getPathBuilder();
+                if (Utils.isEmpty(pathBuilder)) {
+                    path = null;
+                    break getElementPath;
+                }
+                StringJoiner elements = new StringJoiner("|");
+                for (String part : pathBuilder.toString().split("\\|")) {
+                    if (part.indexOf('.') > 0) {
+                        elements.add(part);
+                    }
+                }
+                path = elements.toString();
+                if (path.isEmpty() || path.length() > MAX_PATH_LENGTH) {
+                    path = null;
+                }
+            }
             if (path == null) {
                 return text;
             }
             if (cardPaths.contains(path)) {
-                SpannableString removed = removeViewCount(text);
+                // The text without the view count and the delimiter next to it,
+                // or null if the text has no view count.
+                SpannableString removed;
+                removeViewCount: {
+                    ViewCountMatch match = findViewCount(text.toString(), Locale.getDefault());
+                    if (match == null) {
+                        removed = null;
+                        break removeViewCount;
+                    }
+                    List<Segment> segments = match.segments;
+                    final int index = match.index;
+                    // The view count and the delimiter after it, or before it if it is the last text.
+                    Segment segment = segments.get(index);
+                    int start;
+                    final int end;
+                    if (segments.size() == 1) {
+                        start = segment.start;
+                        end = segment.end;
+                    } else if (index < segments.size() - 1) {
+                        start = segment.start;
+                        end = segments.get(index + 1).start;
+                    } else {
+                        start = segments.get(index - 1).end;
+                        end = segment.end;
+                    }
+                    // Newer layouts show a play icon before the view count, which is removed with it.
+                    if (text instanceof Spanned spanned) {
+                        // Where the icon right before the view count starts, or -1 if there is none.
+                        // Newer layouts draw icons as spans in place of spaces: the dots between the texts,
+                        // and a play icon before the view count. Older layouts show the dots as text.
+                        int iconStart = -1;
+                        final int runStart = index == 0 ? 0 : segments.get(index - 1).end;
+                        final int runEnd = segments.get(index).start;
+                        String run = spanned.subSequence(runStart, runEnd).toString();
+                        if (run.indexOf('·') < 0 && run.indexOf('•') < 0) {
+                            for (Object iconSpan : spanned.getSpans(runStart, runEnd, Object.class)) {
+                                final int spanStart = spanned.getSpanStart(iconSpan);
+                                final int spanEnd = spanned.getSpanEnd(iconSpan);
+                                // Only spans inside the spaces, not spans of the whole text.
+                                if (spanStart >= runStart && spanEnd <= runEnd && spanEnd > spanStart
+                                        && spanStart > iconStart) {
+                                    iconStart = spanStart;
+                                }
+                            }
+                        }
+                        if (iconStart >= 0) {
+                            start = Math.min(start, iconStart);
+                        }
+                    }
+                    SpannableStringBuilder builder = new SpannableStringBuilder(text);
+                    for (ViewCountSpan viewCountSpan : builder.getSpans(0, builder.length(), ViewCountSpan.class)) {
+                        builder.removeSpan(viewCountSpan);
+                    }
+                    builder.delete(start, end);
+                    removed = new SpannableString(builder);
+                }
                 if (removed != null) {
                     return withSpan(removed, new ViewCountSpan(span.viewCount, path, true));
                 }
@@ -1060,46 +1033,9 @@ public final class FeedViewCountPatch {
         return Math.round(root.getWidth() * FeedVideoCardsPatch.THUMBNAIL_RATIO - TOLERANCE_DP * density);
     }
 
-    /**
-     * @return The view count of the texts below the thumbnail, such as
-     *         "Channel - 4.7M views - 2 days ago", or null if not found.
-     *         Used when the text was not created with the view count span.
-     */
-    @Nullable
-    private static String findViewCountInTexts(List<PlacedText> texts) {
-        texts.sort((a, b) -> a.top != b.top ? a.top - b.top : a.left - b.left);
-        Locale locale = Locale.getDefault();
-        // The texts below the title are below it, so they are checked first.
-        // The title is the first text, and can have numbers and delimiters too.
-        final int first = texts.size() > 1 ? 1 : 0;
-        for (int i = texts.size() - 1; i >= first; i--) {
-            ViewCountMatch match = findViewCount(texts.get(i).text, locale);
-            if (match != null) {
-                return match.parsed.count;
-            }
-        }
-        return null;
-    }
-
     /** Videos whose texts were logged, so each is logged once. Used only on the main thread. */
     private static final Set<String> loggedVideoIds = new LinkedHashSet<>();
     private static final int MAX_LOGGED_VIDEOS = 200;
-
-    private static void logTexts(String videoId, List<PlacedText> texts) {
-        if (!loggedVideoIds.add(videoId)) {
-            return;
-        }
-        if (loggedVideoIds.size() > MAX_LOGGED_VIDEOS) {
-            loggedVideoIds.clear();
-        }
-        Logger.printDebug(() -> {
-            StringBuilder builder = new StringBuilder();
-            for (PlacedText placed : texts) {
-                builder.append(" [").append(placed.text).append(']');
-            }
-            return "View count not found: " + videoId + " texts:" + builder;
-        });
-    }
 
     /**
      * @return The bottom of a square thumbnail, found from the texts below it, or -1.
@@ -1334,7 +1270,26 @@ public final class FeedViewCountPatch {
                         // Texts on a square thumbnail are not texts of the video.
                         info.texts.removeIf(placed -> placed.top < textsTop);
                     }
-                    viewCount = findViewCountInTexts(info.texts);
+
+                    // The view count of the texts below the thumbnail, such as
+                    // "Channel - 4.7M views - 2 days ago", or null if not found.
+                    // Used when the text was not created with the view count span.
+                    findViewCountInTexts: {
+                        List<PlacedText> placedTexts = info.texts;
+                        placedTexts.sort((a, b) -> a.top != b.top ? a.top - b.top : a.left - b.left);
+                        Locale locale = Locale.getDefault();
+                        // The texts below the title are below it, so they are checked first.
+                        // The title is the first text, and can have numbers and delimiters too.
+                        final int first = placedTexts.size() > 1 ? 1 : 0;
+                        for (int i = placedTexts.size() - 1; i >= first; i--) {
+                            ViewCountMatch match = findViewCount(placedTexts.get(i).text, locale);
+                            if (match != null) {
+                                viewCount = match.parsed.count;
+                                break findViewCountInTexts;
+                            }
+                        }
+                        viewCount = null;
+                    }
                     textShowsViewCount = viewCount != null;
                 }
                 if (viewCount == null) {
@@ -1363,7 +1318,22 @@ public final class FeedViewCountPatch {
                 if (viewCount == null) {
                     // Checked again when its texts are drawn, as they can show the view count.
                     FeedVideoCardsPatch.scheduleRetry(host);
-                    logTexts(id, info.texts);
+                    logTexts: {
+                        List<PlacedText> loggedTexts = info.texts;
+                        if (!loggedVideoIds.add(id)) {
+                            break logTexts;
+                        }
+                        if (loggedVideoIds.size() > MAX_LOGGED_VIDEOS) {
+                            loggedVideoIds.clear();
+                        }
+                        Logger.printDebug(() -> {
+                            StringBuilder builder = new StringBuilder();
+                            for (PlacedText placed : loggedTexts) {
+                                builder.append(" [").append(placed.text).append(']');
+                            }
+                            return "View count not found: " + id + " texts:" + builder;
+                        });
+                    }
                 } else if (duration == null) {
                     final Rect found = thumbnail;
                     Logger.printDebug(() -> "Duration badge not found: " + id + " thumbnail: " + found);
@@ -1377,24 +1347,48 @@ public final class FeedViewCountPatch {
             // The text still shows the view count, as its path was not known yet.
             // Texts of this path do not show it from now on, and their cards show the badge.
             if (span != null && !span.removed && span.path != null) {
-                addCardPath(span.path);
+                // A card shows the view count in its text, instead of the badge,
+                // so the view count is removed from the texts of this path from now on.
+                String cardPath = span.path;
+                synchronized (FeedViewCountPatch.class) {
+                    if (cardPaths.size() < MAX_CARD_PATHS && cardPaths.add(cardPath)) {
+                        Logger.printDebug(() -> "Card text path: " + cardPath);
+                        Settings.FEED_VIEW_COUNT_PATHS.save(String.join(PATH_SEPARATOR, cardPaths));
+                    }
+                }
             }
         }
 
         ViewCountBadge badge = badges.get(host);
         if (viewCount == null) {
+            // Litho draws only the part of a card that is shown, so the view count of a card whose texts below
+            // the title are below the bottom of the list is not found until they are shown.
+            final Rect visible = new Rect();
+            final boolean textsHidden = !textShowsViewCount && shortsFrame == null && videoId != null
+                    && host.getLocalVisibleRect(visible) && visible.top == 0 && visible.bottom < host.getHeight();
+            if (textsHidden && badge != null && badge.confirmed && badge.added && videoId.equals(badge.videoId)) {
+                // The card still shows the same video, such as when it moves back below the bottom of the list,
+                // so its view count is kept.
+                return;
+            }
+            final boolean pendingChanged = textsHidden
+                    ? pendingViewCounts.put(host, Boolean.TRUE) == null
+                    : pendingViewCounts.remove(host) != null;
             if (badge != null) {
                 badge.detach(host);
                 badges.remove(host);
+            }
+            if (badge != null || pendingChanged) {
                 FeedEngagementCountsPatch.onViewCountBadgeChanged(host);
             }
             return;
         }
+        pendingViewCounts.remove(host);
         if (badge == null) {
             badge = new ViewCountBadge(host);
             badges.put(host, badge);
         }
-        badge.bind(host, viewCount, duration, thumbnail);
+        badge.bind(host, videoId, viewCount, duration, thumbnail);
         // The like count badge can be shown next to the view count.
         FeedEngagementCountsPatch.onViewCountBadgeChanged(host);
     }
@@ -1419,6 +1413,14 @@ public final class FeedViewCountPatch {
         }
         ViewCountBadge badge = badges.get(componentHost);
         return badge == null || !badge.added ? null : new Rect(badge.getBounds());
+    }
+
+    /**
+     * @return If the view count of the video of a card is not known yet, as the texts below the title are not shown,
+     *         so the like count badge waits for it. Must be called on the main thread.
+     */
+    public static boolean isViewCountPending(View host) {
+        return host instanceof ComponentHost componentHost && pendingViewCounts.containsKey(componentHost);
     }
 
     /**
@@ -1466,6 +1468,9 @@ public final class FeedViewCountPatch {
          */
         private boolean confirmed = true;
         private String viewCount = "";
+        /** The video of the view count, or null if not known. */
+        @Nullable
+        private String videoId;
         private boolean added;
         private int alpha = 255;
         @Nullable
@@ -1498,8 +1503,10 @@ public final class FeedViewCountPatch {
          * @param thumbnail The thumbnail, or null if not found.
          *                  Then a 16:9 thumbnail as wide as the card is used.
          */
-        void bind(ComponentHost host, String newViewCount, @Nullable Rect duration, @Nullable Rect thumbnail) {
+        void bind(ComponentHost host, @Nullable String newVideoId, String newViewCount,
+                  @Nullable Rect duration, @Nullable Rect thumbnail) {
             confirmed = true;
+            videoId = newVideoId;
             // Fades in when shown, or when the card shows another video.
             // Not when the card is only laid out again.
             final boolean changed = !newViewCount.equals(viewCount);

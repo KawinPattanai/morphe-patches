@@ -44,7 +44,22 @@ public final class BotGuardUtil {
     }
 
     public static String base64ToU8(String base64) {
-        return newUint8Array(base64ToByteString(base64));
+        byte[] base64ToByteString;
+        base64ToByteString: {
+            String base64Mod = base64
+                    .replace('-', '+')
+                    .replace('_', '/')
+                    .replace('.', '=');
+            try {
+                base64ToByteString = Base64.decode(base64Mod, Base64.DEFAULT);
+                break base64ToByteString;
+            } catch (IllegalArgumentException ex) {
+                Logger.printException(() -> "Cannot base64 decode", ex);
+            }
+
+            base64ToByteString = new byte[0];
+        }
+        return newUint8Array(base64ToByteString);
     }
 
     private static String newUint8Array(byte[] contents) {
@@ -56,19 +71,5 @@ public final class BotGuardUtil {
         }
         sb.append("])");
         return sb.toString();
-    }
-
-    private static byte[] base64ToByteString(String base64) {
-        String base64Mod = base64
-                .replace('-', '+')
-                .replace('_', '/')
-                .replace('.', '=');
-        try {
-            return Base64.decode(base64Mod, Base64.DEFAULT);
-        } catch (IllegalArgumentException ex) {
-            Logger.printException(() -> "Cannot base64 decode", ex);
-        }
-
-        return new byte[0];
     }
 }

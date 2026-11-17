@@ -79,15 +79,6 @@ public final class BaseAppRefreshRatePatch {
         return false;  // Modified during patching.
     }
 
-    private static boolean shouldOverrideRefreshRate() {
-        return switch (SharedYouTubeSettings.APP_REFRESH_RATE_TYPE.get()) {
-            case ALWAYS -> true;
-            case PORTRAIT -> isPlaybackPortrait;
-            case FULLSCREEN -> isPlaybackFullscreen;
-            case PORTRAIT_FULLSCREEN -> isPlaybackPortrait || isPlaybackFullscreen;
-        };
-    }
-
     /**
      * Injection point.
      */
@@ -196,7 +187,12 @@ public final class BaseAppRefreshRatePatch {
     }
 
     private static void applyRefreshRateToWindow(Window window) {
-        final boolean shouldOverride = shouldOverrideRefreshRate();
+        final boolean shouldOverride = switch (SharedYouTubeSettings.APP_REFRESH_RATE_TYPE.get()) {
+            case ALWAYS -> true;
+            case PORTRAIT -> isPlaybackPortrait;
+            case FULLSCREEN -> isPlaybackFullscreen;
+            case PORTRAIT_FULLSCREEN -> isPlaybackPortrait || isPlaybackFullscreen;
+        };
 
         WindowManager.LayoutParams params = window.getAttributes();
         int modeId = 0;

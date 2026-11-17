@@ -55,7 +55,20 @@ public final class NetworkProxyPatch {
     private static final Proxy.HttpConnectCallback CONNECT_CALLBACK = new Proxy.HttpConnectCallback() {
         @Override
         public void onBeforeRequest(Proxy.HttpConnectCallback.Request request) {
-            request.proceed(getProxyHeaders());
+            List<Pair<String, String>> proxyHeaders;
+            getProxyHeaders: {
+                String proxyAuthorization = getProxyAuthorizationHeader();
+                if (proxyAuthorization == null) {
+                    proxyHeaders = Collections.emptyList();
+                    break getProxyHeaders;
+                }
+
+                proxyHeaders = Collections.singletonList(Pair.create(
+                        PROXY_AUTHORIZATION_HEADER,
+                        proxyAuthorization
+                ));
+            }
+            request.proceed(proxyHeaders);
         }
 
         @Override
@@ -107,7 +120,26 @@ public final class NetworkProxyPatch {
             ArrayList<Proxy> proxies = new ArrayList<>(config.allowDirectFallback ? 2 : 1);
             proxies.add(Proxy.createHttpProxy(scheme, config.host, config.port, DIRECT_EXECUTOR, CONNECT_CALLBACK));
 
-            builder.setProxyOptions(createProxyOptions(proxies, config.allowDirectFallback));
+            ProxyOptions proxyOptions;
+            createProxyOptions: {
+                boolean directFallback = config.allowDirectFallback;
+                if (useProxyListInt()) {
+                    proxyOptions = ProxyOptions.fromProxyList(
+                            proxies,
+                            directFallback
+                                    ? ALL_PROXIES_FAILED_BEHAVIOR_ALLOW_DIRECT
+                                    : ALL_PROXIES_FAILED_BEHAVIOR_DISALLOW_DIRECT
+                    );
+                    break createProxyOptions;
+                }
+
+                if (directFallback) {
+                    // Legacy Cronet proxy APIs use a null proxy as the direct fallback sentinel.
+                    proxies.add(null);
+                }
+                proxyOptions = ProxyOptions.fromProxyList(proxies);
+            }
+            builder.setProxyOptions(proxyOptions);
             PROXY_OPTIONS_APPLIED_ON_CURRENT_THREAD.set(true);
         } catch (Throwable ex) {
             PROXY_OPTIONS_APPLIED_ON_CURRENT_THREAD.remove();
@@ -135,23 +167,6 @@ public final class NetworkProxyPatch {
         initialize();
     }
 
-    private static ProxyOptions createProxyOptions(ArrayList<Proxy> proxies, boolean allowDirectFallback) {
-        if (useProxyListInt()) {
-            return ProxyOptions.fromProxyList(
-                    proxies,
-                    allowDirectFallback
-                            ? ALL_PROXIES_FAILED_BEHAVIOR_ALLOW_DIRECT
-                            : ALL_PROXIES_FAILED_BEHAVIOR_DISALLOW_DIRECT
-            );
-        }
-
-        if (allowDirectFallback) {
-            // Legacy Cronet proxy APIs use a null proxy as the direct fallback sentinel.
-            proxies.add(null);
-        }
-        return ProxyOptions.fromProxyList(proxies);
-    }
-
     private static HttpURLConnection openConnection(URL url) throws IOException {
         String protocol = url.getProtocol();
         boolean httpTarget = "http".equalsIgnoreCase(protocol);
@@ -171,44 +186,37 @@ public final class NetworkProxyPatch {
 
         // Plain HTTP does not use CONNECT, so proxy authentication needs an explicit header.
         if (httpTarget && !config.httpsProxy && PROXY_AUTH_ENABLED.get()) {
-            return openAuthenticatedHttpProxyConnection(url, config);
+            if (!"http".equalsIgnoreCase(url.getProtocol())) {
+                throw new IOException("Java proxy transport is restricted to plaintext HTTP");
+            }
+
+            HttpURLConnection connection = new PlaintextHttpURLConnection(
+                    (HttpURLConnection) url.openConnection(new java.net.Proxy(
+                            java.net.Proxy.Type.HTTP,
+                            InetSocketAddress.createUnresolved(config.host, config.port)
+                    ))
+            );
+            String proxyAuthorization = getProxyAuthorizationHeader();
+            if (proxyAuthorization != null) {
+                connection.setRequestProperty(PROXY_AUTHORIZATION_HEADER, proxyAuthorization);
+            }
+
+            if (!config.allowDirectFallback) {
+                return connection;
+            }
+
+            return new ProxyFallbackHttpURLConnection(
+                    connection,
+                    openDirectHttpConnection(url),
+                    ex -> Logger.printInfo(
+                            () -> "HTTP proxy is unavailable; using direct fallback",
+                            ex
+                    )
+            );
         }
 
         // Cronet handles proxy failure and direct fallback internally.
         return CronetTransport.openConnection(url, true, config.allowDirectFallback);
-    }
-
-    private static HttpURLConnection openAuthenticatedHttpProxyConnection(
-            URL url,
-            ProxyConfig config
-    ) throws IOException {
-        if (!"http".equalsIgnoreCase(url.getProtocol())) {
-            throw new IOException("Java proxy transport is restricted to plaintext HTTP");
-        }
-
-        HttpURLConnection connection = new PlaintextHttpURLConnection(
-                (HttpURLConnection) url.openConnection(new java.net.Proxy(
-                        java.net.Proxy.Type.HTTP,
-                        InetSocketAddress.createUnresolved(config.host, config.port)
-                ))
-        );
-        String proxyAuthorization = getProxyAuthorizationHeader();
-        if (proxyAuthorization != null) {
-            connection.setRequestProperty(PROXY_AUTHORIZATION_HEADER, proxyAuthorization);
-        }
-
-        if (!config.allowDirectFallback) {
-            return connection;
-        }
-
-        return new ProxyFallbackHttpURLConnection(
-                connection,
-                openDirectHttpConnection(url),
-                ex -> Logger.printInfo(
-                        () -> "HTTP proxy is unavailable; using direct fallback",
-                        ex
-                )
-        );
     }
 
     private static HttpURLConnection openDirectHttpConnection(URL url) throws IOException {
@@ -228,18 +236,6 @@ public final class NetworkProxyPatch {
                 PROXY_HTTPS.get(),
                 PROXY_ALLOW_DIRECT_FALLBACK.get()
         );
-    }
-
-    private static List<Pair<String, String>> getProxyHeaders() {
-        String proxyAuthorization = getProxyAuthorizationHeader();
-        if (proxyAuthorization == null) {
-            return Collections.emptyList();
-        }
-
-        return Collections.singletonList(Pair.create(
-                PROXY_AUTHORIZATION_HEADER,
-                proxyAuthorization
-        ));
     }
 
     private static String getProxyAuthorizationHeader() {

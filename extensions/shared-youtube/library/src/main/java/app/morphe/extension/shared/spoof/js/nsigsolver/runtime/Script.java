@@ -43,7 +43,9 @@ public class Script {
         return code;
     }
 
-    public String getHash() {
+    @NonNull
+    @Override
+    public String toString() {
         if (cachedHash == null) {
             try {
                 MessageDigest digest = MessageDigest.getInstance("SHA3-512");
@@ -57,13 +59,7 @@ public class Script {
                 cachedHash = "";
             }
         }
-        return cachedHash;
-    }
-
-    @NonNull
-    @Override
-    public String toString() {
-        String hash = getHash();
+        String hash = cachedHash;
         String shortHash = hash.length() > 7 ? hash.substring(0, 7) : hash;
         return "<Script " + type.getValue() + " v" + version
                 + " (source: " + source.getValue() + ") variant="

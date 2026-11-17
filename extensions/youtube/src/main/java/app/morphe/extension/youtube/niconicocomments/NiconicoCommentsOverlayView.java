@@ -373,7 +373,32 @@ final class NiconicoCommentsOverlayView extends View {
                     comment.membership() ? MEMBERSHIP_COLOR : Color.WHITE
             ));
             strokePaint.setColor(applyOpacity(Color.BLACK));
-            drawCommentSegments(canvas, comment, x, y);
+            float segmentX = x;
+            for (NiconicoComment.Segment segment : comment.segments()) {
+                if (!segment.isEmoji()) {
+                    canvas.drawText(segment.text, segmentX, y, strokePaint);
+                    canvas.drawText(segment.text, segmentX, y, fillPaint);
+                    segmentX += fillPaint.measureText(segment.text);
+                    continue;
+                }
+
+                float emojiSize = fillPaint.getTextSize();
+                EmojiImageCache.Entry<Bitmap> state = ensureEmojiImage(segment.imageUrl);
+                if (state != null && state.value != null) {
+                    float centerY = y + ((fontMetrics.ascent + fontMetrics.descent) / 2);
+                    emojiDestination.set(
+                            segmentX,
+                            centerY - (emojiSize / 2),
+                            segmentX + emojiSize,
+                            centerY + (emojiSize / 2)
+                    );
+                    canvas.drawBitmap(state.value, null, emojiDestination, fillPaint);
+                } else if (state == null || state.failed) {
+                    canvas.drawText("□", segmentX, y, strokePaint);
+                    canvas.drawText("□", segmentX, y, fillPaint);
+                }
+                segmentX += emojiSize;
+            }
         }
 
         setHighFrameRate(videoPlaying && hasVisibleComment);
@@ -402,7 +427,32 @@ final class NiconicoCommentsOverlayView extends View {
         float rate = 0;
         if (high) {
             if (requestedRefreshRate == 0) {
-                requestedRefreshRate = findRefreshRate();
+                // The highest refresh rate of the current display resolution that is not above
+                // the max refresh rate setting, or the lowest one if all are above it.
+                findRefreshRate: {
+                    Display display = getDisplay();
+                    if (display == null) {
+                        requestedRefreshRate = 0;
+                        break findRefreshRate;
+                    }
+                    final float limit = maxRefreshRate >= Settings.NICONICO_COMMENTS_MAX_REFRESH_RATE_NO_LIMIT
+                            ? Float.MAX_VALUE
+                            : maxRefreshRate + 0.5f;
+                    Display.Mode current = display.getMode();
+                    float highest = 0;
+                    float lowest = Float.MAX_VALUE;
+                    for (Display.Mode mode : display.getSupportedModes()) {
+                        if (mode.getPhysicalWidth() == current.getPhysicalWidth()
+                                && mode.getPhysicalHeight() == current.getPhysicalHeight()) {
+                            float modeRate = mode.getRefreshRate();
+                            lowest = Math.min(lowest, modeRate);
+                            if (modeRate <= limit) {
+                                highest = Math.max(highest, modeRate);
+                            }
+                        }
+                    }
+                    requestedRefreshRate = highest > 0 ? highest : lowest;
+                }
             }
             rate = requestedRefreshRate;
         }
@@ -413,34 +463,6 @@ final class NiconicoCommentsOverlayView extends View {
         params.preferredRefreshRate = rate;
         windowRefreshRate = rate;
         window.setAttributes(params);
-    }
-
-    /**
-     * @return The highest refresh rate of the current display resolution that is not above
-     *         the max refresh rate setting, or the lowest one if all are above it.
-     */
-    private float findRefreshRate() {
-        Display display = getDisplay();
-        if (display == null) {
-            return 0;
-        }
-        final float limit = maxRefreshRate >= Settings.NICONICO_COMMENTS_MAX_REFRESH_RATE_NO_LIMIT
-                ? Float.MAX_VALUE
-                : maxRefreshRate + 0.5f;
-        Display.Mode current = display.getMode();
-        float highest = 0;
-        float lowest = Float.MAX_VALUE;
-        for (Display.Mode mode : display.getSupportedModes()) {
-            if (mode.getPhysicalWidth() == current.getPhysicalWidth()
-                    && mode.getPhysicalHeight() == current.getPhysicalHeight()) {
-                float rate = mode.getRefreshRate();
-                lowest = Math.min(lowest, rate);
-                if (rate <= limit) {
-                    highest = Math.max(highest, rate);
-                }
-            }
-        }
-        return highest > 0 ? highest : lowest;
     }
 
     @Override
@@ -501,40 +523,6 @@ final class NiconicoCommentsOverlayView extends View {
         return width;
     }
 
-    private void drawCommentSegments(
-            Canvas canvas,
-            NiconicoComment comment,
-            float startX,
-            float baseline
-    ) {
-        float x = startX;
-        for (NiconicoComment.Segment segment : comment.segments()) {
-            if (!segment.isEmoji()) {
-                canvas.drawText(segment.text, x, baseline, strokePaint);
-                canvas.drawText(segment.text, x, baseline, fillPaint);
-                x += fillPaint.measureText(segment.text);
-                continue;
-            }
-
-            float emojiSize = fillPaint.getTextSize();
-            EmojiImageCache.Entry<Bitmap> state = ensureEmojiImage(segment.imageUrl);
-            if (state != null && state.value != null) {
-                float centerY = baseline + ((fontMetrics.ascent + fontMetrics.descent) / 2);
-                emojiDestination.set(
-                        x,
-                        centerY - (emojiSize / 2),
-                        x + emojiSize,
-                        centerY + (emojiSize / 2)
-                );
-                canvas.drawBitmap(state.value, null, emojiDestination, fillPaint);
-            } else if (state == null || state.failed) {
-                canvas.drawText("□", x, baseline, strokePaint);
-                canvas.drawText("□", x, baseline, fillPaint);
-            }
-            x += emojiSize;
-        }
-    }
-
     private void updateEmojiDemand(long videoTimeMs) {
         neededEmojiUrls.clear();
         for (CommentSchedule.ScheduledComment scheduled : schedule.comments()) {
@@ -556,39 +544,37 @@ final class NiconicoCommentsOverlayView extends View {
         EmojiImageCache.Entry<Bitmap> state = emojiImageCache.beginLoad(imageUrl, neededEmojiUrls);
         if (state == null) return null;
         final int generation = emojiGeneration.get();
-        EMOJI_EXECUTOR.execute(() -> loadEmojiImage(imageUrl, state, generation));
-        return state;
-    }
-
-    private void loadEmojiImage(String imageUrl, EmojiImageCache.Entry<Bitmap> state, int generation) {
-        if (generation != emojiGeneration.get()) return;
-        HttpURLConnection connection = null;
-        Bitmap bitmap = null;
-        try {
-            connection = Requester.openConnection(imageUrl);
-            connection.setConnectTimeout(EMOJI_CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(EMOJI_READ_TIMEOUT_MS);
-            connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent", EMOJI_USER_AGENT);
-            if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
-                try (InputStream input = connection.getInputStream()) {
-                    bitmap = BitmapFactory.decodeStream(input);
+        EMOJI_EXECUTOR.execute(() -> {
+            if (generation != emojiGeneration.get()) return;
+            HttpURLConnection connection = null;
+            Bitmap bitmap = null;
+            try {
+                connection = Requester.openConnection(imageUrl);
+                connection.setConnectTimeout(EMOJI_CONNECT_TIMEOUT_MS);
+                connection.setReadTimeout(EMOJI_READ_TIMEOUT_MS);
+                connection.setInstanceFollowRedirects(true);
+                connection.setRequestProperty("User-Agent", EMOJI_USER_AGENT);
+                if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
+                    try (InputStream input = connection.getInputStream()) {
+                        bitmap = BitmapFactory.decodeStream(input);
+                    }
+                }
+            } catch (Exception ex) {
+                Logger.printInfo(() -> "Could not load emoji: " + imageUrl, ex);
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
                 }
             }
-        } catch (Exception ex) {
-            Logger.printInfo(() -> "Could not load emoji: " + imageUrl, ex);
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
-        }
+            Bitmap loadedBitmap = bitmap;
 
-        Bitmap loadedBitmap = bitmap;
-        post(() -> {
-            if (generation == emojiGeneration.get() && emojiImageCache.complete(imageUrl, state, loadedBitmap)) {
-                requestNextFrame();
-            }
+            post(() -> {
+                if (generation == emojiGeneration.get() && emojiImageCache.complete(imageUrl, state, loadedBitmap)) {
+                    requestNextFrame();
+                }
+            });
         });
+        return state;
     }
 
     private void requestNextFrame() {
