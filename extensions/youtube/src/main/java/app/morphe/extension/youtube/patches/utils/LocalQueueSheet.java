@@ -227,7 +227,27 @@ public final class LocalQueueSheet {
         }
 
         if (items.isEmpty()) {
-            list.addView(createEmptyState());
+            LinearLayout layout = new LinearLayout(context);
+            layout.setOrientation(LinearLayout.VERTICAL);
+            layout.setGravity(Gravity.CENTER_HORIZONTAL);
+            layout.setPadding(Dim.dp32, Dim.dp36, Dim.dp32, Dim.dp28);
+
+            TextView title = new TextView(context);
+            title.setText(str("morphe_local_queue_empty"));
+            title.setTextColor(foregroundColor);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            title.setTypeface(title.getTypeface(), Typeface.BOLD);
+            title.setGravity(Gravity.CENTER);
+            layout.addView(title);
+
+            TextView hint = new TextView(context);
+            hint.setText(str("morphe_local_queue_empty_hint"));
+            hint.setTextColor(mutedColor);
+            hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            hint.setGravity(Gravity.CENTER);
+            hint.setPadding(0, Dim.dp6, 0, 0);
+            layout.addView(hint);
+            list.addView(layout);
         }
 
         for (int i = 0, size = items.size(); i < size; i++) {
@@ -238,30 +258,6 @@ public final class LocalQueueSheet {
         }
 
         scrollView.post(this::loadVisibleRows);
-    }
-
-    private View createEmptyState() {
-        LinearLayout layout = new LinearLayout(context);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER_HORIZONTAL);
-        layout.setPadding(Dim.dp32, Dim.dp36, Dim.dp32, Dim.dp28);
-
-        TextView title = new TextView(context);
-        title.setText(str("morphe_local_queue_empty"));
-        title.setTextColor(foregroundColor);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        title.setTypeface(title.getTypeface(), Typeface.BOLD);
-        title.setGravity(Gravity.CENTER);
-        layout.addView(title);
-
-        TextView hint = new TextView(context);
-        hint.setText(str("morphe_local_queue_empty_hint"));
-        hint.setTextColor(mutedColor);
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        hint.setGravity(Gravity.CENTER);
-        hint.setPadding(0, Dim.dp6, 0, 0);
-        layout.addView(hint);
-        return layout;
     }
 
     private final class Row {
@@ -585,7 +581,43 @@ public final class LocalQueueSheet {
             case MotionEvent.ACTION_CANCEL:
                 if (drag == null || drag.row != row) return false;
 
-                finishDrag(drag);
+                DragSession session = drag;
+                final int origin = session.origin;
+                final int target = session.target;
+
+                float settle = 0;
+                if (target > origin) {
+                    for (int j = origin + 1; j <= target; j++) settle += session.heights[j];
+                } else if (target < origin) {
+                    for (int j = target; j < origin; j++) settle -= session.heights[j];
+                }
+
+                session.row.root.animate()
+                        .translationY(settle)
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(SETTLE_MILLISECONDS)
+                        .setListener(new AnimatorListenerAdapter() {
+                            @Override
+                            public void onAnimationEnd(Animator animation) {
+                                session.row.root.animate().setListener(null);
+                                for (Row row : rows) {
+                                    row.root.animate().cancel();
+                                    row.root.setTranslationY(0);
+                                    row.shift = 0;
+                                }
+                                session.row.root.setElevation(0);
+                                if (drag == session) {
+                                    drag = null;
+                                }
+                                if (target != origin) {
+                                    LocalQueuePatch.moveTo(session.row.videoId, rows.get(target).videoId);
+                                    renderPending = true;
+                                }
+                                endInteraction();
+                            }
+                        })
+                        .start();
                 return true;
 
             default:
@@ -634,45 +666,6 @@ public final class LocalQueueSheet {
                 other.root.animate().translationY(shift).setDuration(SHIFT_MILLISECONDS).start();
             }
         }
-    }
-
-    private void finishDrag(DragSession session) {
-        final int origin = session.origin;
-        final int target = session.target;
-
-        float settle = 0;
-        if (target > origin) {
-            for (int j = origin + 1; j <= target; j++) settle += session.heights[j];
-        } else if (target < origin) {
-            for (int j = target; j < origin; j++) settle -= session.heights[j];
-        }
-
-        session.row.root.animate()
-                .translationY(settle)
-                .scaleX(1f)
-                .scaleY(1f)
-                .setDuration(SETTLE_MILLISECONDS)
-                .setListener(new AnimatorListenerAdapter() {
-                    @Override
-                    public void onAnimationEnd(Animator animation) {
-                        session.row.root.animate().setListener(null);
-                        for (Row row : rows) {
-                            row.root.animate().cancel();
-                            row.root.setTranslationY(0);
-                            row.shift = 0;
-                        }
-                        session.row.root.setElevation(0);
-                        if (drag == session) {
-                            drag = null;
-                        }
-                        if (target != origin) {
-                            LocalQueuePatch.moveTo(session.row.videoId, rows.get(target).videoId);
-                            renderPending = true;
-                        }
-                        endInteraction();
-                    }
-                })
-                .start();
     }
 
     private final class SwipeRevealRow extends FrameLayout {

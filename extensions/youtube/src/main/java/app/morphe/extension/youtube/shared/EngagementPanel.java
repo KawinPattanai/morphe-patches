@@ -75,7 +75,16 @@ public final class EngagementPanel {
     }
 
     public static boolean isDescription() {
-        return checkIdsInQueue(videoDescriptionPanelName);
+        List<String> ids = videoDescriptionPanelName;
+        if (ids == null) {
+            return false;
+        }
+        for (String id : ids) {
+            if (contains(id)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -103,17 +112,5 @@ public final class EngagementPanel {
             }
         }
         return null;
-    }
-
-    public static boolean checkIdsInQueue(List<String> ids) {
-        if (ids == null) {
-            return false;
-        }
-        for (String id : ids) {
-            if (contains(id)) {
-                return true;
-            }
-        }
-        return false;
     }
 }

@@ -1489,52 +1489,50 @@ public final class NativePlaylistQueuePatch {
     private static void onPlaybackContextChanged() {
         Utils.runOnMainThreadNowOrLater(() -> {
             try {
-                updatePlaybackContext();
+                updatePlaybackContext: {
+                    if (!AddToQueuePatch.isNativeQueueEnabled()) {
+                        releaseNativeQueue();
+                        break updatePlaybackContext;
+                    }
+
+                    PlayerType currentType = PlayerType.getCurrent();
+                    if (ShortsPlayerState.isOpen() || currentType == PlayerType.HIDDEN) {
+                        pendingReload = null;
+                    }
+                    if (pendingUndo != null && pendingUndo.closedPlayback() != null) {
+                        // Until native close completes, queued notifications can still describe
+                        // the old mini player or its dismissal animation. Once feedback is shown,
+                        // an active player means another session and must invalidate this Undo.
+                        boolean closing = pendingUndo.closedPlayback().feedbackOwner != null
+                                && (currentType == PlayerType.WATCH_WHILE_MINIMIZED
+                                || currentType == PlayerType.WATCH_WHILE_SLIDING_MINIMIZED_DISMISSED
+                                || currentType == PlayerType.WATCH_WHILE_SLIDING_FULLSCREEN_DISMISSED);
+                        if (ShortsPlayerState.isOpen() || currentType == PlayerType.HIDDEN
+                                || (!currentType.isNoneOrHidden() && currentType != PlayerType.INLINE_MINIMAL && !closing)) {
+                            pendingUndo = null;
+                        }
+                    } else if (ShortsPlayerState.isOpen() || currentType.isNoneOrHidden()
+                            || currentType == PlayerType.INLINE_MINIMAL) {
+                        pendingUndo = null;
+                    }
+
+                    if (queue != null && (ShortsPlayerState.isOpen() || PlayerType.getCurrent() == PlayerType.HIDDEN)) {
+                        updateShortsSession(controllerRef.get());
+                    }
+
+                    // The regular player can hide before Shorts attaches, and can reappear
+                    // before its video-ID callback. Reconcile after the native event finishes.
+                    Utils.runOnMainThread(() -> {
+                        try {
+                            reconcilePlaybackContext();
+                        } catch (Exception ex) {
+                            Logger.printException(() -> "reconcilePlaybackContext failure", ex);
+                        }
+                    });
+                }
                 loadPlaylistWindow();
             } catch (Exception ex) {
                 Logger.printException(() -> "onPlaybackContextChanged failure", ex);
-            }
-        });
-    }
-
-    private static void updatePlaybackContext() {
-        if (!AddToQueuePatch.isNativeQueueEnabled()) {
-            releaseNativeQueue();
-            return;
-        }
-
-        PlayerType currentType = PlayerType.getCurrent();
-        if (ShortsPlayerState.isOpen() || currentType == PlayerType.HIDDEN) {
-            pendingReload = null;
-        }
-        if (pendingUndo != null && pendingUndo.closedPlayback() != null) {
-            // Until native close completes, queued notifications can still describe
-            // the old mini player or its dismissal animation. Once feedback is shown,
-            // an active player means another session and must invalidate this Undo.
-            boolean closing = pendingUndo.closedPlayback().feedbackOwner != null
-                    && (currentType == PlayerType.WATCH_WHILE_MINIMIZED
-                    || currentType == PlayerType.WATCH_WHILE_SLIDING_MINIMIZED_DISMISSED
-                    || currentType == PlayerType.WATCH_WHILE_SLIDING_FULLSCREEN_DISMISSED);
-            if (ShortsPlayerState.isOpen() || currentType == PlayerType.HIDDEN
-                    || (!currentType.isNoneOrHidden() && currentType != PlayerType.INLINE_MINIMAL && !closing)) {
-                pendingUndo = null;
-            }
-        } else if (ShortsPlayerState.isOpen() || currentType.isNoneOrHidden()
-                || currentType == PlayerType.INLINE_MINIMAL) {
-            pendingUndo = null;
-        }
-
-        if (queue != null && (ShortsPlayerState.isOpen() || PlayerType.getCurrent() == PlayerType.HIDDEN)) {
-            updateShortsSession(controllerRef.get());
-        }
-
-        // The regular player can hide before Shorts attaches, and can reappear
-        // before its video-ID callback. Reconcile after the native event finishes.
-        Utils.runOnMainThread(() -> {
-            try {
-                reconcilePlaybackContext();
-            } catch (Exception ex) {
-                Logger.printException(() -> "reconcilePlaybackContext failure", ex);
             }
         });
     }
@@ -1700,60 +1698,58 @@ public final class NativePlaylistQueuePatch {
     public static void onNativeQueueResponse(NativePlayback playback) {
         Utils.runOnMainThread(() -> {
             try {
-                attachNativeQueueResponse(playback);
+                attachNativeQueueResponse: {
+                    if (!AddToQueuePatch.isNativeQueueEnabled()) {
+                        releaseNativeQueue();
+                        break attachNativeQueueResponse;
+                    }
+
+                    if (queue == null) {
+                        showPendingReloadFeedback();
+                        tryStartQueue();
+                        break attachNativeQueueResponse;
+                    }
+
+                    if (hasForeignPlaybackPlaylist()) {
+                        break attachNativeQueueResponse;
+                    }
+                    if (!queue.currentEntry().videoId().equals(VideoInformation.getVideoId())) {
+                        if (isQueueSuspended()) {
+                            break attachNativeQueueResponse;
+                        }
+                        PlaylistController controller = readyController();
+                        if (controller != null && playbackFor(controller) == playback) {
+                            updateController(controller);
+                        }
+                        break attachNativeQueueResponse;
+                    }
+
+                    if (playback.patch_isLocalQueue()) {
+                        break attachNativeQueueResponse;
+                    }
+                    boolean current = playbackFor(returningController()) == playback;
+                    for (NotificationControls controls : new ArrayList<>(notificationControls)) {
+                        ServiceNavigator service = controls.patch_getQueueMediaControls().patch_getQueueNavigator();
+                        if (service != null && VideoInformation.getVideoId().equals(service.patch_getVideoId())
+                                && service.patch_getQueuePlayback() == playback) {
+                            current = true;
+                        }
+                    }
+
+                    if (!current) {
+                        break attachNativeQueueResponse;
+                    }
+                    if (playback.patch_attachQueue(renderer(queue), currentQueueCommand(queue))) {
+                        // Opening an owned row can create a new native backend with repeat off.
+                        // This is still the same local queue, so retain its pre-navigation mode.
+                        playback.patch_restoreQueueRepeat(queue.repeatMode());
+                        nativePlaybackRef = new WeakReference<>(playback);
+                    }
+                }
             } catch (Exception ex) {
                 Logger.printException(() -> "onNativeQueueResponse failure", ex);
             }
         });
-    }
-
-    private static void attachNativeQueueResponse(NativePlayback playback) {
-        if (!AddToQueuePatch.isNativeQueueEnabled()) {
-            releaseNativeQueue();
-            return;
-        }
-
-        if (queue == null) {
-            showPendingReloadFeedback();
-            tryStartQueue();
-            return;
-        }
-
-        if (hasForeignPlaybackPlaylist()) {
-            return;
-        }
-        if (!queue.currentEntry().videoId().equals(VideoInformation.getVideoId())) {
-            if (isQueueSuspended()) {
-                return;
-            }
-            PlaylistController controller = readyController();
-            if (controller != null && playbackFor(controller) == playback) {
-                updateController(controller);
-            }
-            return;
-        }
-
-        if (playback.patch_isLocalQueue()) {
-            return;
-        }
-        boolean current = playbackFor(returningController()) == playback;
-        for (NotificationControls controls : new ArrayList<>(notificationControls)) {
-            ServiceNavigator service = controls.patch_getQueueMediaControls().patch_getQueueNavigator();
-            if (service != null && VideoInformation.getVideoId().equals(service.patch_getVideoId())
-                    && service.patch_getQueuePlayback() == playback) {
-                current = true;
-            }
-        }
-
-        if (!current) {
-            return;
-        }
-        if (playback.patch_attachQueue(renderer(queue), currentQueueCommand(queue))) {
-            // Opening an owned row can create a new native backend with repeat off.
-            // This is still the same local queue, so retain its pre-navigation mode.
-            playback.patch_restoreQueueRepeat(queue.repeatMode());
-            nativePlaybackRef = new WeakReference<>(playback);
-        }
     }
 
     /**
@@ -3266,7 +3262,37 @@ public final class NativePlaylistQueuePatch {
                     if (pendingMixAddition != choice) {
                         return;
                     }
-                    Utils.runOnMainThread(() -> completeMixAddition(choice, videos));
+                    Utils.runOnMainThread(() -> {
+                        if (pendingMixAddition != choice) {
+                            return;
+                        }
+                        pendingMixAddition = null;
+                        PlaylistController controller = choice.controller().get();
+                        NativePlayback playback = choice.playback().get();
+                        if (isInvalidMixChoice(choice, controller, playback) || controller == null || playback == null) {
+                            return;
+                        }
+                        if (videos == null || videos.isEmpty()) {
+                            Utils.showSnackbarShort(str("morphe_queue_manager_fetch_failed_add"));
+                            return;
+                        }
+
+                        try {
+                            for (VideoMetadata video : videos) {
+                                metadataCache.put(video.videoId(), video);
+                            }
+
+                            PlaylistQueue updated = queue.addPlaylist(PlaylistQueue.fromMetadata(videos), true)
+                                    .withRepeatMode(playback.patch_getRepeatMode());
+                            if (publish(controller, updated, true)) {
+                                Utils.showSnackbarShort(str("morphe_queue_manager_fetch_succeeded_add"));
+                                completeMetadata();
+                            }
+                        } catch (Exception ex) {
+                            Logger.printException(() -> "Could not append Mix to native queue", ex);
+                            Utils.showSnackbarShort(str("morphe_queue_manager_fetch_failed_add"));
+                        }
+                    });
                 });
 
                 return true;
@@ -3338,38 +3364,6 @@ public final class NativePlaylistQueuePatch {
         return context.get(SENDER_VIEW_KEY) instanceof View view ? view : null;
     }
 
-    private static void completeMixAddition(MixChoice choice, @Nullable List<VideoMetadata> videos) {
-        if (pendingMixAddition != choice) {
-            return;
-        }
-        pendingMixAddition = null;
-        PlaylistController controller = choice.controller().get();
-        NativePlayback playback = choice.playback().get();
-        if (isInvalidMixChoice(choice, controller, playback) || controller == null || playback == null) {
-            return;
-        }
-        if (videos == null || videos.isEmpty()) {
-            Utils.showSnackbarShort(str("morphe_queue_manager_fetch_failed_add"));
-            return;
-        }
-
-        try {
-            for (VideoMetadata video : videos) {
-                metadataCache.put(video.videoId(), video);
-            }
-
-            PlaylistQueue updated = queue.addPlaylist(PlaylistQueue.fromMetadata(videos), true)
-                    .withRepeatMode(playback.patch_getRepeatMode());
-            if (publish(controller, updated, true)) {
-                Utils.showSnackbarShort(str("morphe_queue_manager_fetch_succeeded_add"));
-                completeMetadata();
-            }
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not append Mix to native queue", ex);
-            Utils.showSnackbarShort(str("morphe_queue_manager_fetch_failed_add"));
-        }
-    }
-
     /**
      * Injection point.
      * <p>
@@ -3431,20 +3425,6 @@ public final class NativePlaylistQueuePatch {
                         .setVideoId(candidate.currentEntry().videoId())).build().toByteArray();
     }
 
-    private static boolean hasChangedItems(@Nullable PlaylistQueue currentQueue, PlaylistQueue candidate) {
-        if (currentQueue == null || currentQueue.entries().size() != candidate.entries().size()) {
-            return true;
-        }
-        // Equal video/title values can still be different occurrences of a
-        // duplicated video. A shuffle must also move the native selection.
-        for (int index = 0; index < candidate.entries().size(); index++) {
-            if (currentQueue.entries().get(index) != candidate.entries().get(index)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static boolean publish(PlaylistController controller, PlaylistQueue candidate, boolean reportFailure) {
         publishing = true;
         Object previousModel = controller.patch_getModel();
@@ -3469,7 +3449,23 @@ public final class NativePlaylistQueuePatch {
             }
 
             PlaylistQueue currentQueue = queue;
-            boolean changedItems = hasChangedItems(currentQueue, candidate);
+            boolean changedItems;
+            hasChangedItems: {
+                if (currentQueue == null || currentQueue.entries().size() != candidate.entries().size()) {
+                    changedItems = true;
+                    break hasChangedItems;
+                }
+
+                // Equal video/title values can still be different occurrences of a
+                // duplicated video. A shuffle must also move the native selection.
+                for (int index = 0; index < candidate.entries().size(); index++) {
+                    if (currentQueue.entries().get(index) != candidate.entries().get(index)) {
+                        changedItems = true;
+                        break hasChangedItems;
+                    }
+                }
+                changedItems = false;
+            }
             boolean restoringQueue = currentQueue != null && !playback.patch_isLocalQueue();
             if (!playback.patch_isLocalQueue() || changedItems) {
                 if (!playback.patch_attachQueue(panel, currentQueueCommand(candidate))) {

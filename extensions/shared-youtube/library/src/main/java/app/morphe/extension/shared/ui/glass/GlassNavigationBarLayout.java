@@ -215,7 +215,25 @@ public final class GlassNavigationBarLayout {
             }
 
             for (View child : contents) {
-                if (!isShownIn(child, button)) continue;
+                // If the view and its parents up to the ancestor are visible.
+                boolean isShownIn;
+                isShownIn: {
+                    View view = child;
+                    while (view != button) {
+                        if (view.getVisibility() != View.VISIBLE) {
+                            isShownIn = false;
+                            break isShownIn;
+                        }
+                        ViewParent parent = view.getParent();
+                        if (!(parent instanceof View parentView)) {
+                            isShownIn = false;
+                            break isShownIn;
+                        }
+                        view = parentView;
+                    }
+                    isShownIn = true;
+                }
+                if (!isShownIn) continue;
 
                 // The whole label, also if the button is narrower and the label is cut.
                 buttonContentWidth = Math.max(buttonContentWidth, child instanceof TextView label
@@ -275,19 +293,6 @@ public final class GlassNavigationBarLayout {
             button.setVisibility(View.VISIBLE);
         }
         hidden.clear();
-    }
-
-    /**
-     * @return If the view and its parents up to the ancestor are visible.
-     */
-    private static boolean isShownIn(View view, View ancestor) {
-        while (view != ancestor) {
-            if (view.getVisibility() != View.VISIBLE) return false;
-            ViewParent parent = view.getParent();
-            if (!(parent instanceof View parentView)) return false;
-            view = parentView;
-        }
-        return true;
     }
 
     /**

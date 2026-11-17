@@ -55,31 +55,27 @@ public class PictureinPictureButtonPatch {
                 return;
             }
 
-            activity.enterPictureInPictureMode(buildPipParams(activity));
+            PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
+            Rational aspectRatio = DEFAULT_ASPECT_RATIO;
+
+            View playerView = activity.findViewById(ResourceUtils.getIdIdentifier("player_view"));
+            if (playerView != null && playerView.getWidth() > 0 && playerView.getHeight() > 0) {
+                final int width = playerView.getWidth();
+                final int height = playerView.getHeight();
+                final float ratio = (float) width / height;
+                if (ratio >= MIN_ASPECT_RATIO && ratio <= MAX_ASPECT_RATIO) {
+                    aspectRatio = new Rational(width, height);
+                }
+
+                Rect sourceRect = new Rect();
+                if (playerView.getGlobalVisibleRect(sourceRect)) {
+                    builder.setSourceRectHint(sourceRect);
+                }
+            }
+            PictureInPictureParams pipParams = builder.setAspectRatio(aspectRatio).build();
+            activity.enterPictureInPictureMode(pipParams);
         } catch (Exception ex) {
             Logger.printException(() -> "enterPictureInPicture failure", ex);
         }
-    }
-
-    private static PictureInPictureParams buildPipParams(Activity activity) {
-        PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
-        Rational aspectRatio = DEFAULT_ASPECT_RATIO;
-
-        View playerView = activity.findViewById(ResourceUtils.getIdIdentifier("player_view"));
-        if (playerView != null && playerView.getWidth() > 0 && playerView.getHeight() > 0) {
-            final int width = playerView.getWidth();
-            final int height = playerView.getHeight();
-            final float ratio = (float) width / height;
-            if (ratio >= MIN_ASPECT_RATIO && ratio <= MAX_ASPECT_RATIO) {
-                aspectRatio = new Rational(width, height);
-            }
-
-            Rect sourceRect = new Rect();
-            if (playerView.getGlobalVisibleRect(sourceRect)) {
-                builder.setSourceRectHint(sourceRect);
-            }
-        }
-
-        return builder.setAspectRatio(aspectRatio).build();
     }
 }

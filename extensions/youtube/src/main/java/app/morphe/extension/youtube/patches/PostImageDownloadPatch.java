@@ -398,7 +398,35 @@ public final class PostImageDownloadPatch {
                                      boolean isImagePost) {
         String key = NOT_IMAGE_POST;
         if (isImagePost) {
-            Map<String, PostImage> images = findImages(texts);
+            // Base url -> image, in the order of the post.
+            Map<String, PostImage> images = new LinkedHashMap<>();
+            for (String text : texts) {
+                Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
+                while (matcher.find()) {
+                    String url = matcher.group();
+                    if (url.startsWith("//")) {
+                        url = "https:" + url;
+                    }
+
+                    final int optionsIndex = url.indexOf('=');
+                    String base = optionsIndex < 0 ? url : url.substring(0, optionsIndex);
+                    String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
+                    if (isAvatarOptions(options)) {
+                        continue;
+                    }
+
+                    final int size = getImageSize(options);
+                    if (size < MIN_IMAGE_SIZE) {
+                        continue;
+                    }
+
+                    // The largest shown size of each image.
+                    PostImage previous = images.get(base);
+                    if (previous == null || size > previous.shownSize()) {
+                        images.put(base, new PostImage(base + ORIGINAL_SIZE_OPTIONS, url, size));
+                    }
+                }
+            }
             if (images.isEmpty()) {
                 return;
             }
@@ -424,38 +452,6 @@ public final class PostImageDownloadPatch {
                 }
             }
         }
-    }
-
-    /**
-     * @return Base url -> image, in the order of the post.
-     */
-    private static Map<String, PostImage> findImages(List<String> texts) {
-        Map<String, PostImage> images = new LinkedHashMap<>();
-        for (String text : texts) {
-            Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
-            while (matcher.find()) {
-                String url = matcher.group();
-                if (url.startsWith("//")) {
-                    url = "https:" + url;
-                }
-                final int optionsIndex = url.indexOf('=');
-                String base = optionsIndex < 0 ? url : url.substring(0, optionsIndex);
-                String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
-                if (isAvatarOptions(options)) {
-                    continue;
-                }
-                final int size = getImageSize(options);
-                if (size < MIN_IMAGE_SIZE) {
-                    continue;
-                }
-                // The largest shown size of each image.
-                PostImage previous = images.get(base);
-                if (previous == null || size > previous.shownSize()) {
-                    images.put(base, new PostImage(base + ORIGINAL_SIZE_OPTIONS, url, size));
-                }
-            }
-        }
-        return images;
     }
 
     // endregion
@@ -567,18 +563,6 @@ public final class PostImageDownloadPatch {
         }
     }
 
-    /**
-     * @return The languages YouTube can show the texts of the server in: the language of the
-     *         YouTube views, the languages of the device, and the language of Morphe.
-     */
-    private static Set<Locale> getShareLabelLocales(View view) {
-        Set<Locale> locales = new LinkedHashSet<>();
-        addLocales(locales, view.getResources().getConfiguration().getLocales());
-        locales.add(Locale.getDefault());
-        addLocales(locales, LocaleList.getDefault());
-        return locales;
-    }
-
     private static void addLocales(Set<Locale> locales, LocaleList list) {
         for (int i = 0, size = list.size(); i < size; i++) {
             locales.add(list.get(i));
@@ -586,7 +570,11 @@ public final class PostImageDownloadPatch {
     }
 
     private static List<String> getShareLabels(View view) {
-        Set<Locale> locales = getShareLabelLocales(view);
+        // YouTube views, the languages of the device, and the language of Morphe.
+        Set<Locale> locales = new LinkedHashSet<>();
+        addLocales(locales, view.getResources().getConfiguration().getLocales());
+        locales.add(Locale.getDefault());
+        addLocales(locales, LocaleList.getDefault());
         String languages = locales.toString();
         if (shareLabels == null || !languages.equals(shareLabelLanguages)) {
             List<String> labels = new ArrayList<>();
@@ -640,16 +628,6 @@ public final class PostImageDownloadPatch {
         }
     }
 
-    private static boolean isShareDescription(CharSequence description, List<String> labels) {
-        String text = description.toString().trim();
-        for (String label : labels) {
-            if (text.equalsIgnoreCase(label)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /**
      * @return The Share button of the post, or null if it is not shown.
      */
@@ -662,11 +640,24 @@ public final class PostImageDownloadPatch {
                 continue;
             }
             CharSequence description = child.getContentDescription();
-            if (description != null && isShareDescription(description, labels)) {
-                rect.set(0, 0, child.getWidth(), child.getHeight());
-                root.offsetDescendantRectToMyCoords(child, rect);
-                if (rect.width() > 0 && rect.width() <= Dim.dp(MAX_SHARE_BUTTON_DP)) {
-                    return child;
+            if (description != null) {
+                boolean isShareDescription;
+                isShareDescription: {
+                    String text = description.toString().trim();
+                    for (String label : labels) {
+                        if (text.equalsIgnoreCase(label)) {
+                            isShareDescription = true;
+                            break isShareDescription;
+                        }
+                    }
+                    isShareDescription = false;
+                }
+                if (isShareDescription) {
+                    rect.set(0, 0, child.getWidth(), child.getHeight());
+                    root.offsetDescendantRectToMyCoords(child, rect);
+                    if (rect.width() > 0 && rect.width() <= Dim.dp(MAX_SHARE_BUTTON_DP)) {
+                        return child;
+                    }
                 }
             }
             if (child instanceof ComponentHost host) {
@@ -905,7 +896,19 @@ public final class PostImageDownloadPatch {
                     clearPressed();
                     if (hit) {
                         host.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                        download(getShownImages(host, getImages(card.key)));
+                        List<PostImage> shownImages;
+                        getShownImages: {
+                            List<PostImage> images = getImages(card.key);
+                            if (images == null || images.size() < 2) {
+                                shownImages = images;
+                                break getShownImages;
+                            }
+                            View carousel = findImageCarousel(host, null);
+                            final int index = carousel instanceof RecyclerView list ? getShownIndex(list) : -1;
+                            Logger.printDebug(() -> "Shown image " + index + " of " + images.size());
+                            shownImages = index >= 0 && index < images.size() ? List.of(images.get(index)) : images;
+                        }
+                        download(shownImages);
                     }
                 }
                 case MotionEvent.ACTION_CANCEL -> clearPressed();
@@ -923,20 +926,6 @@ public final class PostImageDownloadPatch {
             pressedCard.button.setPressed(false);
             pressedCard = null;
         }
-    }
-
-    /**
-     * @return The image the post shows now, or all images if it is not known.
-     */
-    @Nullable
-    private static List<PostImage> getShownImages(ComponentHost root, @Nullable List<PostImage> images) {
-        if (images == null || images.size() < 2) {
-            return images;
-        }
-        View carousel = findImageCarousel(root, null);
-        final int index = carousel instanceof RecyclerView list ? getShownIndex(list) : -1;
-        Logger.printDebug(() -> "Shown image " + index + " of " + images.size());
-        return index >= 0 && index < images.size() ? List.of(images.get(index)) : images;
     }
 
     /**

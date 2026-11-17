@@ -23,7 +23,6 @@ import app.morphe.util.addInstructionsAtControlFlowLabel
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.builder.MutableMethodImplementation
-import com.android.tools.smali.dexlib2.iface.reference.FieldReference
 import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 import com.android.tools.smali.dexlib2.immutable.ImmutableField
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
@@ -218,18 +217,8 @@ internal fun hookOfflineDownloadResume() {
         }
     }
 
-    applyDownloadStartTime(playerResponseModelType, descriptorType, startTimeMsField)
-}
-
-/**
- * YouTube can replace the start time of the play command while it loads the player response,
- * so the Downloads start time is set after YouTube sets its own and before playback starts.
- */
-private fun applyDownloadStartTime(
-    playerResponseModelType: String,
-    descriptorType: String,
-    startTimeMsField: FieldReference
-) {
+    // YouTube can replace the start time of the play command while it loads the player response,
+    // so the Downloads start time is set after YouTube sets its own and before playback starts.
     val loadMethod = localDirectorLoadFingerprint(playerResponseModelType, descriptorType)
         .instructionMatches.first().getMethodCalled()
     val loadTargetType = loadMethod.parameterTypes.first().toString()
@@ -239,7 +228,7 @@ private fun applyDownloadStartTime(
     val startPlayback = localDirectorStartPlaybackFingerprint(playerType).match(loadMethod)
     val (startTimeSetter, startPlaybackCall) = startPlayback.instructionMatches
 
-    val helperMethod = ImmutableMethod(
+    val applyStartTimeMethod = ImmutableMethod(
         startPlayback.classDef.type,
         "patch_applyDownloadStartTime",
         listOf(
@@ -273,14 +262,14 @@ private fun applyDownloadStartTime(
             """
         )
     }
-    startPlayback.classDef.methods.add(helperMethod)
+    startPlayback.classDef.methods.add(applyStartTimeMethod)
 
     startPlayback.method.cloneParameters().apply {
         // p1 is the load target and p2 is the descriptor. The original code does not use the
         // parameter registers of the cloned method.
         addInstructionsAtControlFlowLabel(
             startPlaybackCall.index + numberOfParameterRegistersLogical,
-            "invoke-static/range { p1 .. p2 }, $helperMethod"
+            "invoke-static/range { p1 .. p2 }, $applyStartTimeMethod"
         )
     }
 }

@@ -61,7 +61,32 @@ final class EdgeTtsV2Token {
         long seconds = Math.floorDiv(unixTimestampMillis, 1_000L) + WINDOWS_EPOCH_SECONDS;
         long ticks = Math.floorDiv(seconds, 300L) * 300L * 10_000_000L;
         byte[] data = (ticks + trustedClientToken).getBytes(StandardCharsets.US_ASCII);
-        byte[] digest = modifiedSha256(data);
+        if (data.length < 7) throw new IllegalArgumentException("Token data too short");
+        long length = 57L + data.length;
+        int tail = data.length - 7;
+        int zeros = (int) Math.floorMod(55L - length, 64L);
+        byte[] padded = new byte[tail + 1 + zeros + 8];
+        System.arraycopy(data, 7, padded, 0, tail);
+        padded[tail] = (byte) 0x80;
+        long bits = length * 8;
+        for (int i = 0; i < 8; i++) {
+            padded[padded.length - 1 - i] = (byte) (bits >>> (8 * i));
+        }
+        int[] state = init(data);
+        for (int pos = 0; pos < padded.length; pos += 64) {
+            int[] w = new int[64];
+            for (int i = 0; i < 16; i++) w[i] = bigEndian(padded, pos + i * 4);
+            expand(w, 16);
+            int[] working = rounds(state, w, 0);
+            for (int i = 0; i < 8; i++) state[i] += working[i];
+        }
+        byte[] digest = new byte[32];
+        for (int i = 0; i < 8; i++) {
+            digest[i * 4] = (byte) (state[i] >>> 24);
+            digest[i * 4 + 1] = (byte) (state[i] >>> 16);
+            digest[i * 4 + 2] = (byte) (state[i] >>> 8);
+            digest[i * 4 + 3] = (byte) state[i];
+        }
         int[] cs64 = cs64Digest(data, digest);
         return hexLE(cs64[0]) + hexLE(cs64[1]) + "-" + toHex(digest);
     }
@@ -115,35 +140,6 @@ final class EdgeTtsV2Token {
         int[] working = rounds(PARTIAL_STATE, w, 14);
         int[] result = new int[8];
         for (int i = 0; i < 8; i++) result[i] = INITIAL[i] + working[i];
-        return result;
-    }
-    private static byte[] modifiedSha256(byte[] data) {
-        if (data.length < 7) throw new IllegalArgumentException("Token data too short");
-        long length = 57L + data.length;
-        int tail = data.length - 7;
-        int zeros = (int) Math.floorMod(55L - length, 64L);
-        byte[] padded = new byte[tail + 1 + zeros + 8];
-        System.arraycopy(data, 7, padded, 0, tail);
-        padded[tail] = (byte) 0x80;
-        long bits = length * 8;
-        for (int i = 0; i < 8; i++) {
-            padded[padded.length - 1 - i] = (byte) (bits >>> (8 * i));
-        }
-        int[] state = init(data);
-        for (int pos = 0; pos < padded.length; pos += 64) {
-            int[] w = new int[64];
-            for (int i = 0; i < 16; i++) w[i] = bigEndian(padded, pos + i * 4);
-            expand(w, 16);
-            int[] working = rounds(state, w, 0);
-            for (int i = 0; i < 8; i++) state[i] += working[i];
-        }
-        byte[] result = new byte[32];
-        for (int i = 0; i < 8; i++) {
-            result[i * 4] = (byte) (state[i] >>> 24);
-            result[i * 4 + 1] = (byte) (state[i] >>> 16);
-            result[i * 4 + 2] = (byte) (state[i] >>> 8);
-            result[i * 4 + 3] = (byte) state[i];
-        }
         return result;
     }
     private static int[] cs64Digest(byte[] data, byte[] digest) {

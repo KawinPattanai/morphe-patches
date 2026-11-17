@@ -99,22 +99,6 @@ public class ColorPickerPreference extends EditTextPreference implements Setting
             getIdentifierOrThrow(ResourceType.LAYOUT, "morphe_color_dot_widget");
 
     /**
-     * Removes non-valid hex characters, converts to all uppercase,
-     * and adds # character to the start if not present.
-     */
-    public static String cleanupColorCodeString(String colorString, boolean includeAlpha) {
-        String result = "#" + PATTERN_NOT_HEX.matcher(colorString)
-                .replaceAll("").toUpperCase(Locale.ROOT);
-
-        int maxLength = includeAlpha ? COLOR_STRING_LENGTH_WITH_ALPHA : COLOR_STRING_LENGTH_WITHOUT_ALPHA;
-        if (result.length() < maxLength) {
-            return result;
-        }
-
-        return result.substring(0, maxLength);
-    }
-
-    /**
      * @param color Color, with or without alpha channel.
      * @param includeAlpha Whether to include the alpha channel in the output string.
      * @return #RRGGBB or #AARRGGBB hex color string
@@ -231,7 +215,22 @@ public class ColorPickerPreference extends EditTextPreference implements Setting
             public void afterTextChanged(Editable edit) {
                 try {
                     String colorString = edit.toString();
-                    String sanitizedColorString = cleanupColorCodeString(colorString, opacitySliderEnabled);
+                    // Removes non-valid hex characters, converts to all uppercase,
+                    // and adds # character to the start if not present.
+                    String sanitizedColorString;
+                    cleanupColorCodeString: {
+                        boolean includeAlpha = opacitySliderEnabled;
+                        String result = "#" + PATTERN_NOT_HEX.matcher(colorString)
+                                .replaceAll("").toUpperCase(Locale.ROOT);
+
+                        int maxLength = includeAlpha ? COLOR_STRING_LENGTH_WITH_ALPHA : COLOR_STRING_LENGTH_WITHOUT_ALPHA;
+                        if (result.length() < maxLength) {
+                            sanitizedColorString = result;
+                            break cleanupColorCodeString;
+                        }
+
+                        sanitizedColorString = result.substring(0, maxLength);
+                    }
                     if (!sanitizedColorString.equals(colorString)) {
                         edit.replace(0, colorString.length(), sanitizedColorString);
                         return;

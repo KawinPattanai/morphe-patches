@@ -77,7 +77,33 @@ public abstract class BaseGestureController extends GestureDetector.SimpleOnGest
 
     @Override
     public boolean submitTouchEvent(MotionEvent motionEvent) {
-        if (!canSwipe()) {
+        boolean canSwipe;
+        canSwipe: {
+            SwipeControlsConfigurationProvider config = controller.getConfig();
+
+            // Ignore if swipe is disabled.
+            if (!config.isSwipeControlsEnabled()) {
+                canSwipe = false;
+                break canSwipe;
+            }
+
+            // Ignore if status bar is visible (unless the screen is shared with another app).
+            if (controller.isStatusBarVisible() && !controller.isInSplitScreenMode()) {
+                canSwipe = false;
+                break canSwipe;
+            }
+
+            // Ignore if the On-the-go panel is open. It covers the fullscreen player,
+            // so the swipes on its controls would change the volume or brightness.
+            if (OnTheGoPatch.isOnTheGoActive()) {
+                canSwipe = false;
+                break canSwipe;
+            }
+
+            // Ignore if the native lock screen is engaged.
+            canSwipe = !config.shouldIgnoreSwipesWhenLocked() || !SwipeControlsHostActivity.isPlayerLocked();
+        }
+        if (!canSwipe) {
             // Do not leave the time bar scrubbing when swiping stops being possible during a seek.
             seek.end(true);
             return false;
@@ -111,29 +137,6 @@ public abstract class BaseGestureController extends GestureDetector.SimpleOnGest
 
         // Do not consume dropped events or events outside any swipe zone.
         return !dropped && ((consumed && inSwipeZone) || seeking);
-    }
-
-    private boolean canSwipe() {
-        SwipeControlsConfigurationProvider config = controller.getConfig();
-
-        // Ignore if swipe is disabled.
-        if (!config.isSwipeControlsEnabled()) {
-            return false;
-        }
-
-        // Ignore if status bar is visible (unless the screen is shared with another app).
-        if (controller.isStatusBarVisible() && !controller.isInSplitScreenMode()) {
-            return false;
-        }
-
-        // Ignore if the On-the-go panel is open. It covers the fullscreen player,
-        // so the swipes on its controls would change the volume or brightness.
-        if (OnTheGoPatch.isOnTheGoActive()) {
-            return false;
-        }
-
-        // Ignore if the native lock screen is engaged.
-        return !config.shouldIgnoreSwipesWhenLocked() || !SwipeControlsHostActivity.isPlayerLocked();
     }
 
     /**

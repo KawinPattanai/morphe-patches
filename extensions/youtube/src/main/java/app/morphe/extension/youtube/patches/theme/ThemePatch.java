@@ -520,7 +520,16 @@ public class ThemePatch extends BaseThemePatch {
                         ? RIVE_GLOW_ARTBOARD_WIDTH
                         : RIVE_GLOW_MORPHE_2_ARTBOARD_WIDTH;
                 final float artboardUnitsPerPixel = originalArtboardWidth / params.width;
-                Rect windowBounds = getWindowBounds(activity);
+                Rect windowBounds;
+                getWindowBounds: {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        windowBounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+                        break getWindowBounds;
+                    }
+
+                    DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
+                    windowBounds = new Rect(0, 0, metrics.widthPixels, metrics.heightPixels);
+                }
                 artboardWidth = windowBounds.width() * artboardUnitsPerPixel;
                 artboardHeight = windowBounds.height() * artboardUnitsPerPixel;
 
@@ -701,15 +710,6 @@ public class ThemePatch extends BaseThemePatch {
         return false;
     }
 
-    private static Rect getWindowBounds(Activity activity) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            return activity.getWindowManager().getCurrentWindowMetrics().getBounds();
-        }
-
-        DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
-        return new Rect(0, 0, metrics.widthPixels, metrics.heightPixels);
-    }
-
     /**
      * Injection point.
      * <p>
@@ -805,7 +805,18 @@ public class ThemePatch extends BaseThemePatch {
             }
 
             if (backgroundColor != RIVE_GLOW_ORIGINAL_BACKGROUND_COLOR) {
-                setRiveGlowBackgroundColor(fileBytes, backgroundColor);
+                setRiveGlowBackgroundColor: {
+                    final int index = indexOf(fileBytes, RIVE_GLOW_BACKGROUND_KEYFRAME);
+                    if (index < 0) {
+                        Logger.printException(() -> "Could not find the background color of the glow animation");
+                        break setRiveGlowBackgroundColor;
+                    }
+
+                    // Replace the color after the property key.
+                    ByteBuffer.wrap(fileBytes, index + 1, Integer.BYTES)
+                            .order(ByteOrder.LITTLE_ENDIAN)
+                            .putInt(backgroundColor);
+                }
             }
 
             if (resizeArtboard) {
@@ -879,19 +890,6 @@ public class ThemePatch extends BaseThemePatch {
 
         // Replace the frame rate property, which has a one byte value.
         return replaceBytes(fileBytes, end - 2, 2, frameRateProperty);
-    }
-
-    private static void setRiveGlowBackgroundColor(byte[] fileBytes, @ColorInt int color) {
-        final int index = indexOf(fileBytes, RIVE_GLOW_BACKGROUND_KEYFRAME);
-        if (index < 0) {
-            Logger.printException(() -> "Could not find the background color of the glow animation");
-            return;
-        }
-
-        // Replace the color after the property key.
-        ByteBuffer.wrap(fileBytes, index + 1, Integer.BYTES)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .putInt(color);
     }
 
     /**

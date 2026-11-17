@@ -51,17 +51,44 @@ final class OpaqueSystemBars {
     static void apply(View bottomBarContainer) {
         View pivotBar = bottomBarContainer.findViewById(PIVOT_BAR);
         if (pivotBar != null) {
-            keepBackground(pivotBar, navigationBarBackground(pivotBar.getContext()));
+            // The app rebuilds the navigation bar on a configuration change and hands it the translucent
+            // background again, so the paint is put back whenever that happens.
+            Drawable background = navigationBarBackground(pivotBar.getContext());
+            Drawable shortsBackground = new ColorDrawable(Color.BLACK);
+
+            pivotBar.setBackground(ShortsPlayerState.isOpen() ? shortsBackground : background);
+
+            pivotBar.getViewTreeObserver().addOnPreDrawListener(() -> {
+                Drawable expectedBackground =
+                        ShortsPlayerState.isOpen() ? shortsBackground : background;
+
+                if (pivotBar.getBackground() != expectedBackground) {
+                    pivotBar.setBackground(expectedBackground);
+                }
+
+                return true;
+            });
         }
 
         View statusBarView = bottomBarContainer.getRootView().findViewById(STATUS_BAR_VIEW);
         if (statusBarView != null) {
             // Painted as the foreground, so the dimming the app keeps writing into
             // the background of this view never shows through again.
-            keepForeground(
-                    statusBarView,
-                    new ColorDrawable(ThemeUtils.getAppBackgroundColor())
-            );
+            Drawable foreground = new ColorDrawable(ThemeUtils.getAppBackgroundColor());
+            Drawable shortsForeground = new ColorDrawable(Color.BLACK);
+
+            statusBarView.setForeground(ShortsPlayerState.isOpen() ? shortsForeground : foreground);
+
+            statusBarView.getViewTreeObserver().addOnPreDrawListener(() -> {
+                Drawable expectedForeground =
+                        ShortsPlayerState.isOpen() ? shortsForeground : foreground;
+
+                if (statusBarView.getForeground() != expectedForeground) {
+                    statusBarView.setForeground(expectedForeground);
+                }
+
+                return true;
+            });
         }
     }
 
@@ -99,44 +126,6 @@ final class OpaqueSystemBars {
         layers.setLayerGravity(1, Gravity.TOP);
 
         return layers;
-    }
-
-    /**
-     * The app rebuilds the navigation bar on a configuration change and hands it the translucent
-     * background again, so the paint is put back whenever that happens.
-     */
-    private static void keepBackground(View view, Drawable background) {
-        Drawable shortsBackground = new ColorDrawable(Color.BLACK);
-
-        view.setBackground(ShortsPlayerState.isOpen() ? shortsBackground : background);
-
-        view.getViewTreeObserver().addOnPreDrawListener(() -> {
-            Drawable expectedBackground =
-                    ShortsPlayerState.isOpen() ? shortsBackground : background;
-
-            if (view.getBackground() != expectedBackground) {
-                view.setBackground(expectedBackground);
-            }
-
-            return true;
-        });
-    }
-
-    private static void keepForeground(View view, Drawable foreground) {
-        Drawable shortsForeground = new ColorDrawable(Color.BLACK);
-
-        view.setForeground(ShortsPlayerState.isOpen() ? shortsForeground : foreground);
-
-        view.getViewTreeObserver().addOnPreDrawListener(() -> {
-            Drawable expectedForeground =
-                    ShortsPlayerState.isOpen() ? shortsForeground : foreground;
-
-            if (view.getForeground() != expectedForeground) {
-                view.setForeground(expectedForeground);
-            }
-
-            return true;
-        });
     }
 
     /**

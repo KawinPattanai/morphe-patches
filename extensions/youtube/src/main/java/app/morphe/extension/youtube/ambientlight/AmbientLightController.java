@@ -503,7 +503,17 @@ public final class AmbientLightController {
         if (activity != null && activity.isInPictureInPictureMode()) return false;
 
         View root = video.getRootView();
-        View page = findWatchPage(root, video);
+        View page;
+        findWatchPage: {
+            for (int id : WATCH_PAGE_IDS) {
+                View found = id == 0 ? null : root.findViewById(id);
+                if (found instanceof ViewGroup && childContaining((ViewGroup) found, video) != null) {
+                    page = found;
+                    break findWatchPage;
+                }
+            }
+            page = null;
+        }
         if (page == null || !(root instanceof FrameLayout)) return false;
 
         if (readback == null) {
@@ -583,7 +593,41 @@ public final class AmbientLightController {
     private static void onPreDraw() {
         try {
             if (!active) return;
-            updateDrawables();
+            // Litho mounts a drawable again, also in another window of the app such as the comment box,
+            // and keeps its color when its bounds stay the same. This runs before the watch page draws,
+            // so a drawable shows the light only while it is in the window of the watch page.
+            if (!(seeThroughDrawables.isEmpty() && pendingDrawables.isEmpty())) {
+                View root = rootRef.get();
+                List<Drawable> changed = new ArrayList<>();
+
+                // Drawables that left the watch page get their own color back, and wait to be mounted again.
+                for (Iterator<Drawable> iterator = seeThroughDrawables.keySet().iterator(); iterator.hasNext(); ) {
+                    Drawable drawable = iterator.next();
+                    View host = hostOf(drawable);
+                    if (host == null || host.getRootView() != root) {
+                        iterator.remove();
+                        changed.add(drawable);
+                    }
+                }
+
+                // Drawables that are mounted in another window keep their own color.
+                for (Iterator<Drawable> iterator = pendingDrawables.keySet().iterator(); iterator.hasNext(); ) {
+                    Drawable drawable = iterator.next();
+                    View host = hostOf(drawable);
+                    if (host == null) continue;
+                    iterator.remove();
+                    if (host.getRootView() == root) changed.add(drawable);
+                }
+
+                // This calls getLithoColor, which adds the drawables to the maps again.
+                for (Drawable drawable : changed) {
+                    // The color of a drawable is chosen when its bounds change.
+                    Rect bounds = new Rect(drawable.getBounds());
+                    drawable.setBounds(0, 0, 0, 0);
+                    drawable.setBounds(bounds);
+                    drawable.invalidateSelf();
+                }
+            }
             updateLayout();
             if (!active) return;
             if (!pageCleared) {
@@ -614,50 +658,6 @@ public final class AmbientLightController {
             callback = drawableCallback.getCallback();
         }
         return callback instanceof View view ? view : null;
-    }
-
-    /**
-     * Litho mounts a drawable again, also in another window of the app such as the comment box,
-     * and keeps its color when its bounds stay the same. This runs before the watch page draws,
-     * so a drawable shows the light only while it is in the window of the watch page.
-     */
-    private static void updateDrawables() {
-        if (seeThroughDrawables.isEmpty() && pendingDrawables.isEmpty()) return;
-        View root = rootRef.get();
-        List<Drawable> changed = new ArrayList<>();
-
-        // Drawables that left the watch page get their own color back, and wait to be mounted again.
-        for (Iterator<Drawable> iterator = seeThroughDrawables.keySet().iterator(); iterator.hasNext(); ) {
-            Drawable drawable = iterator.next();
-            View host = hostOf(drawable);
-            if (host == null || host.getRootView() != root) {
-                iterator.remove();
-                changed.add(drawable);
-            }
-        }
-        // Drawables that are mounted in another window keep their own color.
-        for (Iterator<Drawable> iterator = pendingDrawables.keySet().iterator(); iterator.hasNext(); ) {
-            Drawable drawable = iterator.next();
-            View host = hostOf(drawable);
-            if (host == null) continue;
-            iterator.remove();
-            if (host.getRootView() == root) changed.add(drawable);
-        }
-
-        // This calls getLithoColor, which adds the drawables to the maps again.
-        for (Drawable drawable : changed) {
-            chooseColorAgain(drawable);
-        }
-    }
-
-    /**
-     * The color of a drawable is chosen when its bounds change.
-     */
-    private static void chooseColorAgain(Drawable drawable) {
-        Rect bounds = new Rect(drawable.getBounds());
-        drawable.setBounds(0, 0, 0, 0);
-        drawable.setBounds(bounds);
-        drawable.invalidateSelf();
     }
 
     private static void clearPage() {
@@ -1054,7 +1054,38 @@ public final class AmbientLightController {
     private static void process(Bitmap bitmap, Layout current) {
         try {
             bitmap.getPixels(readbackPixels, 0, READBACK_WIDTH, 0, 0, READBACK_WIDTH, READBACK_HEIGHT);
-            updateBars();
+            // Worker thread. Black bars in the video would darken the light, so colors are only taken
+            // from what most captures agree is the picture. A wrong guess only changes the colors a
+            // little. A dark scene only makes the picture look smaller, so it does not count against it.
+            updateBars: {
+                int[] seen = AmbientLightMath.pictureBounds(readbackPixels, READBACK_WIDTH, READBACK_HEIGHT);
+                if (seen == null) break updateBars;
+
+                if (drawnLayout == null) {
+                    barsCandidate = null;
+                    barsVotes = 0;
+                    barsCaptures = 0;
+                    setPictureBounds(seen);
+                    break updateBars;
+                }
+
+                int[] candidate = barsCandidate;
+                if (candidate != null && isCloseTo(seen, candidate)) {
+                    barsVotes++;
+                } else if (candidate == null || !(seen[0] >= candidate[0] && seen[1] >= candidate[1] && seen[2] <= candidate[2] && seen[3] <= candidate[3])) {
+                    if (--barsVotes < 0) {
+                        barsCandidate = seen;
+                        barsVotes = 1;
+                    }
+                }
+                if (++barsCaptures < BARS_STABLE_CAPTURES) break updateBars;
+
+                int[] agreed = barsVotes >= BARS_MIN_VOTES ? barsCandidate : null;
+                barsCandidate = null;
+                barsVotes = 0;
+                barsCaptures = 0;
+                if (agreed != null) setPictureBounds(agreed);
+            }
             AmbientLightMath.downsample(readbackPixels, READBACK_WIDTH, readbackBounds,
                     pictureColors, PICTURE_WIDTH, PICTURE_HEIGHT);
 
@@ -1525,56 +1556,26 @@ public final class AmbientLightController {
          */
         @Override
         public boolean dispatchTouchEvent(MotionEvent event) {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN && !isOnPlayer(event)) {
-                lastPageTouch = SystemClock.uptimeMillis();
-                onInteraction(false);
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                boolean isOnPlayer;
+                isOnPlayer: {
+                    ViewGroup player = playerRef.get();
+                    if (player == null) {
+                        isOnPlayer = false;
+                        break isOnPlayer;
+                    }
+                    int[] location = new int[2];
+                    player.getLocationInWindow(location);
+                    isOnPlayer = event.getRawY() >= location[1] && event.getRawY() <= location[1] + player.getHeight();
+                }
+                if (!isOnPlayer) {
+                    lastPageTouch = SystemClock.uptimeMillis();
+                    onInteraction(false);
+                }
             }
             // False, as this view is not clickable and has no touch listener.
             return super.dispatchTouchEvent(event);
         }
-
-        private static boolean isOnPlayer(MotionEvent event) {
-            ViewGroup player = playerRef.get();
-            if (player == null) return false;
-            int[] location = new int[2];
-            player.getLocationInWindow(location);
-            return event.getRawY() >= location[1] && event.getRawY() <= location[1] + player.getHeight();
-        }
-    }
-
-    /**
-     * Worker thread. Black bars in the video would darken the light, so colors are only taken
-     * from what most captures agree is the picture. A wrong guess only changes the colors a
-     * little. A dark scene only makes the picture look smaller, so it does not count against it.
-     */
-    private static void updateBars() {
-        int[] seen = AmbientLightMath.pictureBounds(readbackPixels, READBACK_WIDTH, READBACK_HEIGHT);
-        if (seen == null) return;
-
-        if (drawnLayout == null) {
-            barsCandidate = null;
-            barsVotes = 0;
-            barsCaptures = 0;
-            setPictureBounds(seen);
-            return;
-        }
-
-        int[] candidate = barsCandidate;
-        if (candidate != null && isCloseTo(seen, candidate)) {
-            barsVotes++;
-        } else if (candidate == null || !isInside(seen, candidate)) {
-            if (--barsVotes < 0) {
-                barsCandidate = seen;
-                barsVotes = 1;
-            }
-        }
-        if (++barsCaptures < BARS_STABLE_CAPTURES) return;
-
-        int[] agreed = barsVotes >= BARS_MIN_VOTES ? barsCandidate : null;
-        barsCandidate = null;
-        barsVotes = 0;
-        barsCaptures = 0;
-        if (agreed != null) setPictureBounds(agreed);
     }
 
     private static void setPictureBounds(int[] seen) {
@@ -1583,10 +1584,6 @@ public final class AmbientLightController {
 
         readbackBounds = bounds;
         resetSmoothing = true;
-    }
-
-    private static boolean isInside(int[] inner, int[] outer) {
-        return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3];
     }
 
     private static boolean isCloseTo(int[] first, int[] second) {
@@ -1673,17 +1670,6 @@ public final class AmbientLightController {
             }
         }
         return best;
-    }
-
-    @Nullable
-    private static View findWatchPage(View root, View video) {
-        for (int id : WATCH_PAGE_IDS) {
-            View found = id == 0 ? null : root.findViewById(id);
-            if (found instanceof ViewGroup && childContaining((ViewGroup) found, video) != null) {
-                return found;
-            }
-        }
-        return null;
     }
 
     @Nullable

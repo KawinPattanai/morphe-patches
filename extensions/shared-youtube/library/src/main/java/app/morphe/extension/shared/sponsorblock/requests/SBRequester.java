@@ -128,7 +128,32 @@ public class SBRequester {
                     }
                     return builder.toString();
                 });
-                runVipCheckInBackgroundIfNeeded();
+                runVipCheckInBackgroundIfNeeded: {
+                    BooleanSetting vipSetting = settings().userIsVip();
+                    LongSetting lastCheckSetting = settings().lastVipCheck();
+                    if (vipSetting == null || lastCheckSetting == null) {
+                        break runVipCheckInBackgroundIfNeeded; // VIP tracking is disabled in this host app.
+                    }
+                    if (!SponsorBlockHelpers.userHasSBPrivateID()) {
+                        break runVipCheckInBackgroundIfNeeded; // User cannot be a VIP. User has never voted, created any segments, or has imported an SB user ID.
+                    }
+                    long now = System.currentTimeMillis();
+                    if (now < (lastCheckSetting.get() + TimeUnit.DAYS.toMillis(3))) {
+                        break runVipCheckInBackgroundIfNeeded;
+                    }
+                    Utils.runOnBackgroundThread(() -> {
+                        try {
+                            JSONObject json = getJSONObject(SBRoutes.IS_USER_VIP, SponsorBlockHelpers.getOrGenerateSBPrivateUserID());
+                            boolean vip = json.getBoolean("vip");
+                            vipSetting.save(vip);
+                            lastCheckSetting.save(now);
+                        } catch (IOException ex) {
+                            Logger.printInfo(() -> "Failed to check VIP (network error)", ex); // info, so no error toast is shown
+                        } catch (Exception ex) {
+                            Logger.printException(() -> "Failed to check VIP", ex); // should never happen
+                        }
+                    });
+                }
             } else if (responseCode == HTTP_STATUS_CODE_NOT_FOUND) {
                 // no segments are found.  a normal response
                 Logger.printDebug(() -> "No segments found for video: " + videoId);
@@ -359,33 +384,6 @@ public class SBRequester {
             Logger.printInfo(() -> "failed to set username", ex); // do not toast
             return str("morphe_sb_stats_username_change_unknown_error", 0, ex.getMessage());
         }
-    }
-
-    public static void runVipCheckInBackgroundIfNeeded() {
-        BooleanSetting vipSetting = settings().userIsVip();
-        LongSetting lastCheckSetting = settings().lastVipCheck();
-        if (vipSetting == null || lastCheckSetting == null) {
-            return; // VIP tracking is disabled in this host app.
-        }
-        if (!SponsorBlockHelpers.userHasSBPrivateID()) {
-            return; // User cannot be a VIP. User has never voted, created any segments, or has imported an SB user ID.
-        }
-        long now = System.currentTimeMillis();
-        if (now < (lastCheckSetting.get() + TimeUnit.DAYS.toMillis(3))) {
-            return;
-        }
-        Utils.runOnBackgroundThread(() -> {
-            try {
-                JSONObject json = getJSONObject(SBRoutes.IS_USER_VIP, SponsorBlockHelpers.getOrGenerateSBPrivateUserID());
-                boolean vip = json.getBoolean("vip");
-                vipSetting.save(vip);
-                lastCheckSetting.save(now);
-            } catch (IOException ex) {
-                Logger.printInfo(() -> "Failed to check VIP (network error)", ex); // info, so no error toast is shown
-            } catch (Exception ex) {
-                Logger.printException(() -> "Failed to check VIP", ex); // should never happen
-            }
-        });
     }
 
     // helpers

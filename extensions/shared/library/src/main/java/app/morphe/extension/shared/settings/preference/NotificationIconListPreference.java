@@ -90,66 +90,52 @@ public class NotificationIconListPreference extends IconListPreference {
                         ? currentAppIconSuffix
                         : "original";
             }
-            drawables[i] = buildNotificationIconDrawable(context, suffix, sizePx, cornerRadius, fgColor, bgColor);
+            Drawable notificationIconDrawable;
+            buildNotificationIconDrawable: {
+                try {
+                    final int notifResId;
+                    if ("original".equals(suffix)) {
+                        // ORIGINAL - use the app's dedicated notification icon resource (injected at patch time).
+                        String originalNotifName = IconListPreference.getOriginalNotificationIconName();
+                        notifResId = originalNotifName == null || originalNotifName.isEmpty()
+                                ? 0
+                                : resolveResId(originalNotifName);
+                    } else {
+                        notifResId = resolveResId("morphe_notification_icon_" + suffix);
+                    }
+                    if (notifResId == 0) {
+                        notificationIconDrawable = null;
+                        break buildNotificationIconDrawable;
+                    }
+
+                    Drawable notif = context.getDrawable(notifResId);
+                    if (notif == null) {
+                        notificationIconDrawable = null;
+                        break buildNotificationIconDrawable;
+                    }
+
+                    Bitmap bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
+                    Canvas canvas = new Canvas(bmp);
+
+                    Path clip = new Path();
+                    clip.addRoundRect(0, 0, sizePx, sizePx, cornerRadius, cornerRadius, Path.Direction.CW);
+                    canvas.clipPath(clip);
+                    canvas.drawColor(bgColor);
+
+                    int notifSize = Math.round(sizePx * NOTIF_ICON_SIZE_FRACTION);
+                    int notifOffset = (sizePx - notifSize) / 2;
+                    notif.mutate().setColorFilter(new PorterDuffColorFilter(fgColor, PorterDuff.Mode.SRC_IN));
+                    notif.setBounds(notifOffset, notifOffset, notifOffset + notifSize, notifOffset + notifSize);
+                    notif.draw(canvas);
+
+                    notificationIconDrawable = new BitmapDrawable(context.getResources(), bmp);
+                } catch (Exception e) {
+                    notificationIconDrawable = null;
+                }
+            }
+            drawables[i] = notificationIconDrawable;
         }
         return drawables;
-    }
-
-    @Nullable
-    private static Drawable buildNotificationIconDrawable(
-            Context context, String suffix, int sizePx, float cornerRadius,
-            @ColorInt int fgColor, @ColorInt int bgColor) {
-        try {
-            // ORIGINAL - use the app's dedicated notification icon resource (injected at patch time).
-            if ("original".equals(suffix)) {
-                String originalNotifName = IconListPreference.getOriginalNotificationIconName();
-                if (originalNotifName != null && !originalNotifName.isEmpty()) {
-                    int resId = resolveResId(originalNotifName);
-                    if (resId != 0) {
-                        Drawable notif = context.getDrawable(resId);
-                        if (notif != null) {
-                            Bitmap bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
-                            Canvas canvas = new Canvas(bmp);
-                            Path clip = new Path();
-                            clip.addRoundRect(0, 0, sizePx, sizePx, cornerRadius, cornerRadius, Path.Direction.CW);
-                            canvas.clipPath(clip);
-                            canvas.drawColor(bgColor);
-                            int notifSize = Math.round(sizePx * NOTIF_ICON_SIZE_FRACTION);
-                            int notifOffset = (sizePx - notifSize) / 2;
-                            notif.mutate().setColorFilter(new PorterDuffColorFilter(fgColor, PorterDuff.Mode.SRC_IN));
-                            notif.setBounds(notifOffset, notifOffset, notifOffset + notifSize, notifOffset + notifSize);
-                            notif.draw(canvas);
-                            return new BitmapDrawable(context.getResources(), bmp);
-                        }
-                    }
-                }
-                return null;
-            }
-
-            int notifResId = resolveResId("morphe_notification_icon_" + suffix);
-            if (notifResId == 0) return null;
-
-            Drawable notif = context.getDrawable(notifResId);
-            if (notif == null) return null;
-
-            Bitmap bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
-            Canvas canvas = new Canvas(bmp);
-
-            Path clip = new Path();
-            clip.addRoundRect(0, 0, sizePx, sizePx, cornerRadius, cornerRadius, Path.Direction.CW);
-            canvas.clipPath(clip);
-            canvas.drawColor(bgColor);
-
-            int notifSize = Math.round(sizePx * NOTIF_ICON_SIZE_FRACTION);
-            int notifOffset = (sizePx - notifSize) / 2;
-            notif.mutate().setColorFilter(new PorterDuffColorFilter(fgColor, PorterDuff.Mode.SRC_IN));
-            notif.setBounds(notifOffset, notifOffset, notifOffset + notifSize, notifOffset + notifSize);
-            notif.draw(canvas);
-
-            return new BitmapDrawable(context.getResources(), bmp);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     private static boolean isLightColor(@ColorInt int color) {

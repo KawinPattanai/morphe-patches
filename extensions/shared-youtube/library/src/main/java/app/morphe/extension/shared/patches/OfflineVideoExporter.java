@@ -359,7 +359,17 @@ public final class OfflineVideoExporter {
 
         Uri tree = Uri.parse(pickedFolder);
         Uri folder = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
-        if (isFolderAvailable(resolver, folder)) {
+        // The access to a folder is kept if the folder is deleted, and is missing if the
+        // folder is from imported settings. A documents provider returns no document for a missing folder.
+        boolean isFolderAvailable;
+        try (Cursor cursor = resolver.query(folder,
+                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
+            isFolderAvailable = cursor != null && cursor.moveToFirst();
+        } catch (SecurityException ex) {
+            Logger.printInfo(() -> "No access to export folder: " + folder, ex);
+            isFolderAvailable = false;
+        }
+        if (isFolderAvailable) {
             return folder;
         }
 
@@ -379,20 +389,6 @@ public final class OfflineVideoExporter {
     private static boolean isDefaultFolder(Uri tree) {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
                 && DocumentsContract.getTreeDocumentId(tree).equalsIgnoreCase(PRIMARY_VOLUME_PREFIX + DEFAULT_FOLDER);
-    }
-
-    /**
-     * The access to a folder is kept if the folder is deleted, and is missing if the
-     * folder is from imported settings. A documents provider returns no document for a missing folder.
-     */
-    private static boolean isFolderAvailable(ContentResolver resolver, Uri folder) {
-        try (Cursor cursor = resolver.query(folder,
-                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
-            return cursor != null && cursor.moveToFirst();
-        } catch (SecurityException ex) {
-            Logger.printInfo(() -> "No access to export folder: " + folder, ex);
-            return false;
-        }
     }
 
     /**
@@ -503,7 +499,77 @@ public final class OfflineVideoExporter {
 
         try {
             for (SavedStream stream : video.streams()) {
-                StreamSource source = openStream(key, videoId, stream);
+                StreamSource source;
+                openStream: {
+                    // Cache keys are the video id, the itag and the last modified time of the stream,
+                    // such as "videoId.140.1758733303850123". If the video has several audio tracks,
+                    // the audio track is after the itag: "videoId.140:audioTrack.1758733303850123".
+                    final String keyPrefix = videoId + "." + stream.itag();
+
+                    // Each account has its own folder, on the internal storage or on an SD card.
+                    Context context = Utils.getContext();
+                    List<File> roots = new ArrayList<>();
+                    for (File root : context.getExternalFilesDirs(null)) {
+                        if (root != null) {
+                            roots.add(root);
+                        }
+                    }
+                    roots.add(context.getFilesDir());
+
+                    List<File> streamsFolders = new ArrayList<>();
+                    for (File root : roots) {
+                        File[] accounts = new File(root, OFFLINE_FOLDER).listFiles();
+                        if (accounts == null) {
+                            continue;
+                        }
+                        for (File account : accounts) {
+                            File streams = new File(account, STREAMS_FOLDER);
+                            if (new File(streams, CACHE_INDEX_FILE).isFile()) {
+                                streamsFolders.add(streams);
+                            }
+                        }
+                    }
+                    for (File streamsFolder : streamsFolders) {
+                        Map<Integer, String> index = readCacheIndex(new File(streamsFolder, CACHE_INDEX_FILE), key);
+
+                        int id = -1;
+                        String cacheKey = null;
+                        long newestTime = -1;
+                        for (Map.Entry<Integer, String> entry : index.entrySet()) {
+                            String entryKey = entry.getValue();
+                            if (entryKey.length() > keyPrefix.length() && entryKey.startsWith(keyPrefix)
+                                    && (entryKey.charAt(keyPrefix.length()) == '.' || entryKey.charAt(keyPrefix.length()) == ':')) {
+                                final long time = Long.parseLong(entryKey.substring(entryKey.lastIndexOf('.') + 1));
+                                if (time > newestTime) {
+                                    newestTime = time;
+                                    id = entry.getKey();
+                                    cacheKey = entryKey;
+                                }
+                            }
+                        }
+                        if (cacheKey == null) {
+                            continue;
+                        }
+
+                        TreeMap<Long, File> spans = getSpans(streamsFolder, id);
+                        long end = 0;
+                        for (Map.Entry<Long, File> span : spans.entrySet()) {
+                            if (span.getKey() != end) {
+                                break;
+                            }
+                            end += span.getValue().length();
+                        }
+                        if (end != stream.length()) {
+                            throw new IOException("Stream is incomplete: " + cacheKey
+                                    + " saved: " + end + " length: " + stream.length());
+                        }
+
+                        source = new StreamSource(key, cacheKey, spans, stream.length());
+                        break openStream;
+                    }
+
+                    throw new IOException("Stream not found: " + keyPrefix);
+                }
                 sources.add(source);
 
                 MediaExtractor extractor = new MediaExtractor();
@@ -519,7 +585,39 @@ public final class OfflineVideoExporter {
 
             String fileName = getFileName(video.title());
             // A single stream, such as the audio of a song, is already a complete media file.
-            Integer muxerFormat = sources.size() > 1 ? getMuxerFormat(formats) : null;
+            Integer muxerFormat;
+            if (sources.size() > 1) {
+                // The MediaMuxer output format for the streams, or null if the streams can't be muxed together.
+                getMuxerFormat: {
+                    boolean webm = false;
+                    boolean mp4 = false;
+                    for (MediaFormat format : formats) {
+                        String mime = format.getString(MediaFormat.KEY_MIME);
+                        if (WEBM_MIME_TYPES.contains(mime)) {
+                            webm = true;
+                        } else if (MP4_MIME_TYPES.contains(mime)) {
+                            if (MIMETYPE_VIDEO_AV1.equals(mime) && Build.VERSION.SDK_INT < AV1_MUXER_MIN_SDK) {
+                                muxerFormat = null;
+                                break getMuxerFormat;
+                            }
+                            mp4 = true;
+                        } else {
+                            muxerFormat = null;
+                            break getMuxerFormat;
+                        }
+                    }
+
+                    if (webm == mp4) {
+                        muxerFormat = null;
+                        break getMuxerFormat;
+                    }
+                    muxerFormat = webm
+                            ? MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+                            : MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4;
+                }
+            } else {
+                muxerFormat = null;
+            }
             if (muxerFormat != null) {
                 final boolean webm = muxerFormat == MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM;
                 String mimeType = webm ? "video/webm" : "video/mp4";
@@ -584,35 +682,6 @@ public final class OfflineVideoExporter {
             throw new IllegalStateException("No downloads encryption key");
         }
         return new SecretKeySpec(Base64.decode(key, Base64.DEFAULT), "AES");
-    }
-
-    /**
-     * @return The MediaMuxer output format for the streams, or null if the streams can't be muxed together.
-     */
-    @Nullable
-    private static Integer getMuxerFormat(List<MediaFormat> formats) {
-        boolean webm = false;
-        boolean mp4 = false;
-        for (MediaFormat format : formats) {
-            String mime = format.getString(MediaFormat.KEY_MIME);
-            if (WEBM_MIME_TYPES.contains(mime)) {
-                webm = true;
-            } else if (MP4_MIME_TYPES.contains(mime)) {
-                if (MIMETYPE_VIDEO_AV1.equals(mime) && Build.VERSION.SDK_INT < AV1_MUXER_MIN_SDK) {
-                    return null;
-                }
-                mp4 = true;
-            } else {
-                return null;
-            }
-        }
-
-        if (webm == mp4) {
-            return null;
-        }
-        return webm
-                ? MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
-                : MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4;
     }
 
     private static String getMimeType(MediaFormat format) {
@@ -946,82 +1015,6 @@ public final class OfflineVideoExporter {
     // endregion
 
     // region Cache
-
-    private static StreamSource openStream(SecretKeySpec key, String videoId, SavedStream stream) throws Exception {
-        // Cache keys are the video id, the itag and the last modified time of the stream,
-        // such as "videoId.140.1758733303850123". If the video has several audio tracks,
-        // the audio track is after the itag: "videoId.140:audioTrack.1758733303850123".
-        final String keyPrefix = videoId + "." + stream.itag();
-
-        for (File streamsFolder : getStreamsFolders()) {
-            Map<Integer, String> index = readCacheIndex(new File(streamsFolder, CACHE_INDEX_FILE), key);
-
-            int id = -1;
-            String cacheKey = null;
-            long newestTime = -1;
-            for (Map.Entry<Integer, String> entry : index.entrySet()) {
-                String entryKey = entry.getValue();
-                if (entryKey.length() > keyPrefix.length() && entryKey.startsWith(keyPrefix)
-                        && (entryKey.charAt(keyPrefix.length()) == '.' || entryKey.charAt(keyPrefix.length()) == ':')) {
-                    final long time = Long.parseLong(entryKey.substring(entryKey.lastIndexOf('.') + 1));
-                    if (time > newestTime) {
-                        newestTime = time;
-                        id = entry.getKey();
-                        cacheKey = entryKey;
-                    }
-                }
-            }
-            if (cacheKey == null) {
-                continue;
-            }
-
-            TreeMap<Long, File> spans = getSpans(streamsFolder, id);
-            long end = 0;
-            for (Map.Entry<Long, File> span : spans.entrySet()) {
-                if (span.getKey() != end) {
-                    break;
-                }
-                end += span.getValue().length();
-            }
-            if (end != stream.length()) {
-                throw new IOException("Stream is incomplete: " + cacheKey
-                        + " saved: " + end + " length: " + stream.length());
-            }
-
-            return new StreamSource(key, cacheKey, spans, stream.length());
-        }
-
-        throw new IOException("Stream not found: " + keyPrefix);
-    }
-
-    /**
-     * Each account has its own folder, on the internal storage or on an SD card.
-     */
-    private static List<File> getStreamsFolders() {
-        Context context = Utils.getContext();
-        List<File> roots = new ArrayList<>();
-        for (File root : context.getExternalFilesDirs(null)) {
-            if (root != null) {
-                roots.add(root);
-            }
-        }
-        roots.add(context.getFilesDir());
-
-        List<File> folders = new ArrayList<>();
-        for (File root : roots) {
-            File[] accounts = new File(root, OFFLINE_FOLDER).listFiles();
-            if (accounts == null) {
-                continue;
-            }
-            for (File account : accounts) {
-                File streams = new File(account, STREAMS_FOLDER);
-                if (new File(streams, CACHE_INDEX_FILE).isFile()) {
-                    folders.add(streams);
-                }
-            }
-        }
-        return folders;
-    }
 
     /**
      * Reads the ExoPlayer cache index, which maps the ids in the span file names to the cache keys.

@@ -577,8 +577,40 @@ final class LibraryDialog {
                                 : UiText.get("morphe_series_tracker_ui_playlist_bookmark"),
                 14);
         if (plan.playable()) {
+            Runnable work = () -> continueSeries(s.id());
+            Button button = new Button(activity);
+            int ink = HistoryUi.surface();
+            button.setText(UiText.get("morphe_series_tracker_continue"));
+            button.setTextSize(14);
+            button.setTextColor(ink);
+            button.setAllCaps(false);
+            button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            button.setIncludeFontPadding(false);
+            button.setGravity(Gravity.CENTER);
+            button.setMinWidth(0);
+            button.setMinimumWidth(0);
+            button.setMinHeight(HistoryUi.dp(48));
+            button.setMinimumHeight(HistoryUi.dp(48));
+            button.setStateListAnimator(null);
+            button.setBackgroundTintList(null);
+            Drawable pill = new RippleDrawable(
+                    ColorStateList.valueOf(HistoryUi.dark() ? 0x22000000 : 0x33ffffff),
+                    HistoryUi.rounded(HistoryUi.foreground(), 24),
+                    HistoryUi.rounded(Color.WHITE, 24));
+            // A 36 dp visible pill keeps the full 48 dp touch target.
+            button.setBackground(new InsetDrawable(pill, 0, HistoryUi.dp(6),
+                    0, HistoryUi.dp(6)));
+            button.setPadding(
+                    HistoryUi.dp(12),
+                    HistoryUi.dp(8),
+                    HistoryUi.dp(16),
+                    HistoryUi.dp(8));
+            button.setCompoundDrawablesRelative(
+                    new UiIcon(UiIcon.PLAY, ink, HistoryUi.dp(20)), null, null, null);
+            button.setCompoundDrawablePadding(HistoryUi.dp(6));
+            button.setOnClickListener(v -> work.run());
             content.addView(
-                    continueButton(() -> continueSeries(s.id())),
+                    button,
                     new LinearLayout.LayoutParams(-2, -2));
         } else if (plan.kind() == ResumePlanner.Kind.CHOOSE) {
             recovery(s);
@@ -804,26 +836,24 @@ final class LibraryDialog {
         int token = continuation.begin();
         TrackerRuntime.flush();
         // The deadline bounds the user's wait even when a background check is already running.
-        Runnable finish = () -> finishContinue(id, token);
+        Runnable finish = () -> {
+            if (!alive() || !resumed || !continuation.claim(token)) return;
+            service.series(id,
+                    fresh -> {
+                        if (!alive() || !resumed || continuation.stale(token)) return;
+                        ResumePlanner.Plan plan = ResumePlanner.plan(fresh);
+                        if (plan.playable())
+                            play(fresh, plan.videoId(), plan.ordinal(), plan.positionMs(), false);
+                        else if (plan.kind() == ResumePlanner.Kind.CHOOSE) openSeries(id);
+                        else {
+                            reload();
+                            toast(plan.messageKey());
+                        }
+                    },
+                    this::error);
+        };
         root.postDelayed(finish, 2500);
         service.syncYouTube(id, finish);
-    }
-
-    private void finishContinue(String id, int token) {
-        if (!alive() || !resumed || !continuation.claim(token)) return;
-        service.series(id,
-                fresh -> {
-                    if (!alive() || !resumed || continuation.stale(token)) return;
-                    ResumePlanner.Plan plan = ResumePlanner.plan(fresh);
-                    if (plan.playable())
-                        play(fresh, plan.videoId(), plan.ordinal(), plan.positionMs(), false);
-                    else if (plan.kind() == ResumePlanner.Kind.CHOOSE) openSeries(id);
-                    else {
-                        reload();
-                        toast(plan.messageKey());
-                    }
-                },
-                this::error);
     }
 
     private void play(Series s, String id, int ordinal, long position, boolean restart) {
@@ -888,7 +918,39 @@ final class LibraryDialog {
                         "morphe_series_tracker_ui_open_playlist_in_youtube",
                         "morphe_series_tracker_ui_remove_from_library"),
                 Arrays.asList(
-                        () -> orderMenu(s),
+                        () -> {
+                            NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_episode_order");
+                            RadioGroup options = new RadioGroup(activity);
+                            String[] labels = {"morphe_series_tracker_playlist_order", "morphe_series_tracker_reverse_order"};
+                            for (int i = 0, length = labels.length; i < length; i++) {
+                                final boolean reverse = i == 1;
+                                RadioButton option = new RadioButton(activity);
+                                option.setText(UiText.get(labels[i]));
+                                option.setTextColor(HistoryUi.foreground());
+                                option.setTextSize(16);
+                                option.setMinHeight(HistoryUi.dp(48));
+                                option.setChecked(s.reverseOrder() == reverse);
+                                option.setOnClickListener(v -> service.seriesOptions(
+                                        s,
+                                        reverse,
+                                        s.hideWatched(),
+                                        s.watchedOnAdvance(),
+                                        () -> {
+                                            sheet.dialog.dismiss();
+                                            episodeReveal.cancel();
+                                            page = 0;
+                                            scroll.scrollTo(0, 0);
+                                            reload();
+                                        },
+                                        this::error));
+                                options.addView(option, new RadioGroup.LayoutParams(-1, -2));
+                            }
+                            sheet.body.addView(options);
+                            sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
+                            children.add(sheet.dialog);
+                            sheet.onDismiss(() -> children.remove(sheet.dialog));
+                            sheet.show();
+                        },
                         () -> service.refresh(s.id(), this::error),
                         () -> rename(s),
                         () -> openPlaylist(s),
@@ -901,40 +963,6 @@ final class LibraryDialog {
                                     reload();
                                 },
                                 this::error)));
-    }
-
-    private void orderMenu(Series s) {
-        NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_episode_order");
-        RadioGroup options = new RadioGroup(activity);
-        String[] labels = {"morphe_series_tracker_playlist_order", "morphe_series_tracker_reverse_order"};
-        for (int i = 0, length = labels.length; i < length; i++) {
-            final boolean reverse = i == 1;
-            RadioButton option = new RadioButton(activity);
-            option.setText(UiText.get(labels[i]));
-            option.setTextColor(HistoryUi.foreground());
-            option.setTextSize(16);
-            option.setMinHeight(HistoryUi.dp(48));
-            option.setChecked(s.reverseOrder() == reverse);
-            option.setOnClickListener(v -> service.seriesOptions(
-                    s,
-                    reverse,
-                    s.hideWatched(),
-                    s.watchedOnAdvance(),
-                    () -> {
-                        sheet.dialog.dismiss();
-                        episodeReveal.cancel();
-                        page = 0;
-                        scroll.scrollTo(0, 0);
-                        reload();
-                    },
-                    this::error));
-            options.addView(option, new RadioGroup.LayoutParams(-1, -2));
-        }
-        sheet.body.addView(options);
-        sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
-        children.add(sheet.dialog);
-        sheet.onDismiss(() -> children.remove(sheet.dialog));
-        sheet.show();
     }
 
     private void rename(Series s) {
@@ -956,10 +984,24 @@ final class LibraryDialog {
     private void menu() {
         choice("morphe_series_tracker_ui_library_options",
                 List.of("morphe_series_tracker_ui_clear_all_local_progress"),
-                List.of(() -> confirmClearProgress(
-                        () -> service.clearHistory(
+                List.of(() -> {
+                    Runnable work = () -> service.clearHistory(
                                 () -> toast("morphe_series_tracker_ui_local_progress_cleared"),
-                                this::error))));
+                                this::error);
+                    if (!alive()) return;
+                    NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_clear_progress_title");
+                    sheet.message("morphe_series_tracker_clear_progress_message");
+                    sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
+                    sheet.action("morphe_series_tracker_ui_clear_history",
+                            () -> {
+                                sheet.dialog.dismiss();
+                                work.run();
+                            },
+                            true);
+                    children.add(sheet.dialog);
+                    sheet.onDismiss(() -> children.remove(sheet.dialog));
+                    sheet.show();
+                }));
     }
 
     private void choice(String title, List<String> labels, List<Runnable> actions) {
@@ -976,22 +1018,6 @@ final class LibraryDialog {
             item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             sheet.body.addView(item, new LinearLayout.LayoutParams(-1, -2));
         }
-        children.add(sheet.dialog);
-        sheet.onDismiss(() -> children.remove(sheet.dialog));
-        sheet.show();
-    }
-
-    private void confirmClearProgress(Runnable work) {
-        if (!alive()) return;
-        NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_clear_progress_title");
-        sheet.message("morphe_series_tracker_clear_progress_message");
-        sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
-        sheet.action("morphe_series_tracker_ui_clear_history",
-                () -> {
-                    sheet.dialog.dismiss();
-                    work.run();
-                },
-                true);
         children.add(sheet.dialog);
         sheet.onDismiss(() -> children.remove(sheet.dialog));
         sheet.show();
@@ -1046,41 +1072,6 @@ final class LibraryDialog {
         lp.topMargin = HistoryUi.dp(8);
         lp.bottomMargin = HistoryUi.dp(8);
         parent.addView(b, lp);
-    }
-
-    private Button continueButton(Runnable work) {
-        Button button = new Button(activity);
-        int ink = HistoryUi.surface();
-        button.setText(UiText.get("morphe_series_tracker_continue"));
-        button.setTextSize(14);
-        button.setTextColor(ink);
-        button.setAllCaps(false);
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        button.setIncludeFontPadding(false);
-        button.setGravity(Gravity.CENTER);
-        button.setMinWidth(0);
-        button.setMinimumWidth(0);
-        button.setMinHeight(HistoryUi.dp(48));
-        button.setMinimumHeight(HistoryUi.dp(48));
-        button.setStateListAnimator(null);
-        button.setBackgroundTintList(null);
-        Drawable pill = new RippleDrawable(
-                ColorStateList.valueOf(HistoryUi.dark() ? 0x22000000 : 0x33ffffff),
-                HistoryUi.rounded(HistoryUi.foreground(), 24),
-                HistoryUi.rounded(Color.WHITE, 24));
-        // A 36 dp visible pill keeps the full 48 dp touch target.
-        button.setBackground(new InsetDrawable(pill, 0, HistoryUi.dp(6),
-                0, HistoryUi.dp(6)));
-        button.setPadding(
-                HistoryUi.dp(12),
-                HistoryUi.dp(8),
-                HistoryUi.dp(16),
-                HistoryUi.dp(8));
-        button.setCompoundDrawablesRelative(
-                new UiIcon(UiIcon.PLAY, ink, HistoryUi.dp(20)), null, null, null);
-        button.setCompoundDrawablePadding(HistoryUi.dp(6));
-        button.setOnClickListener(v -> work.run());
-        return button;
     }
 
     private TextView action(String title, Runnable work) {

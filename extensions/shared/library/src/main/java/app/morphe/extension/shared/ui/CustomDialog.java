@@ -311,7 +311,94 @@ public class CustomDialog {
         }
 
         // Handle button layout.
-        layoutButtons(buttonContainer, buttons, buttonWidths);
+        // Arranges buttons in the dialog, either in a single row or multiple rows based on their total width.
+        if (!buttons.isEmpty()) {
+            // Check if buttons fit in one row.
+            int totalWidth = 0;
+            for (Integer width : buttonWidths) {
+                totalWidth += width;
+            }
+            if (buttonWidths.size() > 1) {
+                // Add margins for gaps.
+                totalWidth += (buttonWidths.size() - 1) * Dim.dp8;
+            }
+
+            // Single button: stretch to full width.
+            if (buttons.size() == 1) {
+                Button button = buttons.get(0);
+                LinearLayout singleContainer = new LinearLayout(context);
+                singleContainer.setOrientation(LinearLayout.HORIZONTAL);
+                singleContainer.setGravity(Gravity.CENTER);
+
+                ViewGroup parent = (ViewGroup) button.getParent();
+                if (parent != null) parent.removeView(button);
+
+                button.setLayoutParams(new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        Dim.dp36));
+                singleContainer.addView(button);
+                buttonContainer.addView(singleContainer);
+            } else if (totalWidth <= buttonAreaWidth()) {
+                // Single row: Neutral, Cancel, OK.
+                // Arranges buttons in a single horizontal row with proportional widths.
+                LinearLayout rowContainer = new LinearLayout(context);
+                rowContainer.setOrientation(LinearLayout.HORIZONTAL);
+                rowContainer.setGravity(Gravity.CENTER);
+                rowContainer.setLayoutParams(new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
+
+                // Add all buttons with proportional weights and specific margins.
+                for (int i = 0; i < buttons.size(); i++) {
+                    Button button = getButton(buttons, buttonWidths, i);
+                    rowContainer.addView(button);
+                }
+
+                buttonContainer.addView(rowContainer);
+            } else {
+                // Multiple rows: OK, Cancel, Neutral.
+                // Arranges buttons in separate rows, ordered OK, Cancel, Neutral.
+                // Reorder: OK, Cancel, Neutral.
+                List<Button> reorderedButtons = new ArrayList<>();
+                if (buttons.size() == 3) {
+                    reorderedButtons.add(buttons.get(2)); // OK
+                    reorderedButtons.add(buttons.get(1)); // Cancel
+                    reorderedButtons.add(buttons.get(0)); // Neutral
+                } else if (buttons.size() == 2) {
+                    reorderedButtons.add(buttons.get(1)); // OK or Cancel
+                    reorderedButtons.add(buttons.get(0)); // Neutral or Cancel
+                }
+
+                for (int i = 0; i < reorderedButtons.size(); i++) {
+                    Button button = reorderedButtons.get(i);
+                    LinearLayout singleContainer = new LinearLayout(context);
+                    singleContainer.setOrientation(LinearLayout.HORIZONTAL);
+                    singleContainer.setGravity(Gravity.CENTER);
+                    singleContainer.setLayoutParams(new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            Dim.dp36));
+
+                    ViewGroup parent = (ViewGroup) button.getParent();
+                    if (parent != null) parent.removeView(button);
+
+                    button.setLayoutParams(new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            Dim.dp36));
+                    singleContainer.addView(button);
+                    buttonContainer.addView(singleContainer);
+
+                    // Add a spacer between the buttons (except the last one).
+                    if (i < reorderedButtons.size() - 1) {
+                        View spacer = new View(context);
+                        LinearLayout.LayoutParams spacerParams = new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                Dim.dp8);
+                        spacer.setLayoutParams(spacerParams);
+                        buttonContainer.addView(spacer);
+                    }
+                }
+            }
+        }
         mainLayout.addView(buttonContainer);
     }
 
@@ -409,83 +496,6 @@ public class CustomDialog {
         return button.getMeasuredWidth();
     }
 
-    /**
-     * Arranges buttons in the dialog, either in a single row or multiple rows based on their total width.
-     *
-     * @param buttonContainer The container for the buttons.
-     * @param buttons         The list of buttons to arrange.
-     * @param buttonWidths    The measured widths of the buttons.
-     */
-    private void layoutButtons(LinearLayout buttonContainer, List<Button> buttons, List<Integer> buttonWidths) {
-        if (buttons.isEmpty()) return;
-
-        // Check if buttons fit in one row.
-        int totalWidth = 0;
-        for (Integer width : buttonWidths) {
-            totalWidth += width;
-        }
-        if (buttonWidths.size() > 1) {
-            // Add margins for gaps.
-            totalWidth += (buttonWidths.size() - 1) * Dim.dp8;
-        }
-
-        // Single button: stretch to full width.
-        if (buttons.size() == 1) {
-            layoutSingleButton(buttonContainer, buttons.get(0));
-        } else if (totalWidth <= buttonAreaWidth()) {
-            // Single row: Neutral, Cancel, OK.
-            layoutButtonsInRow(buttonContainer, buttons, buttonWidths);
-        } else {
-            // Multiple rows: OK, Cancel, Neutral.
-            layoutButtonsInColumns(buttonContainer, buttons);
-        }
-    }
-
-    /**
-     * Arranges a single button, stretching it to full width.
-     *
-     * @param buttonContainer The container for the button.
-     * @param button          The button to arrange.
-     */
-    private void layoutSingleButton(LinearLayout buttonContainer, Button button) {
-        LinearLayout singleContainer = new LinearLayout(context);
-        singleContainer.setOrientation(LinearLayout.HORIZONTAL);
-        singleContainer.setGravity(Gravity.CENTER);
-
-        ViewGroup parent = (ViewGroup) button.getParent();
-        if (parent != null) parent.removeView(button);
-
-        button.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                Dim.dp36));
-        singleContainer.addView(button);
-        buttonContainer.addView(singleContainer);
-    }
-
-    /**
-     * Arranges buttons in a single horizontal row with proportional widths.
-     *
-     * @param buttonContainer The container for the buttons.
-     * @param buttons         The list of buttons to arrange.
-     * @param buttonWidths    The measured widths of the buttons.
-     */
-    private void layoutButtonsInRow(LinearLayout buttonContainer, List<Button> buttons, List<Integer> buttonWidths) {
-        LinearLayout rowContainer = new LinearLayout(context);
-        rowContainer.setOrientation(LinearLayout.HORIZONTAL);
-        rowContainer.setGravity(Gravity.CENTER);
-        rowContainer.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        // Add all buttons with proportional weights and specific margins.
-        for (int i = 0; i < buttons.size(); i++) {
-            Button button = getButton(buttons, buttonWidths, i);
-            rowContainer.addView(button);
-        }
-
-        buttonContainer.addView(rowContainer);
-    }
-
     @NonNull
     private Button getButton(List<Button> buttons, List<Integer> buttonWidths, int i) {
         Button button = buttons.get(i);
@@ -508,54 +518,6 @@ public class CustomDialog {
 
         button.setLayoutParams(params);
         return button;
-    }
-
-    /**
-     * Arranges buttons in separate rows, ordered OK, Cancel, Neutral.
-     *
-     * @param buttonContainer The container for the buttons.
-     * @param buttons         The list of buttons to arrange.
-     */
-    private void layoutButtonsInColumns(LinearLayout buttonContainer, List<Button> buttons) {
-        // Reorder: OK, Cancel, Neutral.
-        List<Button> reorderedButtons = new ArrayList<>();
-        if (buttons.size() == 3) {
-            reorderedButtons.add(buttons.get(2)); // OK
-            reorderedButtons.add(buttons.get(1)); // Cancel
-            reorderedButtons.add(buttons.get(0)); // Neutral
-        } else if (buttons.size() == 2) {
-            reorderedButtons.add(buttons.get(1)); // OK or Cancel
-            reorderedButtons.add(buttons.get(0)); // Neutral or Cancel
-        }
-
-        for (int i = 0; i < reorderedButtons.size(); i++) {
-            Button button = reorderedButtons.get(i);
-            LinearLayout singleContainer = new LinearLayout(context);
-            singleContainer.setOrientation(LinearLayout.HORIZONTAL);
-            singleContainer.setGravity(Gravity.CENTER);
-            singleContainer.setLayoutParams(new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    Dim.dp36));
-
-            ViewGroup parent = (ViewGroup) button.getParent();
-            if (parent != null) parent.removeView(button);
-
-            button.setLayoutParams(new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    Dim.dp36));
-            singleContainer.addView(button);
-            buttonContainer.addView(singleContainer);
-
-            // Add a spacer between the buttons (except the last one).
-            if (i < reorderedButtons.size() - 1) {
-                View spacer = new View(context);
-                LinearLayout.LayoutParams spacerParams = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        Dim.dp8);
-                spacer.setLayoutParams(spacerParams);
-                buttonContainer.addView(spacer);
-            }
-        }
     }
 
     /**

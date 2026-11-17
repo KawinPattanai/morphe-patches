@@ -96,7 +96,16 @@ final class PlaylistDiscovery {
                     author = details.optString("author"),
                     channel = details.optString("channelId");
             LinkedHashMap<String, Match> linked = new LinkedHashMap<>();
-            for (String id : descriptionPlaylists(details.optString("shortDescription")))
+            String description = details.optString("shortDescription");
+            Set<String> ids = new LinkedHashSet<>();
+            Matcher urls = Pattern.compile("https?://[^\\s<>\"]+")
+                    .matcher(description.substring(0, Math.min(description.length(), 20000)));
+            while (urls.find() && ids.size() < 4) {
+                String id = PlaylistInput.parseOrNull(urls.group().replaceAll("[).,;]+$", ""));
+                if (id != null && eligible(id)) ids.add(id);
+            }
+            List<String> descriptionPlaylists = new ArrayList<>(ids);
+            for (String id : descriptionPlaylists)
                 linked.put(id, new Match(id, "", "", ""));
             verify(linked.values(), video, checked, found, budget);
             if (!found.isEmpty()) return remember(video, found);
@@ -282,17 +291,6 @@ final class PlaylistDiscovery {
             return new JSONObject(
                     request(endpoint, payload.toString(), CatalogClient.PAGE_BYTES).body());
         }
-    }
-
-    static List<String> descriptionPlaylists(String description) {
-        Set<String> ids = new LinkedHashSet<>();
-        Matcher urls = Pattern.compile("https?://[^\\s<>\"]+")
-                .matcher(description.substring(0, Math.min(description.length(), 20000)));
-        while (urls.find() && ids.size() < 4) {
-            String id = PlaylistInput.parseOrNull(urls.group().replaceAll("[).,;]+$", ""));
-            if (id != null && eligible(id)) ids.add(id);
-        }
-        return new ArrayList<>(ids);
     }
 
     static boolean eligible(String id) {

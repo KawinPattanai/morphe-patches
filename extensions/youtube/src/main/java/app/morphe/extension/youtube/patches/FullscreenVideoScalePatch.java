@@ -195,7 +195,53 @@ public class FullscreenVideoScalePatch {
      * Does not change layout bounds (that would make the native player letterbox again).
      */
     private static void mapContentToDisplay(View view) {
-        int[] display = getDisplaySize();
+        int[] display;
+        getDisplaySize: {
+            int[] size = new int[]{0, 0};
+            Activity activity = Utils.getActivity();
+
+            if (activity != null) {
+                Window window = activity.getWindow();
+                if (window != null) {
+                    View decor = window.getDecorView();
+                    if (decor.getWidth() > 0 && decor.getHeight() > 0) {
+                        size[0] = decor.getWidth();
+                        size[1] = decor.getHeight();
+                        display = size;
+                        break getDisplaySize;
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        WindowMetrics metrics = activity.getWindowManager().getCurrentWindowMetrics();
+                        size[0] = metrics.getBounds().width();
+                        size[1] = metrics.getBounds().height();
+                        display = size;
+                        break getDisplaySize;
+                    }
+                    DisplayMetrics displayMetrics = activity.getResources().getDisplayMetrics();
+                    size[0] = displayMetrics.widthPixels;
+                    size[1] = displayMetrics.heightPixels;
+                    display = size;
+                    break getDisplaySize;
+                }
+            }
+
+            View playerView = playerViewRef.get();
+            if (playerView != null) {
+                View root = playerView.getRootView();
+                size[0] = root.getWidth();
+                size[1] = root.getHeight();
+                display = size;
+                break getDisplaySize;
+            }
+            View overlay = overlayRef.get();
+            if (overlay != null) {
+                View root = overlay.getRootView();
+                size[0] = root.getWidth();
+                size[1] = root.getHeight();
+            }
+            display = size;
+        }
+
         final int displayW = display[0];
         final int displayH = display[1];
         final int viewW = view.getWidth();
@@ -204,7 +250,28 @@ public class FullscreenVideoScalePatch {
             return;
         }
 
-        final float videoAR = getVideoAspectRatio(view, viewW, viewH);
+        float videoAR;
+        getVideoAspectRatio: {
+            // The video view is sized to the video when the renderer does not letterbox the video itself.
+            View child = view instanceof PlayerViewInterface player
+                    ? player.patch_getVideoView()
+                    : null;
+            if (child != null && child != view && child.getWidth() > 8 && child.getHeight() > 8) {
+                float childAR = child.getWidth() / (float) child.getHeight();
+                float parentAR = viewW / (float) viewH;
+                if (Math.abs(childAR - parentAR) > 0.02f) {
+                    videoAR = childAR;
+                    break getVideoAspectRatio;
+                }
+            }
+            float recorded = videoAspectRatio;
+            if (recorded > 0.15f && recorded < 8f) {
+                videoAR = recorded;
+                break getVideoAspectRatio;
+            }
+            videoAR = DEFAULT_VIDEO_ASPECT;
+        }
+
         final float viewAR = viewW / (float) viewH;
 
         float contentW;
@@ -268,25 +335,6 @@ public class FullscreenVideoScalePatch {
         view.setTranslationY(-(loc[1] + contentTop));
     }
 
-    private static float getVideoAspectRatio(View view, int viewW, int viewH) {
-        // The video view is sized to the video when the renderer does not letterbox the video itself.
-        View child = view instanceof PlayerViewInterface player
-                ? player.patch_getVideoView()
-                : null;
-        if (child != null && child != view && child.getWidth() > 8 && child.getHeight() > 8) {
-            float childAR = child.getWidth() / (float) child.getHeight();
-            float parentAR = viewW / (float) viewH;
-            if (Math.abs(childAR - parentAR) > 0.02f) {
-                return childAR;
-            }
-        }
-        float recorded = videoAspectRatio;
-        if (recorded > 0.15f && recorded < 8f) {
-            return recorded;
-        }
-        return DEFAULT_VIDEO_ASPECT;
-    }
-
     /**
      * Snapshot clip flags on the first call so restore can put back YouTube's values
      * instead of leaving {@code clipChildren=false} on the watch-page ancestors.
@@ -315,7 +363,13 @@ public class FullscreenVideoScalePatch {
         }
     }
 
-    private static void restoreClipping() {
+    private static void restoreDefaultTransform(@Nullable View playerView) {
+        resetViewTransform(playerView);
+        View previous = scaledViewRef.get();
+        if (previous != playerView) {
+            resetViewTransform(previous);
+        }
+        scaledViewRef = new WeakReference<>(null);
         List<SavedClipState> saved = savedClipStates;
         savedClipStates = null;
         if (saved == null) {
@@ -324,58 +378,6 @@ public class FullscreenVideoScalePatch {
         for (int i = saved.size() - 1; i >= 0; i--) {
             saved.get(i).restore();
         }
-    }
-
-    private static int[] getDisplaySize() {
-        int[] size = new int[]{0, 0};
-        Activity activity = Utils.getActivity();
-
-        if (activity != null) {
-            Window window = activity.getWindow();
-            if (window != null) {
-                View decor = window.getDecorView();
-                if (decor.getWidth() > 0 && decor.getHeight() > 0) {
-                    size[0] = decor.getWidth();
-                    size[1] = decor.getHeight();
-                    return size;
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    WindowMetrics metrics = activity.getWindowManager().getCurrentWindowMetrics();
-                    size[0] = metrics.getBounds().width();
-                    size[1] = metrics.getBounds().height();
-                    return size;
-                }
-                DisplayMetrics displayMetrics = activity.getResources().getDisplayMetrics();
-                size[0] = displayMetrics.widthPixels;
-                size[1] = displayMetrics.heightPixels;
-                return size;
-            }
-        }
-
-        View playerView = playerViewRef.get();
-        if (playerView != null) {
-            View root = playerView.getRootView();
-            size[0] = root.getWidth();
-            size[1] = root.getHeight();
-            return size;
-        }
-        View overlay = overlayRef.get();
-        if (overlay != null) {
-            View root = overlay.getRootView();
-            size[0] = root.getWidth();
-            size[1] = root.getHeight();
-        }
-        return size;
-    }
-
-    private static void restoreDefaultTransform(@Nullable View playerView) {
-        resetViewTransform(playerView);
-        View previous = scaledViewRef.get();
-        if (previous != playerView) {
-            resetViewTransform(previous);
-        }
-        scaledViewRef = new WeakReference<>(null);
-        restoreClipping();
     }
 
     private static void resetViewTransform(@Nullable View view) {

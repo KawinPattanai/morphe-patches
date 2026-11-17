@@ -119,11 +119,64 @@ public final class VOTBottomSheet {
         content.setPadding(Dim.dp16, 0, Dim.dp16, Dim.dp16);
         scroll.addView(content);
 
-        content.addView(makeLanguageRow(context, str("morphe_vot_caption_language_title"), fg,
-                langEntries, langValues, mainRef));
+        String label = str("morphe_vot_caption_language_title");
+        LinearLayout row = makeValueRow(context, fg, label);
+        String langDisplayName;
+        getLangDisplayName: {
+            String code = Settings.VOT_CAPTION_LANGUAGE.get();
+            for (int i = 0, length = langValues.length; i < length; i++) {
+                if (langValues[i].equals(code)) {
+                    langDisplayName = langEntries[i];
+                    break getLangDisplayName;
+                }
+            }
+            langDisplayName = langEntries[0];
+        }
+        ((TextView) row.getTag()).setText(langDisplayName);
+
+        row.setOnClickListener(v -> {
+            SheetBottomDialog.SlideDialog mainDialog = mainRef[0];
+            SheetBottomDialog.DraggableLinearLayout pickerRoot =
+                    SheetBottomDialog.createMainLayout(context, getDialogBackgroundColor());
+            pickerRoot.setPadding(Dim.dp16, 0, Dim.dp16, Dim.dp16);
+            pickerRoot.addView(SheetBottomDialog.createTitle(context, label, ThemeUtils.getAppForegroundColor()));
+
+            ListView listView = new ListView(context);
+            listView.setDivider(null);
+
+            CustomDialogListPreference.ListPreferenceArrayAdapter adapter =
+                    new CustomDialogListPreference.ListPreferenceArrayAdapter(
+                            context,
+                            langEntries, langValues, Settings.VOT_CAPTION_LANGUAGE.get());
+            listView.setAdapter(adapter);
+
+            SheetBottomDialog.SlideDialog pickerDialog =
+                    SheetBottomDialog.createSlideDialog(context, pickerRoot, fadeInDuration);
+
+            listView.setOnItemClickListener((parent, view, position, id) -> {
+                Settings.VOT_CAPTION_LANGUAGE.save(langValues[position]);
+                VoiceOverTranslationPatch.reloadTranscript();
+                VOTBottomSheet.show(context);
+                pickerDialog.dismiss();
+            });
+
+            pickerRoot.addView(listView);
+            mainDialog.dismiss();
+            pickerDialog.setOnCancelListener(d -> VOTBottomSheet.show(context));
+            PipDismissHelper.dismissOnPip(pickerDialog);
+            pickerDialog.show();
+        });
+        content.addView(row);
         content.addView(translationRow);
         content.addView(engineRow);
-        content.addView(makeDivider(context, fg));
+        View divider = new View(context);
+        divider.setBackgroundColor(Color.argb(30,
+                Color.red(fg), Color.green(fg), Color.blue(fg)));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, Dim.dp1);
+        params.setMargins(0, Dim.dp4, 0, Dim.dp4);
+        divider.setLayoutParams(params);
+        content.addView(divider);
         content.addView(SheetBottomDialog.createSliderRow(context,
                 str("morphe_vot_original_audio_volume_title"),
                 Settings.VOT_ORIGINAL_AUDIO_VOLUME,
@@ -498,97 +551,6 @@ public final class VOTBottomSheet {
         }
 
         return container;
-    }
-
-    private static LinearLayout makeLanguageRow(Context context, String label, int fgColor,
-                                                String[] langEntries, String[] langValues,
-                                                SheetBottomDialog.SlideDialog[] mainRef) {
-        LinearLayout row = new LinearLayout(context);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(Dim.dp48);
-        row.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        TextView labelView = new TextView(context);
-        labelView.setText(label);
-        labelView.setTextColor(fgColor);
-        labelView.setTextSize(16);
-        labelView.setTypeface(Typeface.DEFAULT_BOLD);
-        labelView.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(labelView);
-
-        TextView valueView = new TextView(context);
-        valueView.setText(getLangDisplayName(Settings.VOT_CAPTION_LANGUAGE.get(), langEntries, langValues));
-        valueView.setTextColor(fgColor);
-        valueView.setTextSize(14);
-        valueView.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(valueView);
-
-        ImageView chevron = new ImageView(context);
-        chevron.setImageResource(Utils.appIsUsingBoldIcons() ? DRAWABLE_CHEVRON_RIGHT_BOLD : DRAWABLE_CHEVRON_RIGHT);
-        chevron.setColorFilter(new PorterDuffColorFilter(secondaryColor(fgColor), PorterDuff.Mode.SRC_IN));
-        chevron.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(chevron);
-
-        row.setOnClickListener(v -> showLanguagePicker(context, label, langEntries, langValues,
-                mainRef[0]));
-        return row;
-    }
-
-    private static void showLanguagePicker(Context context, String title,
-                                           String[] langEntries, String[] langValues,
-                                           SheetBottomDialog.SlideDialog mainDialog) {
-        SheetBottomDialog.DraggableLinearLayout pickerRoot =
-                SheetBottomDialog.createMainLayout(context, getDialogBackgroundColor());
-        pickerRoot.setPadding(Dim.dp16, 0, Dim.dp16, Dim.dp16);
-        pickerRoot.addView(SheetBottomDialog.createTitle(context, title, ThemeUtils.getAppForegroundColor()));
-
-        ListView listView = new ListView(context);
-        listView.setDivider(null);
-
-        CustomDialogListPreference.ListPreferenceArrayAdapter adapter =
-                new CustomDialogListPreference.ListPreferenceArrayAdapter(
-                        context,
-                        langEntries, langValues, Settings.VOT_CAPTION_LANGUAGE.get());
-        listView.setAdapter(adapter);
-
-        SheetBottomDialog.SlideDialog pickerDialog =
-                SheetBottomDialog.createSlideDialog(context, pickerRoot, fadeInDuration);
-
-        listView.setOnItemClickListener((parent, view, position, id) -> {
-            Settings.VOT_CAPTION_LANGUAGE.save(langValues[position]);
-            VoiceOverTranslationPatch.reloadTranscript();
-            VOTBottomSheet.show(context);
-            pickerDialog.dismiss();
-        });
-
-        pickerRoot.addView(listView);
-        mainDialog.dismiss();
-        pickerDialog.setOnCancelListener(d -> VOTBottomSheet.show(context));
-        PipDismissHelper.dismissOnPip(pickerDialog);
-        pickerDialog.show();
-    }
-
-    private static String getLangDisplayName(String code, String[] langEntries, String[] langValues) {
-        for (int i = 0, length = langValues.length; i < length; i++) {
-            if (langValues[i].equals(code)) return langEntries[i];
-        }
-        return langEntries[0];
-    }
-
-    private static View makeDivider(Context context, int fgColor) {
-        View divider = new View(context);
-        divider.setBackgroundColor(Color.argb(30,
-                Color.red(fgColor), Color.green(fgColor), Color.blue(fgColor)));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, Dim.dp1);
-        params.setMargins(0, Dim.dp4, 0, Dim.dp4);
-        divider.setLayoutParams(params);
-        return divider;
     }
 
     private static int secondaryColor(int fg) {

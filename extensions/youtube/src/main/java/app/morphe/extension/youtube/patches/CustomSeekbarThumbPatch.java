@@ -268,9 +268,30 @@ public final class CustomSeekbarThumbPatch {
     public static void drawCircle(Canvas canvas, float cx, float cy, float radius, Paint paint) {
         try {
             if (Settings.CUSTOM_SEEKBAR_THUMB.get() && radius >= Dim.dp(MIN_RADIUS_DP)) {
-                Drawable thumb = getThumbDrawable();
+                String fileName = Settings.CUSTOM_SEEKBAR_THUMB_FILE.get();
+                if (!fileName.equals(loadedFileName)) {
+                    loadedFileName = fileName;
+                    setThumbDrawable(fileName.isEmpty() ? null : loadThumbDrawable());
+                }
+                Drawable thumb = thumbDrawable;
                 if (thumb != null) {
-                    drawThumb(canvas, thumb, cx, cy, radius);
+                    final int width = thumb.getIntrinsicWidth();
+                    final int height = thumb.getIntrinsicHeight();
+
+                    float scale = 1;
+                    if (Settings.CUSTOM_SEEKBAR_THUMB_SCALE_TYPE.get() == ThumbScaleType.FIT_SEEKBAR) {
+                        scale = radius * FIT_SEEKBAR_HEIGHT_TO_RADIUS / height;
+                    }
+                    scale = Math.min(scale, (float) Dim.dp(MAX_THUMB_SIZE_DP) / Math.max(width, height));
+                    // The seekbar view clips anything taller than itself.
+                    scale = Math.min(scale, (float) canvas.getHeight() / height);
+
+                    // Scale using the canvas, because AnimatedImageDrawable ignores the drawable bounds.
+                    final int saveCount = canvas.save();
+                    canvas.translate(cx - width * scale / 2, cy - height * scale / 2);
+                    canvas.scale(scale, scale);
+                    thumb.draw(canvas);
+                    canvas.restoreToCount(saveCount);
                     return;
                 }
             }
@@ -279,36 +300,6 @@ public final class CustomSeekbarThumbPatch {
         }
 
         canvas.drawCircle(cx, cy, radius, paint);
-    }
-
-    private static void drawThumb(Canvas canvas, Drawable thumb, float cx, float cy, float radius) {
-        final int width = thumb.getIntrinsicWidth();
-        final int height = thumb.getIntrinsicHeight();
-
-        float scale = 1;
-        if (Settings.CUSTOM_SEEKBAR_THUMB_SCALE_TYPE.get() == ThumbScaleType.FIT_SEEKBAR) {
-            scale = radius * FIT_SEEKBAR_HEIGHT_TO_RADIUS / height;
-        }
-        scale = Math.min(scale, (float) Dim.dp(MAX_THUMB_SIZE_DP) / Math.max(width, height));
-        // The seekbar view clips anything taller than itself.
-        scale = Math.min(scale, (float) canvas.getHeight() / height);
-
-        // Scale using the canvas, because AnimatedImageDrawable ignores the drawable bounds.
-        final int saveCount = canvas.save();
-        canvas.translate(cx - width * scale / 2, cy - height * scale / 2);
-        canvas.scale(scale, scale);
-        thumb.draw(canvas);
-        canvas.restoreToCount(saveCount);
-    }
-
-    @Nullable
-    private static Drawable getThumbDrawable() {
-        String fileName = Settings.CUSTOM_SEEKBAR_THUMB_FILE.get();
-        if (!fileName.equals(loadedFileName)) {
-            loadedFileName = fileName;
-            setThumbDrawable(fileName.isEmpty() ? null : loadThumbDrawable());
-        }
-        return thumbDrawable;
     }
 
     private static void setThumbDrawable(@Nullable Drawable drawable) {

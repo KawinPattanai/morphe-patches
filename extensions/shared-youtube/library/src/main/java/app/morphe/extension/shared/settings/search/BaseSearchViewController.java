@@ -166,7 +166,13 @@ public abstract class BaseSearchViewController {
         searchContainer = activity.findViewById(ID_MORPHE_SEARCH_VIEW_CONTAINER);
 
         // Set background and query hint.
-        searchView.setBackground(createBackgroundDrawable());
+        // Creates a rounded background drawable for the main search view.
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.RECTANGLE);
+        background.setCornerRadius(Dim.dp28);
+        background.setColor(Utils.adjustColorBrightness(ThemeUtils.getDialogBackgroundColor(),
+                Utils.isDarkModeEnabled() ? 1.11f : 0.95f));
+        searchView.setBackground(background);
         searchView.setQueryHint(str("morphe_settings_search_hint"));
 
         // Set text size.
@@ -314,7 +320,78 @@ public abstract class BaseSearchViewController {
                     } else {
                         // If it has search text: hide history and show search results.
                         hideSearchHistory();
-                        filterAndShowResults(newText);
+                        // Filters all search items based on the query and displays results in the overlay,
+                        // with a "no results" message if nothing matches.
+                        filteredSearchItems.clear();
+
+                        String queryLower = Utils.normalizeTextToLowercase(newText);
+                        currentQueryPattern = Pattern.compile(Pattern.quote(queryLower), Pattern.CASE_INSENSITIVE);
+
+                        // Collect matched items first.
+                        List<BaseSearchResultItem> matched = new ArrayList<>();
+                        int matchCount = 0;
+                        for (BaseSearchResultItem item : allSearchItems) {
+                            if (matchCount >= MAX_SEARCH_RESULTS) break; // Stop after collecting max results.
+                            if (item.matchesQuery(queryLower)) {
+                                matched.add(item);
+                                matchCount++;
+                            }
+                        }
+
+                        // Build filteredSearchItems, inserting parent enablers for disabled dependents.
+                        Set<String> addedParentKeys = new HashSet<>(2 * matched.size());
+                        for (BaseSearchResultItem item : matched) {
+                            if (item instanceof BaseSearchResultItem.PreferenceSearchItem prefItem) {
+                                String key = prefItem.preference.getKey();
+                                Setting<?> setting = (key != null) ? Setting.getSettingFromPath(key) : null;
+                                if (setting != null && !setting.isAvailable()) {
+                                    List<Setting<?>> parentSettings = setting.getParentSettings();
+                                    for (Setting<?> parentSetting : parentSettings) {
+                                        BaseSearchResultItem parentItem = keyToSearchItem.get(parentSetting.key);
+                                        if (parentItem != null && !addedParentKeys.contains(parentSetting.key)) {
+                                            if (!parentItem.matchesQuery(queryLower)) {
+                                                filteredSearchItems.add(parentItem);
+                                            }
+                                            addedParentKeys.add(parentSetting.key);
+                                        }
+                                    }
+                                }
+                                filteredSearchItems.add(item);
+                                if (key != null) {
+                                    addedParentKeys.add(key);
+                                }
+                            }
+                        }
+
+                        if (!filteredSearchItems.isEmpty()) {
+                            filteredSearchItems.sort(Comparator.comparing(item -> item.navigationPath));
+                            List<BaseSearchResultItem> displayItems = new ArrayList<>();
+                            String currentPath = null;
+                            for (BaseSearchResultItem item : filteredSearchItems) {
+                                if (!item.navigationPath.equals(currentPath)) {
+                                    BaseSearchResultItem header = new BaseSearchResultItem.GroupHeaderItem(item.navigationPath, item.navigationKeys);
+                                    displayItems.add(header);
+                                    currentPath = item.navigationPath;
+                                }
+                                displayItems.add(item);
+                            }
+                            filteredSearchItems.clear();
+                            filteredSearchItems.addAll(displayItems);
+                        }
+
+                        // Show "No results found" if search results are empty.
+                        if (filteredSearchItems.isEmpty()) {
+                            Preference noResultsPreference = new Preference(activity);
+                            noResultsPreference.setKey("no_results_placeholder");
+                            noResultsPreference.setTitle(str("morphe_settings_search_no_results_title", newText));
+                            noResultsPreference.setSummary(str("morphe_settings_search_no_results_summary"));
+                            noResultsPreference.setSelectable(false);
+                            noResultsPreference.setIcon(getSearchIconDrawable());
+                            filteredSearchItems.add(new BaseSearchResultItem.PreferenceSearchItem(noResultsPreference, "", Collections.emptyList()));
+                        }
+
+                        searchResultsAdapter.notifyDataSetChanged();
+                        overlayContainer.setVisibility(View.VISIBLE);
                     }
                 } catch (Exception ex) {
                     Logger.printException(() -> "onQueryTextChange failure", ex);
@@ -345,7 +422,7 @@ public abstract class BaseSearchViewController {
             try {
                 PreferenceScreen screen = fragment.getPreferenceScreenForSearch();
                 if (screen != null) {
-                    collectSearchablePreferences(screen);
+                    collectSearchablePreferencesWithKeys(screen, "", new ArrayList<>(), 1, 0);
                     for (BaseSearchResultItem item : allSearchItems) {
                         if (item instanceof BaseSearchResultItem.PreferenceSearchItem prefItem) {
                             String key = prefItem.preference.getKey();
@@ -360,13 +437,6 @@ public abstract class BaseSearchViewController {
                 Logger.printException(() -> "Failed to initialize search data", ex);
             }
         });
-    }
-
-    /**
-     * Collects searchable preferences from a preference group.
-     */
-    protected void collectSearchablePreferences(PreferenceGroup group) {
-        collectSearchablePreferencesWithKeys(group, "", new ArrayList<>(), 1, 0);
     }
 
     /**
@@ -416,83 +486,6 @@ public abstract class BaseSearchViewController {
                 collectSearchablePreferencesWithKeys(subGroup, newPath, newKeys, includeDepth, currentDepth + 1);
             }
         }
-    }
-
-    /**
-     * Filters all search items based on the provided query and displays results in the overlay.
-     * Applies highlighting to matching text and shows a "no results" message if nothing matches.
-     */
-    protected void filterAndShowResults(String query) {
-        hideSearchHistory();
-        filteredSearchItems.clear();
-
-        String queryLower = Utils.normalizeTextToLowercase(query);
-        currentQueryPattern = Pattern.compile(Pattern.quote(queryLower), Pattern.CASE_INSENSITIVE);
-
-        // Collect matched items first.
-        List<BaseSearchResultItem> matched = new ArrayList<>();
-        int matchCount = 0;
-        for (BaseSearchResultItem item : allSearchItems) {
-            if (matchCount >= MAX_SEARCH_RESULTS) break; // Stop after collecting max results.
-            if (item.matchesQuery(queryLower)) {
-                matched.add(item);
-                matchCount++;
-            }
-        }
-
-        // Build filteredSearchItems, inserting parent enablers for disabled dependents.
-        Set<String> addedParentKeys = new HashSet<>(2 * matched.size());
-        for (BaseSearchResultItem item : matched) {
-            if (item instanceof BaseSearchResultItem.PreferenceSearchItem prefItem) {
-                String key = prefItem.preference.getKey();
-                Setting<?> setting = (key != null) ? Setting.getSettingFromPath(key) : null;
-                if (setting != null && !setting.isAvailable()) {
-                    List<Setting<?>> parentSettings = setting.getParentSettings();
-                    for (Setting<?> parentSetting : parentSettings) {
-                        BaseSearchResultItem parentItem = keyToSearchItem.get(parentSetting.key);
-                        if (parentItem != null && !addedParentKeys.contains(parentSetting.key)) {
-                            if (!parentItem.matchesQuery(queryLower)) {
-                                filteredSearchItems.add(parentItem);
-                            }
-                            addedParentKeys.add(parentSetting.key);
-                        }
-                    }
-                }
-                filteredSearchItems.add(item);
-                if (key != null) {
-                    addedParentKeys.add(key);
-                }
-            }
-        }
-
-        if (!filteredSearchItems.isEmpty()) {
-            filteredSearchItems.sort(Comparator.comparing(item -> item.navigationPath));
-            List<BaseSearchResultItem> displayItems = new ArrayList<>();
-            String currentPath = null;
-            for (BaseSearchResultItem item : filteredSearchItems) {
-                if (!item.navigationPath.equals(currentPath)) {
-                    BaseSearchResultItem header = new BaseSearchResultItem.GroupHeaderItem(item.navigationPath, item.navigationKeys);
-                    displayItems.add(header);
-                    currentPath = item.navigationPath;
-                }
-                displayItems.add(item);
-            }
-            filteredSearchItems.clear();
-            filteredSearchItems.addAll(displayItems);
-        }
-        // Show "No results found" if search results are empty.
-        if (filteredSearchItems.isEmpty()) {
-            Preference noResultsPreference = new Preference(activity);
-            noResultsPreference.setKey("no_results_placeholder");
-            noResultsPreference.setTitle(str("morphe_settings_search_no_results_title", query));
-            noResultsPreference.setSummary(str("morphe_settings_search_no_results_summary"));
-            noResultsPreference.setSelectable(false);
-            noResultsPreference.setIcon(getSearchIconDrawable());
-            filteredSearchItems.add(new BaseSearchResultItem.PreferenceSearchItem(noResultsPreference, "", Collections.emptyList()));
-        }
-
-        searchResultsAdapter.notifyDataSetChanged();
-        overlayContainer.setVisibility(View.VISIBLE);
     }
 
     /**
@@ -559,7 +552,9 @@ public abstract class BaseSearchViewController {
             searchHistoryManager.showSearchHistory();
             isShowingSearchHistory = true;
         } else {
-            hideAllOverlays();
+            // Hides all overlay containers, including search results and history.
+            hideSearchHistory();
+            hideSearchResults();
         }
     }
 
@@ -569,14 +564,6 @@ public abstract class BaseSearchViewController {
     protected void hideSearchHistory() {
         searchHistoryManager.hideSearchHistoryContainer();
         isShowingSearchHistory = false;
-    }
-
-    /**
-     * Hides all overlay containers, including search results and history.
-     */
-    protected void hideAllOverlays() {
-        hideSearchHistory();
-        hideSearchResults();
     }
 
     /**
@@ -601,18 +588,6 @@ public abstract class BaseSearchViewController {
     @Nullable
     public Pattern getCurrentQueryPattern() {
         return currentQueryPattern;
-    }
-
-    /**
-     * Creates a rounded background drawable for the main search view.
-     */
-    protected static GradientDrawable createBackgroundDrawable() {
-        GradientDrawable background = new GradientDrawable();
-        background.setShape(GradientDrawable.RECTANGLE);
-        background.setCornerRadius(Dim.dp28);
-        background.setColor(Utils.adjustColorBrightness(ThemeUtils.getDialogBackgroundColor(),
-                Utils.isDarkModeEnabled() ? 1.11f : 0.95f));
-        return background;
     }
 
     /**

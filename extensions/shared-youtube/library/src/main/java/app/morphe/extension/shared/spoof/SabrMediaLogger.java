@@ -114,7 +114,26 @@ final class SabrMediaLogger {
                 if (clientInfo == null) {
                     builder.append(", no client info");
                 } else {
-                    appendClientInfo(builder, clientInfo);
+                    boolean hasVisitorData = false;
+                    CodedInputStream input = CodedInputStream.newInstance(clientInfo);
+                    for (int tag; (tag = input.readTag()) != 0; ) {
+                        final int field = WireFormat.getTagFieldNumber(tag);
+                        final int wireType = WireFormat.getTagWireType(tag);
+                        String name = getClientInfoFieldName(field);
+
+                        if (field == CLIENT_INFO_VISITOR_DATA_FIELD) {
+                            // Only whether it is set is logged.
+                            hasVisitorData = true;
+                            input.skipField(tag);
+                        } else if (name != null && wireType == WireFormat.WIRETYPE_VARINT) {
+                            builder.append(", ").append(name).append(": ").append(input.readInt64());
+                        } else if (name != null && wireType == WireFormat.WIRETYPE_LENGTH_DELIMITED) {
+                            builder.append(", ").append(name).append(": ").append(input.readString());
+                        } else {
+                            input.skipField(tag);
+                        }
+                    }
+                    builder.append(", visitorData: ").append(hasVisitorData ? "set" : "not set");
                 }
                 byte[] poToken = SabrRequestBody.readMessageField(streamerContext, STREAMER_CONTEXT_PO_TOKEN_FIELD);
                 builder.append(", poToken bytes: ").append(poToken == null ? 0 : poToken.length);
@@ -143,29 +162,6 @@ final class SabrMediaLogger {
             case CLIENT_INFO_GL_FIELD -> "gl";
             default -> null;
         };
-    }
-
-    private static void appendClientInfo(StringBuilder builder, byte[] clientInfo) throws IOException {
-        boolean hasVisitorData = false;
-        CodedInputStream input = CodedInputStream.newInstance(clientInfo);
-        for (int tag; (tag = input.readTag()) != 0; ) {
-            final int field = WireFormat.getTagFieldNumber(tag);
-            final int wireType = WireFormat.getTagWireType(tag);
-            String name = getClientInfoFieldName(field);
-
-            if (field == CLIENT_INFO_VISITOR_DATA_FIELD) {
-                // Only whether it is set is logged.
-                hasVisitorData = true;
-                input.skipField(tag);
-            } else if (name != null && wireType == WireFormat.WIRETYPE_VARINT) {
-                builder.append(", ").append(name).append(": ").append(input.readInt64());
-            } else if (name != null && wireType == WireFormat.WIRETYPE_LENGTH_DELIMITED) {
-                builder.append(", ").append(name).append(": ").append(input.readString());
-            } else {
-                input.skipField(tag);
-            }
-        }
-        builder.append(", visitorData: ").append(hasVisitorData ? "set" : "not set");
     }
 
     @Nullable

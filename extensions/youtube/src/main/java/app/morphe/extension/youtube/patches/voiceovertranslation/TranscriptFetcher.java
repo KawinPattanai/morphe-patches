@@ -80,7 +80,32 @@ final class TranscriptFetcher {
         String captionUrl = null;
         String poToken    = null;
         try {
-            String[] innertubeResult = fetchFromInnertube(videoId);
+            Utils.verifyOffMainThread();
+
+            String body = "{\"context\":{\"client\":{\"clientName\":\"ANDROID\","
+                    + "\"clientVersion\":\"20.10.38\"}},"
+                    + "\"videoId\":\"" + videoId + "\"}";
+
+            HttpURLConnection conn = Requester.openConnection(INNERTUBE_PLAYER_URL);
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("User-Agent",
+                    "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip");
+            conn.setRequestProperty("X-YouTube-Client-Name", "3");
+            conn.setRequestProperty("X-YouTube-Client-Version", "20.10.38");
+            conn.setDoOutput(true);
+
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+
+            final int code = conn.getResponseCode();
+            if (code != 200) throw new Exception("Unexpected response status: " + code);
+
+            String response = Requester.parseString(conn);
+            String[] innertubeResult = new String[]{findBestCaptionUrl(response), extractPoToken(response)};
             captionUrl = innertubeResult[0];
             poToken    = innertubeResult[1];
         } catch (Exception ex) {
@@ -104,36 +129,25 @@ final class TranscriptFetcher {
             }
         }
 
-        return fetchDirect(videoId);
-    }
-
-    private static String[] fetchFromInnertube(String videoId) throws Exception {
-        Utils.verifyOffMainThread();
-
-        String body = "{\"context\":{\"client\":{\"clientName\":\"ANDROID\","
-                + "\"clientVersion\":\"20.10.38\"}},"
-                + "\"videoId\":\"" + videoId + "\"}";
-
-        HttpURLConnection conn = Requester.openConnection(INNERTUBE_PLAYER_URL);
-        conn.setRequestMethod("POST");
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("User-Agent",
-                "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip");
-        conn.setRequestProperty("X-YouTube-Client-Name", "3");
-        conn.setRequestProperty("X-YouTube-Client-Version", "20.10.38");
-        conn.setDoOutput(true);
-
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(body.getBytes(StandardCharsets.UTF_8));
+        for (String srcLang : List.of("en", "en-US", "en-GB")) {
+            try {
+                String urlStr = "https://www.youtube.com/api/timedtext?v=" + videoId
+                        + "&lang=" + srcLang + "&kind=asr&fmt=json3";
+                String json = fetchUrl(urlStr);
+                if (!json.isEmpty()) {
+                    List<TranscriptSegment> segments = parseJson3(json, "en");
+                    if (!segments.isEmpty()) {
+                        lastSourceLang = "en";
+                        return segments;
+                    }
+                }
+            } catch (Exception ex) {
+                final String langFinal = srcLang;
+                Logger.printDebug(() -> "Direct caption fetch failed lang: " + langFinal, ex);
+            }
         }
-
-        final int code = conn.getResponseCode();
-        if (code != 200) throw new Exception("Unexpected response status: " + code);
-
-        String response = Requester.parseString(conn);
-        return new String[]{findBestCaptionUrl(response), extractPoToken(response)};
+        Logger.printDebug(() -> "No captions available for video: " + videoId);
+        return new ArrayList<>();
     }
 
     @Nullable
@@ -190,28 +204,6 @@ final class TranscriptFetcher {
         if (targetLangUrl != null) return targetLangUrl;
         if (englishUrl != null) return englishUrl;
         return firstNonGemini != null ? firstNonGemini : firstUrl;
-    }
-
-    private static List<TranscriptSegment> fetchDirect(String videoId) {
-        for (String srcLang : List.of("en", "en-US", "en-GB")) {
-            try {
-                String urlStr = "https://www.youtube.com/api/timedtext?v=" + videoId
-                        + "&lang=" + srcLang + "&kind=asr&fmt=json3";
-                String json = fetchUrl(urlStr);
-                if (!json.isEmpty()) {
-                    List<TranscriptSegment> segments = parseJson3(json, "en");
-                    if (!segments.isEmpty()) {
-                        lastSourceLang = "en";
-                        return segments;
-                    }
-                }
-            } catch (Exception ex) {
-                final String langFinal = srcLang;
-                Logger.printDebug(() -> "Direct caption fetch failed lang: " + langFinal, ex);
-            }
-        }
-        Logger.printDebug(() -> "No captions available for video: " + videoId);
-        return new ArrayList<>();
     }
 
     private static String extractLangFromUrl(String url) {
@@ -307,17 +299,27 @@ final class TranscriptFetcher {
             }
         }
 
-        return mergeIntoSentences(lines);
-    }
-
-    /**
-     * Merges caption lines into sentence-sized segments so TTS speaks whole sentences
-     * without pauses at line breaks. For punctuated transcripts a sentence ends on
-     * terminal punctuation; old ASR tracks have no punctuation at all, so boundaries
-     * are approximated from speech pauses and capitalization instead.
-     */
-    private static List<TranscriptSegment> mergeIntoSentences(List<TranscriptSegment> lines) {
-        final boolean punctuated = detectPunctuation(lines);
+        // Merges caption lines into sentence-sized segments so TTS speaks whole sentences
+        // without pauses at line breaks. For punctuated transcripts a sentence ends on
+        // terminal punctuation; old ASR tracks have no punctuation at all, so boundaries
+        // are approximated from speech pauses and capitalization instead.
+        // Returns true when a meaningful share of lines contains terminal punctuation.
+        // Old auto-generated tracks contain none, so punctuation can't be trusted there
+        // as a sentence boundary signal.
+        int punctuatedLines = 0;
+        for (TranscriptSegment line : lines) {
+            String t = line.text;
+            for (int i = 0, len = t.length(); i < len; i++) {
+                final char c = t.charAt(i);
+                if (c == '.' || c == '!' || c == '?') {
+                    punctuatedLines++;
+                    break;
+                }
+            }
+        }
+        // At least ~10% of lines must carry punctuation - the occasional "$5.99"
+        // in an otherwise unpunctuated track should not flip the mode.
+        final boolean punctuated = punctuatedLines * 10 >= lines.size();
         List<TranscriptSegment> sentences = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         long startMs = 0;
@@ -380,28 +382,6 @@ final class TranscriptFetcher {
             }
         }
         return sentences;
-    }
-
-    /**
-     * Returns true when a meaningful share of lines contains terminal punctuation.
-     * Old auto-generated tracks contain none, so punctuation can't be trusted there
-     * as a sentence boundary signal.
-     */
-    private static boolean detectPunctuation(List<TranscriptSegment> lines) {
-        int punctuatedLines = 0;
-        for (TranscriptSegment line : lines) {
-            String t = line.text;
-            for (int i = 0, len = t.length(); i < len; i++) {
-                final char c = t.charAt(i);
-                if (c == '.' || c == '!' || c == '?') {
-                    punctuatedLines++;
-                    break;
-                }
-            }
-        }
-        // At least ~10% of lines must carry punctuation - the occasional "$5.99"
-        // in an otherwise unpunctuated track should not flip the mode.
-        return punctuatedLines * 10 >= lines.size();
     }
 
     private static boolean startsWithUpperCase(String text) {

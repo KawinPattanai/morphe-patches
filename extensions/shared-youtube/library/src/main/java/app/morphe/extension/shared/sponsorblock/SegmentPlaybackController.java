@@ -222,7 +222,12 @@ public class SegmentPlaybackController {
             if (currentVideoId != null && segments != null
                     && whitelist.isChannelWhitelisted(channelId)) {
                 Logger.printDebug(() -> "Channel is whitelisted, discarding loaded segments: " + channelId);
-                discardSegmentsForWhitelistedChannel();
+                // Discard segments when a whitelisted channel ID arrives after the download already completed.
+                String videoId = currentVideoId;
+                clearData();
+                currentVideoId = videoId;
+                ui().hideAll();
+                maybeShowWhitelistToast();
             }
         });
     }
@@ -343,17 +348,6 @@ public class SegmentPlaybackController {
         Logger.printDebug(() -> "Skipping SponsorBlock for whitelisted channel");
         maybeShowWhitelistToast();
         return true;
-    }
-
-    /**
-     * Discard segments when a whitelisted channel ID arrives after the download already completed.
-     */
-    private static void discardSegmentsForWhitelistedChannel() {
-        String videoId = currentVideoId;
-        clearData();
-        currentVideoId = videoId;
-        ui().hideAll();
-        maybeShowWhitelistToast();
     }
 
     /**
@@ -521,7 +515,14 @@ public class SegmentPlaybackController {
             }
             Logger.printDebug(() -> "setVideoTime: " + millis);
 
-            updateHiddenSegments(millis);
+            // Removes all previously hidden segments that are no longer contained in the given video time.
+            hiddenSkipSegmentsForCurrentVideoTime.removeIf((hiddenSegment) -> {
+                if (!hiddenSegment.containsTime(millis)) {
+                    Logger.printDebug(() -> "Resetting hide skip button: " + hiddenSegment);
+                    return true;
+                }
+                return false;
+            });
 
             final float playbackSpeed = video().getPlaybackSpeed();
             // Amount of time to look ahead for the next segment,
@@ -723,19 +724,6 @@ public class SegmentPlaybackController {
         }
     }
 
-    /**
-     * Removes all previously hidden segments that are no longer contained in the given video time.
-     */
-    private static void updateHiddenSegments(long currentVideoTime) {
-        hiddenSkipSegmentsForCurrentVideoTime.removeIf((hiddenSegment) -> {
-            if (!hiddenSegment.containsTime(currentVideoTime)) {
-                Logger.printDebug(() -> "Resetting hide skip button: " + hiddenSegment);
-                return true;
-            }
-            return false;
-        });
-    }
-
     private static void setSegmentCurrentlyPlaying(@Nullable SponsorSegment segment) {
         if (segment == null) {
             if (segmentCurrentlyPlaying != null) {
@@ -843,7 +831,152 @@ public class SegmentPlaybackController {
                             (otherSegment.category != SegmentCategory.HIGHLIGHT && segmentToSkip.containsSegment(otherSegment))) {
                         otherSegment.didAutoSkipped = true;
                         if (showSkipToast) {
-                            showSkippedSegmentToast(otherSegment);
+                            showSkippedSegmentToast: {
+                                Utils.verifyOnMainThread();
+                                toastSegmentSkipped = otherSegment;
+                                if (toastNumberOfSegmentsSkipped++ > 0) {
+                                    break showSkippedSegmentToast; // Toast is already scheduled.
+                                }
+
+                                // Maximum time between skips to be considered skipping multiple segments.
+                                final long delayToToastMilliseconds = 250;
+                                Utils.runOnMainThreadDelayed(() -> {
+                                    try {
+                                        // Do not show a toast if the user is scrubbing through a paused video.
+                                        // Cannot do this video state check in setTime or before calling this method,
+                                        // as the video state may not be up to date. So instead, only ignore the toast
+                                        // just before it's about to show since the video state is up to date.
+                                        if (playerState().isPaused()) {
+                                            Logger.printDebug(() -> "Ignoring scheduled toast as video state is paused");
+                                            return;
+                                        }
+
+                                        if (playerState().isPictureInPicture()) {
+                                            Logger.printDebug(() -> "Not showing autoskip toast as playback is PiP");
+                                            return;
+                                        }
+
+                                        if (toastSegmentSkipped == null || undoAutoSkipRangeToast == null) {
+                                            // Video was changed immediately after skipping segment.
+                                            Logger.printDebug(() -> "Ignoring old scheduled show toast");
+                                            return;
+                                        }
+                                        String message = toastNumberOfSegmentsSkipped == 1
+                                                ? toastSegmentSkipped.getSkippedToastText()
+                                                : str("morphe_sb_skipped_multiple_segments");
+
+                                        if (config().undoToastEnabled()) {
+                                            showAutoSkipToast: {
+                                                Range<Long> rangeToUndo = undoAutoSkipRangeToast;
+                                                Objects.requireNonNull(message);
+                                                Utils.verifyOnMainThread();
+
+                                                if (playerState().isInlineMinimal()) {
+                                                    // Cannot easily show a toast since there is no layout view context.
+                                                    // Probably better to not show a toast here anyway.
+                                                    Logger.printDebug(() -> "Not showing undo toast for feed playback");
+                                                    break showAutoSkipToast;
+                                                }
+
+                                                // A view in the activity instead of a dialog window, because some devices block
+                                                // every touch on the screen while a dialog is shown, even outside its bounds.
+                                                Activity activity = Utils.getActivity();
+                                                if (activity == null) {
+                                                    Logger.printException(() -> "Cannot show toast (activity is null): " + message);
+                                                    break showAutoSkipToast;
+                                                }
+
+                                                Logger.printDebug(() -> "Showing toast: " + message);
+
+                                                FrameLayout decorView = (FrameLayout) activity.getWindow().getDecorView();
+
+                                                LinearLayout mainLayout = new LinearLayout(activity);
+                                                mainLayout.setOrientation(LinearLayout.VERTICAL);
+                                                mainLayout.setPadding(Dim.dp16, Dim.dp8, Dim.dp16, Dim.dp8);
+                                                mainLayout.setGravity(Gravity.CENTER);
+                                                mainLayout.setMinimumHeight(Dim.dp48);
+
+                                                ShapeDrawable background = new ShapeDrawable(new RoundRectShape(
+                                                        Dim.roundedCorners(20), null, null));
+                                                background.getPaint().setColor(ThemeUtils.getDialogBackgroundColor());
+                                                mainLayout.setBackground(background);
+
+                                                TextView textView = new TextView(activity);
+                                                textView.setText(message);
+                                                textView.setTextSize(14);
+                                                textView.setTextColor(ThemeUtils.getAppForegroundColor());
+                                                textView.setGravity(Gravity.CENTER);
+                                                LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(
+                                                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                                                        ViewGroup.LayoutParams.WRAP_CONTENT
+                                                );
+                                                textParams.gravity = Gravity.CENTER;
+                                                textView.setLayoutParams(textParams);
+                                                mainLayout.addView(textView);
+                                                mainLayout.setAlpha(0.8f); // Opacity for the entire toast.
+
+                                                final int fadeDurationFast = ResourceUtils.getInteger("fade_duration_fast");
+                                                Animation fadeIn = ResourceUtils.getAnimation("fade_in");
+                                                Animation fadeOut = ResourceUtils.getAnimation("fade_out");
+                                                fadeIn.setDuration(fadeDurationFast);
+                                                fadeOut.setDuration(fadeDurationFast);
+                                                fadeOut.setAnimationListener(new Animation.AnimationListener() {
+                                                    public void onAnimationStart(Animation animation) { }
+                                                    public void onAnimationEnd(Animation animation) {
+                                                        // The view cannot be removed while its animation is still finishing a frame.
+                                                        mainLayout.post(() -> removeToastView(mainLayout));
+                                                    }
+
+                                                    public void onAnimationRepeat(Animation animation) { }
+                                                });
+
+                                                mainLayout.setOnClickListener(v -> {
+                                                    try {
+                                                        mainLayout.setOnClickListener(null); // Undo only once while the toast fades out.
+                                                        Logger.printDebug(() -> "Undoing autoskip using range: " + rangeToUndo);
+                                                        // Restore undo autoskip range since it's already cleared by now.
+                                                        undoAutoSkipRange = rangeToUndo;
+                                                        video().seekTo(rangeToUndo.getLower());
+
+                                                        mainLayout.startAnimation(fadeOut);
+                                                    } catch (Exception ex) {
+                                                        Logger.printException(() -> "showToastShortWithTapAction setOnClickListener failure", ex);
+                                                        removeToastView(mainLayout);
+                                                    }
+                                                });
+
+                                                // Same place the dialog had: above the navigation bar, 72dp from the bottom.
+                                                FrameLayout.LayoutParams toastParams = new FrameLayout.LayoutParams(
+                                                        Dim.pctPortraitWidth(60),
+                                                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                                                        Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+                                                );
+                                                toastParams.bottomMargin = Dim.dp(72) + getSystemBarsBottomInset(decorView);
+
+                                                if (dismissUndoToast()) {
+                                                    Logger.printDebug(() -> "Dismissed previous skip toast that was still on screen");
+                                                }
+                                                toastViewRef = new WeakReference<>(mainLayout);
+
+                                                decorView.addView(mainLayout, toastParams);
+                                                mainLayout.startAnimation(fadeIn);
+
+                                                // Fade out and remove the toast if the user does not undo the skip.
+                                                Utils.runOnMainThreadDelayed(() -> {
+                                                    if (mainLayout.getParent() != null) {
+                                                        mainLayout.startAnimation(fadeOut);
+                                                    }
+                                                }, settings().toastOnSkipDurationMs());
+                                            }
+                                        } else {
+                                            Utils.showToastShort(message);
+                                        }
+                                    } finally {
+                                        toastNumberOfSegmentsSkipped = 0;
+                                        toastSegmentSkipped = null;
+                                    }
+                                }, delayToToastMilliseconds);
+                            }
                         }
                     }
                 }
@@ -890,153 +1023,6 @@ public class SegmentPlaybackController {
             return segmentCurrentlyPlaying != null;
         }
         return skipSegmentButtonEndTime != 0;
-    }
-
-    private static void showSkippedSegmentToast(SponsorSegment segment) {
-        Utils.verifyOnMainThread();
-        toastSegmentSkipped = segment;
-        if (toastNumberOfSegmentsSkipped++ > 0) {
-            return; // Toast is already scheduled.
-        }
-
-        // Maximum time between skips to be considered skipping multiple segments.
-        final long delayToToastMilliseconds = 250;
-        Utils.runOnMainThreadDelayed(() -> {
-            try {
-                // Do not show a toast if the user is scrubbing through a paused video.
-                // Cannot do this video state check in setTime or before calling this method,
-                // as the video state may not be up to date. So instead, only ignore the toast
-                // just before it's about to show since the video state is up to date.
-                if (playerState().isPaused()) {
-                    Logger.printDebug(() -> "Ignoring scheduled toast as video state is paused");
-                    return;
-                }
-
-                if (playerState().isPictureInPicture()) {
-                    Logger.printDebug(() -> "Not showing autoskip toast as playback is PiP");
-                    return;
-                }
-
-                if (toastSegmentSkipped == null || undoAutoSkipRangeToast == null) {
-                    // Video was changed immediately after skipping segment.
-                    Logger.printDebug(() -> "Ignoring old scheduled show toast");
-                    return;
-                }
-                String message = toastNumberOfSegmentsSkipped == 1
-                        ? toastSegmentSkipped.getSkippedToastText()
-                        : str("morphe_sb_skipped_multiple_segments");
-
-                if (config().undoToastEnabled()) {
-                    showAutoSkipToast(message, undoAutoSkipRangeToast);
-                } else {
-                    Utils.showToastShort(message);
-                }
-            } finally {
-                toastNumberOfSegmentsSkipped = 0;
-                toastSegmentSkipped = null;
-            }
-        }, delayToToastMilliseconds);
-    }
-
-    private static void showAutoSkipToast(String messageToToast, Range<Long> rangeToUndo) {
-        Objects.requireNonNull(messageToToast);
-        Utils.verifyOnMainThread();
-
-        if (playerState().isInlineMinimal()) {
-            // Cannot easily show a toast since there is no layout view context.
-            // Probably better to not show a toast here anyway.
-            Logger.printDebug(() -> "Not showing undo toast for feed playback");
-            return;
-        }
-
-        // A view in the activity instead of a dialog window, because some devices block
-        // every touch on the screen while a dialog is shown, even outside its bounds.
-        Activity activity = Utils.getActivity();
-        if (activity == null) {
-            Logger.printException(() -> "Cannot show toast (activity is null): " + messageToToast);
-            return;
-        }
-
-        Logger.printDebug(() -> "Showing toast: " + messageToToast);
-
-        FrameLayout decorView = (FrameLayout) activity.getWindow().getDecorView();
-
-        LinearLayout mainLayout = new LinearLayout(activity);
-        mainLayout.setOrientation(LinearLayout.VERTICAL);
-        mainLayout.setPadding(Dim.dp16, Dim.dp8, Dim.dp16, Dim.dp8);
-        mainLayout.setGravity(Gravity.CENTER);
-        mainLayout.setMinimumHeight(Dim.dp48);
-
-        ShapeDrawable background = new ShapeDrawable(new RoundRectShape(
-                Dim.roundedCorners(20), null, null));
-        background.getPaint().setColor(ThemeUtils.getDialogBackgroundColor());
-        mainLayout.setBackground(background);
-
-        TextView textView = new TextView(activity);
-        textView.setText(messageToToast);
-        textView.setTextSize(14);
-        textView.setTextColor(ThemeUtils.getAppForegroundColor());
-        textView.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        );
-        textParams.gravity = Gravity.CENTER;
-        textView.setLayoutParams(textParams);
-        mainLayout.addView(textView);
-        mainLayout.setAlpha(0.8f); // Opacity for the entire toast.
-
-        final int fadeDurationFast = ResourceUtils.getInteger("fade_duration_fast");
-        Animation fadeIn = ResourceUtils.getAnimation("fade_in");
-        Animation fadeOut = ResourceUtils.getAnimation("fade_out");
-        fadeIn.setDuration(fadeDurationFast);
-        fadeOut.setDuration(fadeDurationFast);
-        fadeOut.setAnimationListener(new Animation.AnimationListener() {
-            public void onAnimationStart(Animation animation) { }
-            public void onAnimationEnd(Animation animation) {
-                // The view cannot be removed while its animation is still finishing a frame.
-                mainLayout.post(() -> removeToastView(mainLayout));
-            }
-            public void onAnimationRepeat(Animation animation) { }
-        });
-
-        mainLayout.setOnClickListener(v -> {
-            try {
-                mainLayout.setOnClickListener(null); // Undo only once while the toast fades out.
-                Logger.printDebug(() -> "Undoing autoskip using range: " + rangeToUndo);
-                // Restore undo autoskip range since it's already cleared by now.
-                undoAutoSkipRange = rangeToUndo;
-                video().seekTo(rangeToUndo.getLower());
-
-                mainLayout.startAnimation(fadeOut);
-            } catch (Exception ex) {
-                Logger.printException(() -> "showToastShortWithTapAction setOnClickListener failure", ex);
-                removeToastView(mainLayout);
-            }
-        });
-
-        // Same place the dialog had: above the navigation bar, 72dp from the bottom.
-        FrameLayout.LayoutParams toastParams = new FrameLayout.LayoutParams(
-                Dim.pctPortraitWidth(60),
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
-        );
-        toastParams.bottomMargin = Dim.dp(72) + getSystemBarsBottomInset(decorView);
-
-        if (dismissUndoToast()) {
-            Logger.printDebug(() -> "Dismissed previous skip toast that was still on screen");
-        }
-        toastViewRef = new WeakReference<>(mainLayout);
-
-        decorView.addView(mainLayout, toastParams);
-        mainLayout.startAnimation(fadeIn);
-
-        // Fade out and remove the toast if the user does not undo the skip.
-        Utils.runOnMainThreadDelayed(() -> {
-            if (mainLayout.getParent() != null) {
-                mainLayout.startAnimation(fadeOut);
-            }
-        }, settings().toastOnSkipDurationMs());
     }
 
     @SuppressWarnings("deprecation") // The replacement needs Android 11.
@@ -1104,7 +1090,37 @@ public class SegmentPlaybackController {
                 final long videoLength = video().getVideoLength();
                 if (timeWithoutSegmentsVideoLength != videoLength) {
                     timeWithoutSegmentsVideoLength = videoLength;
-                    calculateTimeWithoutSegments(videoLength);
+                    calculateTimeWithoutSegments: {
+                        if (videoLength <= 0 || segments == null || segments.length == 0) {
+                            timeWithoutSegments = null;
+                            break calculateTimeWithoutSegments;
+                        }
+
+                        boolean foundNonhighlightSegments = false;
+                        long timeWithoutSegmentsValue = videoLength;
+                        // Furthest end of all earlier segments.
+                        long earlierSegmentsEnd = 0;
+
+                        for (SponsorSegment segment : segments) {
+                            if (segment.category != SegmentCategory.HIGHLIGHT) {
+                                foundNonhighlightSegments = true;
+                                // To prevent nested segments from incorrectly counting additional time,
+                                // only count the part after any earlier segments.
+                                final long start = Math.max(segment.start, earlierSegmentsEnd);
+                                if (start < segment.end) {
+                                    timeWithoutSegmentsValue -= (segment.end - start);
+                                }
+                            }
+                            earlierSegmentsEnd = Math.max(earlierSegmentsEnd, segment.end);
+                        }
+
+                        if (!foundNonhighlightSegments) {
+                            timeWithoutSegments = null;
+                            break calculateTimeWithoutSegments;
+                        }
+
+                        timeWithoutSegments = " (" + MediaTime.format(timeWithoutSegmentsValue) + ")";
+                    }
                 }
 
                 if (Utils.isNotEmpty(timeWithoutSegments)) {
@@ -1117,38 +1133,6 @@ public class SegmentPlaybackController {
         }
 
         return totalTime;
-    }
-
-    private static void calculateTimeWithoutSegments(long currentVideoLength) {
-        if (currentVideoLength <= 0 || segments == null || segments.length == 0) {
-            timeWithoutSegments = null;
-            return;
-        }
-
-        boolean foundNonhighlightSegments = false;
-        long timeWithoutSegmentsValue = currentVideoLength;
-        // Furthest end of all earlier segments.
-        long earlierSegmentsEnd = 0;
-
-        for (SponsorSegment segment : segments) {
-            if (segment.category != SegmentCategory.HIGHLIGHT) {
-                foundNonhighlightSegments = true;
-                // To prevent nested segments from incorrectly counting additional time,
-                // only count the part after any earlier segments.
-                final long start = Math.max(segment.start, earlierSegmentsEnd);
-                if (start < segment.end) {
-                    timeWithoutSegmentsValue -= (segment.end - start);
-                }
-            }
-            earlierSegmentsEnd = Math.max(earlierSegmentsEnd, segment.end);
-        }
-
-        if (!foundNonhighlightSegments) {
-            timeWithoutSegments = null;
-            return;
-        }
-
-        timeWithoutSegments = " (" + MediaTime.format(timeWithoutSegmentsValue) + ")";
     }
 
     /**

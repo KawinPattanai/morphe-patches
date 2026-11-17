@@ -206,8 +206,97 @@ public final class ChannelSearchRequest {
             String channelName = parseChannelName(json);
             int[] indexRef = {0};
             for (int page = 1; ; page++) {
-                String browseToken = parseBrowseContents(json, allResults, seenVideoIds, indexRef, isEnglish);
-                String actionToken = parseContinuationActions(json, allResults, seenVideoIds, indexRef, isEnglish);
+                String browseToken;
+                parseBrowseContents: {
+                    JSONObject contents = json.optJSONObject("contents");
+                    if (contents == null) {
+                        browseToken = null;
+                        break parseBrowseContents;
+                    }
+
+                    JSONObject singleCol = contents.optJSONObject("singleColumnBrowseResultsRenderer");
+                    if (singleCol == null) {
+                        browseToken = null;
+                        break parseBrowseContents;
+                    }
+
+                    JSONArray tabs = singleCol.optJSONArray("tabs");
+                    if (tabs == null) {
+                        browseToken = null;
+                        break parseBrowseContents;
+                    }
+
+                    String nextToken = null;
+                    for (int i = 0, tabsLength = tabs.length(); i < tabsLength; i++) {
+                        JSONObject tab = tabs.optJSONObject(i);
+                        if (tab == null) continue;
+
+                        JSONObject tabRenderer = tab.optJSONObject("tabRenderer");
+                        if (tabRenderer == null || !tabRenderer.optBoolean("selected")) continue;
+
+                        JSONObject content = tabRenderer.optJSONObject("content");
+                        if (content == null) continue;
+
+                        JSONObject sectionList = content.optJSONObject("sectionListRenderer");
+                        if (sectionList == null) continue;
+
+                        JSONArray sections = sectionList.optJSONArray("contents");
+                        if (sections == null) continue;
+
+                        for (int j = 0, sectionsLength = sections.length(); j < sectionsLength; j++) {
+                            JSONObject section = sections.optJSONObject(j);
+                            if (section == null) continue;
+
+                            JSONObject itemSection = section.optJSONObject("itemSectionRenderer");
+                            if (itemSection != null) {
+                                parseVideoArray(itemSection.optJSONArray("contents"), allResults, seenVideoIds, indexRef, isEnglish);
+                            }
+
+                            String tok = extractContinuationToken(section.optJSONObject("continuationItemRenderer"));
+                            if (tok != null) nextToken = tok;
+                        }
+                    }
+                    browseToken = nextToken;
+                }
+                String actionToken;
+                parseContinuationActions: {
+                    JSONArray actions = json.optJSONArray("onResponseReceivedActions");
+                    if (actions == null) {
+                        actionToken = null;
+                        break parseContinuationActions;
+                    }
+
+                    String nextToken = null;
+                    for (int i = 0, actionsLength = actions.length(); i < actionsLength; i++) {
+                        JSONObject action = actions.optJSONObject(i);
+                        if (action == null) continue;
+
+                        JSONObject appendAction = action.optJSONObject("appendContinuationItemsAction");
+                        if (appendAction == null) continue;
+
+                        JSONArray continuationItems = appendAction.optJSONArray("continuationItems");
+                        if (continuationItems == null) continue;
+
+                        for (int j = 0, itemsLength = continuationItems.length(); j < itemsLength; j++) {
+                            JSONObject item = continuationItems.optJSONObject(j);
+                            if (item == null) continue;
+
+                            JSONObject isr = item.optJSONObject("itemSectionRenderer");
+                            if (isr != null) {
+                                parseVideoArray(isr.optJSONArray("contents"), allResults, seenVideoIds, indexRef, isEnglish);
+                            } else {
+                                JSONObject cvr = item.optJSONObject("compactVideoRenderer");
+                                if (cvr != null) {
+                                    parseSingleVideo(cvr, allResults, seenVideoIds, indexRef, isEnglish);
+                                }
+                            }
+
+                            String tok = extractContinuationToken(item.optJSONObject("continuationItemRenderer"));
+                            if (tok != null) nextToken = tok;
+                        }
+                    }
+                    actionToken = nextToken;
+                }
                 String nextToken = browseToken != null ? browseToken : actionToken;
                 final boolean isLast = nextToken == null || nextToken.isEmpty()
                         || page >= MAX_CONTINUATION_PAGES || allResults.size() >= MAX_SEARCH_RESULTS;
@@ -239,89 +328,6 @@ public final class ChannelSearchRequest {
         return null;
     }
 
-    @Nullable
-    private static String parseBrowseContents(JSONObject json, List<ChannelSearchResult> results,
-                                             Set<String> seenVideoIds, int[] indexRef, boolean isEnglish) {
-        JSONObject contents = json.optJSONObject("contents");
-        if (contents == null) return null;
-
-        JSONObject singleCol = contents.optJSONObject("singleColumnBrowseResultsRenderer");
-        if (singleCol == null) return null;
-
-        JSONArray tabs = singleCol.optJSONArray("tabs");
-        if (tabs == null) return null;
-
-        String nextToken = null;
-        for (int i = 0, tabsLength = tabs.length(); i < tabsLength; i++) {
-            JSONObject tab = tabs.optJSONObject(i);
-            if (tab == null) continue;
-
-            JSONObject tabRenderer = tab.optJSONObject("tabRenderer");
-            if (tabRenderer == null || !tabRenderer.optBoolean("selected")) continue;
-
-            JSONObject content = tabRenderer.optJSONObject("content");
-            if (content == null) continue;
-
-            JSONObject sectionList = content.optJSONObject("sectionListRenderer");
-            if (sectionList == null) continue;
-
-            JSONArray sections = sectionList.optJSONArray("contents");
-            if (sections == null) continue;
-
-            for (int j = 0, sectionsLength = sections.length(); j < sectionsLength; j++) {
-                JSONObject section = sections.optJSONObject(j);
-                if (section == null) continue;
-
-                JSONObject itemSection = section.optJSONObject("itemSectionRenderer");
-                if (itemSection != null) {
-                    parseVideoArray(itemSection.optJSONArray("contents"), results, seenVideoIds, indexRef, isEnglish);
-                }
-
-                String tok = extractContinuationToken(section.optJSONObject("continuationItemRenderer"));
-                if (tok != null) nextToken = tok;
-            }
-        }
-        return nextToken;
-    }
-
-    @Nullable
-    private static String parseContinuationActions(JSONObject json, List<ChannelSearchResult> results,
-                                                   Set<String> seenVideoIds, int[] indexRef, boolean isEnglish) {
-        JSONArray actions = json.optJSONArray("onResponseReceivedActions");
-        if (actions == null) return null;
-
-        String nextToken = null;
-        for (int i = 0, actionsLength = actions.length(); i < actionsLength; i++) {
-            JSONObject action = actions.optJSONObject(i);
-            if (action == null) continue;
-
-            JSONObject appendAction = action.optJSONObject("appendContinuationItemsAction");
-            if (appendAction == null) continue;
-
-            JSONArray continuationItems = appendAction.optJSONArray("continuationItems");
-            if (continuationItems == null) continue;
-
-            for (int j = 0, itemsLength = continuationItems.length(); j < itemsLength; j++) {
-                JSONObject item = continuationItems.optJSONObject(j);
-                if (item == null) continue;
-
-                JSONObject isr = item.optJSONObject("itemSectionRenderer");
-                if (isr != null) {
-                    parseVideoArray(isr.optJSONArray("contents"), results, seenVideoIds, indexRef, isEnglish);
-                } else {
-                    JSONObject cvr = item.optJSONObject("compactVideoRenderer");
-                    if (cvr != null) {
-                        parseSingleVideo(cvr, results, seenVideoIds, indexRef, isEnglish);
-                    }
-                }
-
-                String tok = extractContinuationToken(item.optJSONObject("continuationItemRenderer"));
-                if (tok != null) nextToken = tok;
-            }
-        }
-        return nextToken;
-    }
-
     private static void parseVideoArray(@Nullable JSONArray items, List<ChannelSearchResult> results,
                                        Set<String> seenVideoIds, int[] indexRef, boolean isEnglish) {
         if (items == null) return;
@@ -339,7 +345,80 @@ public final class ChannelSearchRequest {
 
     private static void parseSingleVideo(JSONObject video, List<ChannelSearchResult> results,
                                         Set<String> seenVideoIds, int[] indexRef, boolean isEnglish) {
-        ChannelSearchResult result = parseVideo(video, indexRef[0], isEnglish);
+        ChannelSearchResult result;
+        parseVideo: {
+            int index = indexRef[0];
+            String videoId = video.optString("videoId");
+            String title = parseText(video.optJSONObject("title"));
+            if (videoId.isEmpty() || title.isEmpty()) {
+                Logger.printDebug(() -> "Could not parse videoId: " + videoId);
+                result = null;
+                break parseVideo;
+            }
+
+            String lengthText = parseText(video.optJSONObject("lengthText"));
+            String viewCountText = parseText(video.optJSONObject("viewCountText"));
+            String shortViewCountText = parseText(video.optJSONObject("shortViewCountText"));
+            String displayViewCountText = !shortViewCountText.isEmpty() ? shortViewCountText : viewCountText;
+            String publishedTimeText = parseText(video.optJSONObject("publishedTimeText"));
+
+            StringBuilder metadata = new StringBuilder();
+            appendMetadata(metadata, lengthText);
+            appendMetadata(metadata, displayViewCountText);
+            appendMetadata(metadata, publishedTimeText);
+
+            long publishedTimeSeconds;
+            if (isEnglish) {
+                parsePublishedTimeSecondsAgo: {
+                    if (publishedTimeText == null || publishedTimeText.isEmpty()) {
+                        publishedTimeSeconds = Long.MAX_VALUE;
+                        break parsePublishedTimeSecondsAgo;
+                    }
+
+                    String lower = publishedTimeText.toLowerCase(Locale.ROOT);
+                    if (lower.contains("live") || lower.contains("now")) {
+                        publishedTimeSeconds = 0;
+                        break parsePublishedTimeSecondsAgo;
+                    }
+
+                    Matcher matcher = PATTERN_PUBLISHED_TIME.matcher(lower);
+                    if (!matcher.find()) {
+                        Logger.printDebug(() -> "Could not parse time:" + publishedTimeText);
+                        publishedTimeSeconds = Long.MAX_VALUE;
+                        break parsePublishedTimeSecondsAgo;
+                    }
+
+                    final long number;
+                    try {
+                        number = Long.parseLong(matcher.group(1));
+                    } catch (Exception ex) {
+                        Logger.printDebug(() -> "Could not parse time:" + publishedTimeText);
+                        publishedTimeSeconds = Long.MAX_VALUE;
+                        break parsePublishedTimeSecondsAgo;
+                    }
+
+                    String unit = matcher.group(2);
+                    publishedTimeSeconds = switch (unit) {
+                        case "year" -> number * 365L * 24L * 3600L;
+                        case "month" -> number * 30L * 24L * 3600L;
+                        case "week" -> number * 7L * 24L * 3600L;
+                        case "day" -> number * 24L * 3600L;
+                        case "hour" -> number * 3600L;
+                        case "minute" -> number * 60L;
+                        case "second" -> number;
+                        default -> Long.MAX_VALUE;
+                    };
+                }
+            } else {
+                publishedTimeSeconds = Long.MAX_VALUE;
+            }
+
+            final long viewCount = parseViewCount(viewCountText, shortViewCountText);
+            final long lengthSeconds = parseLengthSeconds(lengthText);
+
+            result = new ChannelSearchResult(videoId, title, metadata.toString(), parseThumbnail(video),
+                    publishedTimeSeconds, viewCount, lengthSeconds, index);
+        }
         if (result != null && seenVideoIds.add(result.videoId)) {
             results.add(result);
             indexRef[0]++;
@@ -392,34 +471,6 @@ public final class ChannelSearchRequest {
                 Long.MAX_VALUE, -1, parseLengthSeconds(lengthText), Integer.MAX_VALUE);
     }
 
-    @Nullable
-    private static ChannelSearchResult parseVideo(JSONObject video, int index, boolean isEnglish) {
-        String videoId = video.optString("videoId");
-        String title = parseText(video.optJSONObject("title"));
-        if (videoId.isEmpty() || title.isEmpty()) {
-            Logger.printDebug(() -> "Could not parse videoId: " + videoId);
-            return null;
-        }
-
-        String lengthText = parseText(video.optJSONObject("lengthText"));
-        String viewCountText = parseText(video.optJSONObject("viewCountText"));
-        String shortViewCountText = parseText(video.optJSONObject("shortViewCountText"));
-        String displayViewCountText = !shortViewCountText.isEmpty() ? shortViewCountText : viewCountText;
-        String publishedTimeText = parseText(video.optJSONObject("publishedTimeText"));
-
-        StringBuilder metadata = new StringBuilder();
-        appendMetadata(metadata, lengthText);
-        appendMetadata(metadata, displayViewCountText);
-        appendMetadata(metadata, publishedTimeText);
-
-        final long publishedTimeSeconds = isEnglish ? parsePublishedTimeSecondsAgo(publishedTimeText) : Long.MAX_VALUE;
-        final long viewCount = parseViewCount(viewCountText, shortViewCountText);
-        final long lengthSeconds = parseLengthSeconds(lengthText);
-
-        return new ChannelSearchResult(videoId, title, metadata.toString(), parseThumbnail(video),
-                publishedTimeSeconds, viewCount, lengthSeconds, index);
-    }
-
     private static long parseLengthSeconds(String lengthText) {
         if (lengthText == null || lengthText.isEmpty()) {
             return 0;
@@ -436,44 +487,6 @@ public final class ChannelSearchRequest {
             Logger.printDebug(() -> "Could not parse length: " + lengthText);
             return 0;
         }
-    }
-
-    @SuppressWarnings("ConstantConditions")
-    private static long parsePublishedTimeSecondsAgo(String timeText) {
-        if (timeText == null || timeText.isEmpty()) {
-            return Long.MAX_VALUE;
-        }
-
-        String lower = timeText.toLowerCase(Locale.ROOT);
-        if (lower.contains("live") || lower.contains("now")) {
-            return 0;
-        }
-
-        Matcher matcher = PATTERN_PUBLISHED_TIME.matcher(lower);
-        if (!matcher.find()) {
-            Logger.printDebug(() -> "Could not parse time:" + timeText);
-            return Long.MAX_VALUE;
-        }
-
-        final long number;
-        try {
-            number = Long.parseLong(matcher.group(1));
-        } catch (Exception ex) {
-            Logger.printDebug(() -> "Could not parse time:" + timeText);
-            return Long.MAX_VALUE;
-        }
-
-        String unit = matcher.group(2);
-        return switch (unit) {
-            case "year" -> number * 365L * 24L * 3600L;
-            case "month" -> number * 30L * 24L * 3600L;
-            case "week" -> number * 7L * 24L * 3600L;
-            case "day" -> number * 24L * 3600L;
-            case "hour" -> number * 3600L;
-            case "minute" -> number * 60L;
-            case "second" -> number;
-            default -> Long.MAX_VALUE;
-        };
     }
 
     /**

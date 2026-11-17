@@ -155,21 +155,19 @@ public final class AudioVolumeController {
             if (direction < 0 && SoundBoostPatch.adjustBoostStep(-1)) {
                 continue;
             }
-            adjustSystemVolumeBySteps(direction);
-        }
-    }
+            adjustSystemVolumeBySteps: {
+                final int stepSize = getVolumeStepSize();
+                if (stepSize == 1) {
+                    setVolume(getVolume() + direction);
+                    break adjustSystemVolumeBySteps;
+                }
 
-    private void adjustSystemVolumeBySteps(int steps) {
-        final int stepSize = getVolumeStepSize();
-        if (stepSize == 1) {
-            setVolume(getVolume() + steps);
-            return;
+                // Round away from the direction of travel, so a volume set outside the app
+                // first snaps onto the step grid instead of jumping a full step.
+                final int volume = getVolume();
+                final int currentStep = direction > 0 ? volume / stepSize : (volume + stepSize - 1) / stepSize;
+                setVolume((currentStep + direction) * stepSize);
+            }
         }
-
-        // Round away from the direction of travel, so a volume set outside the app
-        // first snaps onto the step grid instead of jumping a full step.
-        final int volume = getVolume();
-        final int currentStep = steps > 0 ? volume / stepSize : (volume + stepSize - 1) / stepSize;
-        setVolume((currentStep + steps) * stepSize);
     }
 }

@@ -223,22 +223,21 @@ public class BaseInAppDownloadsPatch {
         Object[] constants = formatType.getDeclaringClass().getEnumConstants();
         List<Object> formatTypes = new ArrayList<>(types.length);
         for (OfflineFormatType type : types) {
-            formatTypes.add(appFormatType(constants, type));
+            // The constant of the format type enum of the app, which has the name without the prefix.
+            Object appFormatType;
+            appFormatType: {
+                String name = type.name().substring(FORMAT_TYPE_NAME_PREFIX.length());
+                for (Object constant : constants) {
+                    if (((Enum<?>) constant).name().equals(name)) {
+                        appFormatType = constant;
+                        break appFormatType;
+                    }
+                }
+                throw new IllegalArgumentException("No format type: " + name);
+            }
+            formatTypes.add(appFormatType);
         }
         return formatTypes;
-    }
-
-    /**
-     * @return The constant of the format type enum of the app, which has the name without the prefix.
-     */
-    private static Object appFormatType(Object[] constants, OfflineFormatType type) {
-        String name = type.name().substring(FORMAT_TYPE_NAME_PREFIX.length());
-        for (Object constant : constants) {
-            if (((Enum<?>) constant).name().equals(name)) {
-                return constant;
-            }
-        }
-        throw new IllegalArgumentException("No format type: " + name);
     }
 
     /**
@@ -354,7 +353,9 @@ public class BaseInAppDownloadsPatch {
 
         List<FormatStreamInterface> qualityStreams = new ArrayList<>();
         for (FormatStreamInterface formatStream : streamingData.patch_getFormatStreams()) {
-            if (isVideo(formatStream) && qualityOf(formatStream) == quality) {
+            String mimeType = formatStream.patch_getMimeType();
+            boolean isVideo = mimeType != null && mimeType.startsWith("video/");
+            if (isVideo && qualityOf(formatStream) == quality) {
                 qualityStreams.add(formatStream);
             }
         }
@@ -378,11 +379,6 @@ public class BaseInAppDownloadsPatch {
         FormatStreamInterface forcedStream = preferredStream(qualityStreams, stream);
         Logger.printDebug(() -> "Forcing " + quality + "p stream: " + describe(forcedStream));
         return forcedStream;
-    }
-
-    private static boolean isVideo(FormatStreamInterface stream) {
-        String mimeType = stream.patch_getMimeType();
-        return mimeType != null && mimeType.startsWith("video/");
     }
 
     /**
@@ -486,9 +482,21 @@ public class BaseInAppDownloadsPatch {
                     ? OfflineabilityRenderer.parseFrom(message.toByteArray())
                     : OfflineabilityRenderer.getDefaultInstance();
             if (renderer.getOfflineable()
-                    && renderer.getFormatsCount() > 0
-                    && !hasLockedFormat(renderer.getFormatsList())) {
-                return null;
+                    && renderer.getFormatsCount() > 0) {
+                boolean hasLockedFormat;
+                hasLockedFormat: {
+                    List<OfflineFormat> formats = renderer.getFormatsList();
+                    for (OfflineFormat format : formats) {
+                        if (isLocked(format)) {
+                            hasLockedFormat = true;
+                            break hasLockedFormat;
+                        }
+                    }
+                    hasLockedFormat = false;
+                }
+                if (!hasLockedFormat) {
+                    return null;
+                }
             }
 
             Logger.printDebug(() -> "Unlocking offlineability, offlineable: " + renderer.getOfflineable());
@@ -602,7 +610,15 @@ public class BaseInAppDownloadsPatch {
             builder.setStreamingData(savableStreamingData(builder.getStreamingData()))
                     .setOfflineState(playableOfflineState(original.getOfflineState().getToken()));
             if (builder.hasCaptions()) {
-                builder.setCaptions(srv3Captions(builder.getCaptions()));
+                OfflineCaptions captions = builder.getCaptions();
+                OfflineCaptionTracklist.Builder tracklist = captions.getPlayerCaptionsTracklistRenderer().toBuilder();
+                for (int i = 0, count = tracklist.getCaptionTracksCount(); i < count; i++) {
+                    OfflineCaptionTrack track = tracklist.getCaptionTracks(i);
+                    String baseUrl = track.getBaseUrl().replaceAll("&fmt=[^&]*", "") + CAPTION_URL_FORMAT;
+                    tracklist.setCaptionTracks(i, track.toBuilder().setBaseUrl(baseUrl));
+                }
+                OfflineCaptions srv3Captions = captions.toBuilder().setPlayerCaptionsTracklistRenderer(tracklist).build();
+                builder.setCaptions(srv3Captions);
             }
 
             // Without the ExoPlayer config the app only looks at the progressive formats, which are not savable,
@@ -733,15 +749,6 @@ public class BaseInAppDownloadsPatch {
                 .build();
     }
 
-    protected static boolean hasLockedFormat(List<OfflineFormat> formats) {
-        for (OfflineFormat format : formats) {
-            if (isLocked(format)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /**
      * @return The formats with the Premium formats available, or the default formats if there are none.
      */
@@ -842,15 +849,5 @@ public class BaseInAppDownloadsPatch {
             }
         }
         return builder.build();
-    }
-
-    protected static OfflineCaptions srv3Captions(OfflineCaptions captions) {
-        OfflineCaptionTracklist.Builder tracklist = captions.getPlayerCaptionsTracklistRenderer().toBuilder();
-        for (int i = 0, count = tracklist.getCaptionTracksCount(); i < count; i++) {
-            OfflineCaptionTrack track = tracklist.getCaptionTracks(i);
-            String baseUrl = track.getBaseUrl().replaceAll("&fmt=[^&]*", "") + CAPTION_URL_FORMAT;
-            tracklist.setCaptionTracks(i, track.toBuilder().setBaseUrl(baseUrl));
-        }
-        return captions.toBuilder().setPlayerCaptionsTracklistRenderer(tracklist).build();
     }
 }

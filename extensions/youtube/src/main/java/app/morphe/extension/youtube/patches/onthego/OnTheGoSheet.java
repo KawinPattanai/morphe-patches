@@ -280,7 +280,26 @@ final class OnTheGoSheet {
         divider.setBackgroundColor(buttonBackgroundColor);
         panel.addView(divider, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Dim.dp1));
 
-        ScrollView scrollView = createScrollView(context);
+        // and makes the thumbnail smaller if the controls do not fit.
+        ScrollView scrollView = new ScrollView(context) {
+            @Override
+            protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                thumbnailMaxHeight = Integer.MAX_VALUE;
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                // In audio mode the thumbnail is made smaller if the controls do not fit,
+                // so the controls stay visible without scrolling.
+                if (getChildCount() > 0 && thumbnail.getVisibility() == View.VISIBLE) {
+                    final int overflow = getChildAt(0).getMeasuredHeight() - getMeasuredHeight();
+                    if (overflow > 0) {
+                        thumbnailMaxHeight = Math.max(0, thumbnail.getMeasuredHeight() - overflow);
+                        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                    }
+                }
+            }
+        };
+        scrollView.setVerticalScrollBarEnabled(false);
+        // Stretches the content to the panel height, so the controls are at the bottom.
+        scrollView.setFillViewport(true);
         panel.addView(scrollView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         LinearLayout body = new LinearLayout(context);
@@ -429,7 +448,30 @@ final class OnTheGoSheet {
         }
         audioModeButton = createIconButton(Dim.dp48, Dim.dp12, v -> setAudioMode(!audioMode));
         addCell(actions, audioModeButton);
-        View speedButton = createSpeedButton();
+        View speedButton;
+        createSpeedButton: {
+            final String iconName = "yt_outline_experimental_speedometer_vd_theme_24";
+            if (ResourceUtils.getDrawableIdentifier(iconName) != 0) {
+                ImageView icon = createIconButton(Dim.dp48, Dim.dp12, null);
+                setIcon(icon, "playback_rate_title", iconName);
+                speedButton = icon;
+                break createSpeedButton;
+            }
+
+            speedText = new TextView(activity);
+            speedText.setTextColor(foregroundColor);
+            speedText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            speedText.setTypeface(speedText.getTypeface(), Typeface.BOLD);
+            speedText.setGravity(Gravity.CENTER);
+            speedText.setMinHeight(Dim.dp48);
+            speedText.setPadding(Dim.dp16, 0, Dim.dp16, 0);
+            speedText.setContentDescription(str("playback_rate_title"));
+            GradientDrawable mask = new GradientDrawable();
+            mask.setCornerRadius(Dim.dp24);
+            mask.setColor(Color.WHITE);
+            speedText.setBackground(new RippleDrawable(ColorStateList.valueOf(buttonBackgroundColor), null, mask));
+            speedButton = speedText;
+        }
         speedButton.setOnClickListener(v ->
                 CustomPlaybackSpeedPatch.showModernCustomPlaybackSpeedDialog(activity));
         addCell(actions, speedButton);
@@ -458,7 +500,22 @@ final class OnTheGoSheet {
                 ViewGroup.LayoutParams.MATCH_PARENT, root.getHeight(), Gravity.BOTTOM));
         root.addOnLayoutChangeListener(rootLayoutListener);
         PlayerType.getOnChange().addObserver(playerTypeObserver);
-        registerBackHandling();
+        // Back closes the panel. Android 13 and later can send back through a callback
+        // instead of a key event, depending on the app, so both are handled.
+        panel.setFocusableInTouchMode(true);
+        panel.requestFocus();
+        panel.setOnKeyListener((view, keyCode, event) -> {
+            if (keyCode != KeyEvent.KEYCODE_BACK) {
+                return false;
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                dismiss();
+            }
+            return true;
+        });
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerBackCallback();
+        }
         setAudioMode(audioMode);
 
         panel.setTranslationY(root.getHeight());
@@ -467,33 +524,6 @@ final class OnTheGoSheet {
         OnTheGoPatch.setOnTheGoActive(true);
         update();
         handler.postDelayed(updater, UPDATE_INTERVAL_MILLISECONDS);
-    }
-
-    /**
-     * @return The scroll view of the body, which stretches it to the panel height,
-     *         and makes the thumbnail smaller if the controls do not fit.
-     */
-    private ScrollView createScrollView(Context context) {
-        ScrollView scrollView = new ScrollView(context) {
-            @Override
-            protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-                thumbnailMaxHeight = Integer.MAX_VALUE;
-                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-                // In audio mode the thumbnail is made smaller if the controls do not fit,
-                // so the controls stay visible without scrolling.
-                if (getChildCount() > 0 && thumbnail.getVisibility() == View.VISIBLE) {
-                    final int overflow = getChildAt(0).getMeasuredHeight() - getMeasuredHeight();
-                    if (overflow > 0) {
-                        thumbnailMaxHeight = Math.max(0, thumbnail.getMeasuredHeight() - overflow);
-                        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-                    }
-                }
-            }
-        };
-        scrollView.setVerticalScrollBarEnabled(false);
-        // Stretches the content to the panel height, so the controls are at the bottom.
-        scrollView.setFillViewport(true);
-        return scrollView;
     }
 
     /**
@@ -543,27 +573,6 @@ final class OnTheGoSheet {
         }
         if (current != null && current.get() == this) {
             current = null;
-        }
-    }
-
-    /**
-     * Back closes the panel. Android 13 and later can send back through a callback
-     * instead of a key event, depending on the app, so both are handled.
-     */
-    private void registerBackHandling() {
-        panel.setFocusableInTouchMode(true);
-        panel.requestFocus();
-        panel.setOnKeyListener((view, keyCode, event) -> {
-            if (keyCode != KeyEvent.KEYCODE_BACK) {
-                return false;
-            }
-            if (event.getAction() == KeyEvent.ACTION_UP) {
-                dismiss();
-            }
-            return true;
-        });
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerBackCallback();
         }
     }
 
@@ -773,32 +782,6 @@ final class OnTheGoSheet {
     }
 
     /**
-     * @return The speed icon of the app, or a text with the speed if the app has no speed icon.
-     */
-    private View createSpeedButton() {
-        final String iconName = "yt_outline_experimental_speedometer_vd_theme_24";
-        if (ResourceUtils.getDrawableIdentifier(iconName) != 0) {
-            ImageView icon = createIconButton(Dim.dp48, Dim.dp12, null);
-            setIcon(icon, "playback_rate_title", iconName);
-            return icon;
-        }
-
-        speedText = new TextView(activity);
-        speedText.setTextColor(foregroundColor);
-        speedText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        speedText.setTypeface(speedText.getTypeface(), Typeface.BOLD);
-        speedText.setGravity(Gravity.CENTER);
-        speedText.setMinHeight(Dim.dp48);
-        speedText.setPadding(Dim.dp16, 0, Dim.dp16, 0);
-        speedText.setContentDescription(str("playback_rate_title"));
-        GradientDrawable mask = new GradientDrawable();
-        mask.setCornerRadius(Dim.dp24);
-        mask.setColor(Color.WHITE);
-        speedText.setBackground(new RippleDrawable(ColorStateList.valueOf(buttonBackgroundColor), null, mask));
-        return speedText;
-    }
-
-    /**
      * @param padding Padding around the icon, which is scaled to fit the rest of the size.
      */
     private ImageView createIconButton(int size, int padding, @Nullable View.OnClickListener listener) {
@@ -847,36 +830,6 @@ final class OnTheGoSheet {
             }
         }
         Logger.printException(() -> "Could not find any icon of: " + Arrays.toString(drawableNames));
-    }
-
-    /**
-     * Sets the icons of the seek buttons for the seek length of the app settings.
-     */
-    private void setSeekIcons(long seekLength) {
-        final int seconds = (int) (seekLength / 1000);
-        boolean hasNumberIcon = false;
-        for (int iconSeconds : SEEK_ICON_SECONDS) {
-            if (iconSeconds == seconds) {
-                hasNumberIcon = true;
-                break;
-            }
-        }
-
-        if (hasNumberIcon) {
-            setFirstIcon(seekBackButton,
-                    "yt_outline_experimental_skip" + seconds + "_back_vd_theme_24",
-                    "yt_fill_skip_back_" + seconds + "_vd_theme_24",
-                    "quantum_ic_fast_rewind_white_24");
-            setFirstIcon(seekForwardButton,
-                    "yt_outline_experimental_skip" + seconds + "_forward_vd_theme_24",
-                    "yt_fill_skip_forward_" + seconds + "_vd_theme_24",
-                    "quantum_ic_fast_forward_white_24");
-        } else {
-            setFirstIcon(seekBackButton, "quantum_ic_fast_rewind_white_24");
-            setFirstIcon(seekForwardButton, "quantum_ic_fast_forward_white_24");
-        }
-        seekBackButton.setContentDescription(str("double_tap_seek_rewind_accessibility_text", seconds));
-        seekForwardButton.setContentDescription(str("double_tap_seek_forward_accessibility_text", seconds));
     }
 
     /**
@@ -976,7 +929,31 @@ final class OnTheGoSheet {
             final long seekLength = OnTheGoPatch.getSeekLengthMilliseconds();
             if (seekLength != shownSeekLength) {
                 shownSeekLength = seekLength;
-                setSeekIcons(seekLength);
+                // Sets the icons of the seek buttons for the seek length of the app settings.
+                final int seconds = (int) (seekLength / 1000);
+                boolean hasNumberIcon = false;
+                for (int iconSeconds : SEEK_ICON_SECONDS) {
+                    if (iconSeconds == seconds) {
+                        hasNumberIcon = true;
+                        break;
+                    }
+                }
+
+                if (hasNumberIcon) {
+                    setFirstIcon(seekBackButton,
+                            "yt_outline_experimental_skip" + seconds + "_back_vd_theme_24",
+                            "yt_fill_skip_back_" + seconds + "_vd_theme_24",
+                            "quantum_ic_fast_rewind_white_24");
+                    setFirstIcon(seekForwardButton,
+                            "yt_outline_experimental_skip" + seconds + "_forward_vd_theme_24",
+                            "yt_fill_skip_forward_" + seconds + "_vd_theme_24",
+                            "quantum_ic_fast_forward_white_24");
+                } else {
+                    setFirstIcon(seekBackButton, "quantum_ic_fast_rewind_white_24");
+                    setFirstIcon(seekForwardButton, "quantum_ic_fast_forward_white_24");
+                }
+                seekBackButton.setContentDescription(str("double_tap_seek_rewind_accessibility_text", seconds));
+                seekForwardButton.setContentDescription(str("double_tap_seek_forward_accessibility_text", seconds));
             }
 
             // The player hides the previous button if there is no previous video.

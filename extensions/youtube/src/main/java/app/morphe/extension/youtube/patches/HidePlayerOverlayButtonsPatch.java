@@ -249,20 +249,6 @@ public final class HidePlayerOverlayButtonsPatch {
             id = ResourceUtils.getIdentifier(ResourceType.ID, resourceName);
         }
 
-        /**
-         * The timestamps pill is a container nested inside the one carrying the id,
-         * and older app targets leave that inner container unnamed.
-         */
-        private static View pillOf(View view) {
-            if (view instanceof ViewGroup group && group.getChildCount() > 0) {
-                View first = group.getChildAt(0);
-                if (first instanceof ViewGroup inner) {
-                    return inner;
-                }
-            }
-            return view;
-        }
-
         void update(View rootView) {
             if (id == 0) return;
 
@@ -271,7 +257,18 @@ public final class HidePlayerOverlayButtonsPatch {
                 View container = rootView.findViewById(id);
                 if (container == null) return;
 
-                pill = pillOf(container);
+                // The timestamps pill is a container nested inside the one carrying the id,
+                // and older app targets leave that inner container unnamed.
+                pillOf: {
+                    if (container instanceof ViewGroup group && group.getChildCount() > 0) {
+                        View first = group.getChildAt(0);
+                        if (first instanceof ViewGroup inner) {
+                            pill = inner;
+                            break pillOf;
+                        }
+                    }
+                    pill = container;
+                }
                 viewRef = new WeakReference<>(pill);
                 backgroundSnapshot = null;
             }

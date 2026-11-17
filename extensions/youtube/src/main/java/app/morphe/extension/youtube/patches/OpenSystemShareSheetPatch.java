@@ -84,19 +84,6 @@ public final class OpenSystemShareSheetPatch {
     }
 
     /**
-     * Dismisses the empty action sheet that is opened before the share endpoint is resolved.
-     */
-    private static void dismissActionSheet() {
-        // Post to the main thread, so the action sheet opened in the same call is already shown.
-        Utils.runOnMainThread(() -> {
-            ActionSheetControllerInterface actionSheetController = actionSheetControllerRef.get();
-            if (actionSheetController != null) {
-                actionSheetController.patch_dismissActionSheet();
-            }
-        });
-    }
-
-    /**
      * Builds the link from the serialized share entity of the share endpoint.
      * The entity is what the in-app share sheet sends to {@code share/get_share_panel}.
      *
@@ -248,7 +235,14 @@ public final class OpenSystemShareSheetPatch {
         }
 
         // The in-app share sheet is never opened.
-        dismissActionSheet();
+        // Dismisses the empty action sheet that is opened before the share endpoint is resolved.
+        // Post to the main thread, so the action sheet opened in the same call is already shown.
+        Utils.runOnMainThread(() -> {
+            ActionSheetControllerInterface actionSheetController = actionSheetControllerRef.get();
+            if (actionSheetController != null) {
+                actionSheetController.patch_dismissActionSheet();
+            }
+        });
         return true;
     }
 }

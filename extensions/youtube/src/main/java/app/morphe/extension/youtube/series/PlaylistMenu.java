@@ -61,17 +61,6 @@ public final class PlaylistMenu {
         });
     }
 
-    private static Menu toolbarMenu(View view) {
-        final int id = ResourceUtils.getIdIdentifier("toolbar");
-        for (View node = view; node != null; node = node.getParent() instanceof View ? (View) node.getParent() : null) {
-            View toolbar = node.findViewById(id);
-            if (toolbar instanceof ToolbarSource) {
-                return ((ToolbarSource) toolbar).patch_seriesTrackerMenu();
-            }
-        }
-        return null;
-    }
-
     private static void update() {
         View view = page.get();
         Menu previous = menu.get();
@@ -83,7 +72,18 @@ public final class PlaylistMenu {
                 previous.removeItem(ITEM_ID);
             return;
         }
-        Menu target = toolbarMenu(view);
+        Menu target;
+        toolbarMenu: {
+            final int id = ResourceUtils.getIdIdentifier("toolbar");
+            for (View node = view; node != null; node = node.getParent() instanceof View ? (View) node.getParent() : null) {
+                View toolbar = node.findViewById(id);
+                if (toolbar instanceof ToolbarSource) {
+                    target = ((ToolbarSource) toolbar).patch_seriesTrackerMenu();
+                    break toolbarMenu;
+                }
+            }
+            target = null;
+        }
         if (target == null) return;
         if (previous != null && previous != target) previous.removeItem(ITEM_ID);
         menu = new WeakReference<>(target);

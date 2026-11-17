@@ -221,26 +221,6 @@ public final class SwipeControlsOverlayLayout extends RelativeLayout implements 
         ViewAnimations.fadeIn(viewToShow, FADE_DURATION_MILLIS);
     }
 
-    /**
-     * Displays the progress bar for playback speed feedback.
-     * Always uses the horizontal bar (or circular for circular styles) to match the horizontal gesture.
-     */
-    private void showSpeedFeedbackView(float speed) {
-        feedbackHideHandler.removeCallbacks(feedbackHideCallback);
-        feedbackHideHandler.postDelayed(feedbackHideCallback, config.getOverlayShowTimeoutMillis());
-
-        String displayText = VideoInformation.formatSpeedStringX(speed, 2, false);
-        final int progress = Math.max(0, Math.min(100, (int) ((speed - 0.25f) / (8.0f - 0.25f) * 100)));
-
-        AbstractProgressView viewToShow = config.getOverlayStyle().isCircular()
-                ? circularProgressView
-                : horizontalProgressView;
-        viewToShow.setProgressColor(config.getOverlaySpeedProgressColor());
-        viewToShow.setProgress(progress, 100, displayText, false);
-        viewToShow.icon = speedIcon;
-        ViewAnimations.fadeIn(viewToShow, FADE_DURATION_MILLIS);
-    }
-
     // Handle volume change.
     @Override
     public void onVolumeChanged(int newVolume, int maximumVolume, int boostStep) {
@@ -302,7 +282,21 @@ public final class SwipeControlsOverlayLayout extends RelativeLayout implements 
     // Handle playback speed change.
     @Override
     public void onSpeedChanged(float speed) {
-        showSpeedFeedbackView(speed);
+        // Displays the progress bar for playback speed feedback.
+        // Always uses the horizontal bar (or circular for circular styles) to match the horizontal gesture.
+        feedbackHideHandler.removeCallbacks(feedbackHideCallback);
+        feedbackHideHandler.postDelayed(feedbackHideCallback, config.getOverlayShowTimeoutMillis());
+
+        String displayText = VideoInformation.formatSpeedStringX(speed, 2, false);
+        final int progress = Math.max(0, Math.min(100, (int) ((speed - 0.25f) / (8.0f - 0.25f) * 100)));
+
+        AbstractProgressView viewToShow = config.getOverlayStyle().isCircular()
+                ? circularProgressView
+                : horizontalProgressView;
+        viewToShow.setProgressColor(config.getOverlaySpeedProgressColor());
+        viewToShow.setProgress(progress, 100, displayText, false);
+        viewToShow.icon = speedIcon;
+        ViewAnimations.fadeIn(viewToShow, FADE_DURATION_MILLIS);
     }
 
     // Begin swipe session.

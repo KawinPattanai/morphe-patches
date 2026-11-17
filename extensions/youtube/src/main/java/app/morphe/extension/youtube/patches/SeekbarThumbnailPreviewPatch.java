@@ -189,123 +189,6 @@ public class SeekbarThumbnailPreviewPatch {
         );
     }
 
-    private static SeekbarViews setThumbnailPreviewRef(View trackBall) {
-        Context context = trackBall.getRootView().getContext();
-
-        if (seekbarViews != null &&
-                seekbarViews.previewFrame().getContext() == context) {
-            return seekbarViews;
-        }
-
-        seekbarViews = null;
-
-        LinearLayout containerLayout = new LinearLayout(context);
-        containerLayout.setOrientation(LinearLayout.VERTICAL);
-        containerLayout.setGravity(Gravity.CENTER_HORIZONTAL);
-
-        FrameLayout previewFrame = createPreviewFrame(context);
-
-        ImageView thumbnailPreview = createThumbnailImageView(context);
-        previewFrame.addView(thumbnailPreview);
-        containerLayout.addView(previewFrame);
-
-        TextView timestampPreview = createTimestampPreview(context);
-        containerLayout.addView(timestampPreview);
-
-        TextView heatMapPeakPoint = createHeatMapPeakPointPreview(context);
-        previewFrame.addView(heatMapPeakPoint);
-
-        TextView chapterPreview = createChapterPreview(context);
-        containerLayout.addView(chapterPreview);
-
-        PopupWindow thumbnailPreviewPopup = new PopupWindow(
-                containerLayout,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                false
-        );
-        thumbnailPreviewPopup.setTouchable(false);
-        thumbnailPreviewPopup.setBackgroundDrawable(transparentBackgroundDrawable);
-
-        return seekbarViews = new SeekbarViews(
-                previewFrame,
-                thumbnailPreview,
-                timestampPreview,
-                heatMapPeakPoint,
-                chapterPreview,
-                thumbnailPreviewPopup
-        );
-    }
-
-    // Border is a filled rounded rect + padding (not a stroke) to keep outer/inner corners concentric.
-    @SuppressWarnings("SuspiciousNameCombination")
-    private static FrameLayout createPreviewFrame(Context context) {
-        GradientDrawable frameBackground = new GradientDrawable();
-        frameBackground.setColor(semitransparentWhiteBackgroundColor);
-        frameBackground.setCornerRadius(THUMBNAIL_PREVIEW_CORNER_RADIUS_DP);
-
-        FrameLayout previewFrame = new FrameLayout(context);
-        previewFrame.setBackground(frameBackground);
-        previewFrame.setPadding(
-                THUMBNAIL_PREVIEW_BORDER_WIDTH_DP,
-                THUMBNAIL_PREVIEW_BORDER_WIDTH_DP,
-                THUMBNAIL_PREVIEW_BORDER_WIDTH_DP,
-                THUMBNAIL_PREVIEW_BORDER_WIDTH_DP
-        );
-
-        return previewFrame;
-    }
-
-    private static ImageView createThumbnailImageView(Context context) {
-        ImageView thumbnailPreview = new ImageView(context);
-        thumbnailPreview.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumbnailPreview.setOutlineProvider(new ViewOutlineProvider() {
-            @Override
-            public void getOutline(View view, Outline outline) {
-                outline.setRoundRect(
-                    0,
-                    0,
-                    view.getWidth(),
-                    view.getHeight(),
-                    THUMBNAIL_PREVIEW_INNER_RADIUS_DP
-                );
-            }
-        });
-        thumbnailPreview.setClipToOutline(true);
-        thumbnailPreview.setLayoutParams(
-            new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        );
-
-        return thumbnailPreview;
-    }
-
-    private static TextView createHeatMapPeakPointPreview(Context context) {
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-        );
-        params.gravity = Gravity.BOTTOM;
-
-        TextView heatMapPeakPoint = new TextView(context);
-        heatMapPeakPoint.setText(heatMapPeakPointDescription);
-        heatMapPeakPoint.setTextColor(Color.WHITE);
-        heatMapPeakPoint.setTextSize(10);
-        heatMapPeakPoint.setGravity(Gravity.CENTER);
-        heatMapPeakPoint.setBackgroundColor(semitransparentBlackBackgroundColor);
-        heatMapPeakPoint.setSingleLine(true);
-        heatMapPeakPoint.setEllipsize(TextUtils.TruncateAt.END);
-        heatMapPeakPoint.setHorizontallyScrolling(false);
-        heatMapPeakPoint.setIncludeFontPadding(false);
-        heatMapPeakPoint.setPadding(0, Dim.dp(2), 0, Dim.dp(2));
-        heatMapPeakPoint.setClipToOutline(true);
-        heatMapPeakPoint.setLayoutParams(params);
-
-        return heatMapPeakPoint;
-    }
-
     private static TextView createTimestampPreview(Context context) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -413,7 +296,105 @@ public class SeekbarThumbnailPreviewPatch {
 
             final int actionMasked = trackBallMotionEvent.getActionMasked();
 
-            SeekbarViews views = setThumbnailPreviewRef(trackBall);
+            SeekbarViews views;
+            setThumbnailPreviewRef: {
+                Context context = trackBall.getRootView().getContext();
+
+                if (seekbarViews != null &&
+                        seekbarViews.previewFrame().getContext() == context) {
+                    views = seekbarViews;
+                    break setThumbnailPreviewRef;
+                }
+
+                seekbarViews = null;
+
+                LinearLayout containerLayout = new LinearLayout(context);
+                containerLayout.setOrientation(LinearLayout.VERTICAL);
+                containerLayout.setGravity(Gravity.CENTER_HORIZONTAL);
+
+                // Border is a filled rounded rect + padding (not a stroke) to keep outer/inner corners concentric.
+                GradientDrawable frameBackground = new GradientDrawable();
+                frameBackground.setColor(semitransparentWhiteBackgroundColor);
+                frameBackground.setCornerRadius(THUMBNAIL_PREVIEW_CORNER_RADIUS_DP);
+
+                FrameLayout previewFrame = new FrameLayout(context);
+                previewFrame.setBackground(frameBackground);
+                previewFrame.setPadding(
+                        THUMBNAIL_PREVIEW_BORDER_WIDTH_DP,
+                        THUMBNAIL_PREVIEW_BORDER_WIDTH_DP,
+                        THUMBNAIL_PREVIEW_BORDER_WIDTH_DP,
+                        THUMBNAIL_PREVIEW_BORDER_WIDTH_DP
+                );
+
+                ImageView thumbnailPreview = new ImageView(context);
+                thumbnailPreview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                thumbnailPreview.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(
+                            0,
+                            0,
+                            view.getWidth(),
+                            view.getHeight(),
+                            THUMBNAIL_PREVIEW_INNER_RADIUS_DP
+                        );
+                    }
+                });
+                thumbnailPreview.setClipToOutline(true);
+                thumbnailPreview.setLayoutParams(
+                    new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                );
+                previewFrame.addView(thumbnailPreview);
+                containerLayout.addView(previewFrame);
+
+                TextView timestampPreview = createTimestampPreview(context);
+                containerLayout.addView(timestampPreview);
+
+                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT
+                );
+                params.gravity = Gravity.BOTTOM;
+
+                TextView heatMapPeakPoint = new TextView(context);
+                heatMapPeakPoint.setText(heatMapPeakPointDescription);
+                heatMapPeakPoint.setTextColor(Color.WHITE);
+                heatMapPeakPoint.setTextSize(10);
+                heatMapPeakPoint.setGravity(Gravity.CENTER);
+                heatMapPeakPoint.setBackgroundColor(semitransparentBlackBackgroundColor);
+                heatMapPeakPoint.setSingleLine(true);
+                heatMapPeakPoint.setEllipsize(TextUtils.TruncateAt.END);
+                heatMapPeakPoint.setHorizontallyScrolling(false);
+                heatMapPeakPoint.setIncludeFontPadding(false);
+                heatMapPeakPoint.setPadding(0, Dim.dp(2), 0, Dim.dp(2));
+                heatMapPeakPoint.setClipToOutline(true);
+                heatMapPeakPoint.setLayoutParams(params);
+                previewFrame.addView(heatMapPeakPoint);
+
+                TextView chapterPreview = createChapterPreview(context);
+                containerLayout.addView(chapterPreview);
+
+                PopupWindow thumbnailPreviewPopup = new PopupWindow(
+                        containerLayout,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        false
+                );
+                thumbnailPreviewPopup.setTouchable(false);
+                thumbnailPreviewPopup.setBackgroundDrawable(transparentBackgroundDrawable);
+
+                views = seekbarViews = new SeekbarViews(
+                        previewFrame,
+                        thumbnailPreview,
+                        timestampPreview,
+                        heatMapPeakPoint,
+                        chapterPreview,
+                        thumbnailPreviewPopup
+                );
+            }
 
             if (actionMasked == MotionEvent.ACTION_DOWN) {
                 isFineScrubbingStarted = false;

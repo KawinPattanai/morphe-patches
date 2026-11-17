@@ -139,8 +139,59 @@ public final class BotGuardManager {
             String privateDoNotAccessOrElseTrustedResourceUrlWrappedValue = bgChallenge
                     .getJSONObject("interpreterUrl")
                     .getString("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue");
-            String privateDoNotAccessOrElseSafeScriptWrappedValue = getInterpreterScript(
-                    "https:" + privateDoNotAccessOrElseTrustedResourceUrlWrappedValue, interpreterHash);
+            // The interpreter is named after the SHA-256 of its content, so a saved copy stays valid
+            // for as long as the challenge names the same hash. Only the challenge itself must be fresh.
+            String privateDoNotAccessOrElseSafeScriptWrappedValue;
+            getInterpreterScript: {
+                String url = "https:" + privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
+                if (!INTERPRETER_HASH_PATTERN.matcher(interpreterHash).matches()) {
+                    privateDoNotAccessOrElseSafeScriptWrappedValue = downloadUrl(url);
+                    break getInterpreterScript;
+                }
+
+                File cacheDir = Utils.getContext().getCacheDir();
+                File file = new File(cacheDir, INTERPRETER_FILE_PREFIX + interpreterHash + ".js");
+                try {
+                    if (file.isFile()) {
+                        // Files.readString and Files.writeString need Android 13.
+                        //noinspection ReadWriteStringCanBeUsed
+                        String script = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+                        if (interpreterHash.equals(sha256(script))) {
+                            Logger.printDebug(() -> "BotGuard interpreter cache found: " + interpreterHash);
+                            privateDoNotAccessOrElseSafeScriptWrappedValue = script;
+                            break getInterpreterScript;
+                        }
+                        Logger.printDebug(() -> "Ignoring BotGuard interpreter cache that does not match its hash");
+                    }
+                } catch (Exception ex) {
+                    Logger.printDebug(() -> "Could not read BotGuard interpreter cache", ex);
+                }
+
+                String script = downloadUrl(url);
+                try {
+                    if (script != null && interpreterHash.equals(sha256(script))) {
+                        // A partly written file would fail the hash check, but writing it fully first avoids a wasted download.
+                        File temp = new File(file.getPath() + ".tmp");
+                        //noinspection ReadWriteStringCanBeUsed
+                        Files.write(temp.toPath(), script.getBytes(StandardCharsets.UTF_8));
+                        if (temp.renameTo(file)) {
+                            File[] files = cacheDir.listFiles((dir, name) ->
+                                    name.startsWith(INTERPRETER_FILE_PREFIX) && !name.equals(file.getName()));
+                            if (files != null) {
+                                for (File old : files) {
+                                    Utils.deleteQuietly(old);
+                                }
+                            }
+                        } else {
+                            Utils.deleteQuietly(temp);
+                        }
+                    }
+                } catch (Exception ex) {
+                    Logger.printDebug(() -> "Could not save BotGuard interpreter cache", ex);
+                }
+
+                privateDoNotAccessOrElseSafeScriptWrappedValue = script;
+            }
             if (privateDoNotAccessOrElseSafeScriptWrappedValue == null) {
                 return null;
             }
@@ -162,58 +213,6 @@ public final class BotGuardManager {
         }
 
         return null;
-    }
-
-    /**
-     * The interpreter is named after the SHA-256 of its content, so a saved copy stays valid
-     * for as long as the challenge names the same hash. Only the challenge itself must be fresh.
-     */
-    @Nullable
-    private static String getInterpreterScript(String url, String hash) {
-        if (!INTERPRETER_HASH_PATTERN.matcher(hash).matches()) {
-            return downloadUrl(url);
-        }
-
-        File cacheDir = Utils.getContext().getCacheDir();
-        File file = new File(cacheDir, INTERPRETER_FILE_PREFIX + hash + ".js");
-        try {
-            if (file.isFile()) {
-                // Files.readString and Files.writeString need Android 13.
-                //noinspection ReadWriteStringCanBeUsed
-                String script = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-                if (hash.equals(sha256(script))) {
-                    Logger.printDebug(() -> "BotGuard interpreter cache found: " + hash);
-                    return script;
-                }
-                Logger.printDebug(() -> "Ignoring BotGuard interpreter cache that does not match its hash");
-            }
-        } catch (Exception ex) {
-            Logger.printDebug(() -> "Could not read BotGuard interpreter cache", ex);
-        }
-
-        String script = downloadUrl(url);
-        try {
-            if (script != null && hash.equals(sha256(script))) {
-                // A partly written file would fail the hash check, but writing it fully first avoids a wasted download.
-                File temp = new File(file.getPath() + ".tmp");
-                //noinspection ReadWriteStringCanBeUsed
-                Files.write(temp.toPath(), script.getBytes(StandardCharsets.UTF_8));
-                if (temp.renameTo(file)) {
-                    File[] files = cacheDir.listFiles((dir, name) ->
-                            name.startsWith(INTERPRETER_FILE_PREFIX) && !name.equals(file.getName()));
-                    if (files != null) {
-                        for (File old : files) {
-                            Utils.deleteQuietly(old);
-                        }
-                    }
-                } else {
-                    Utils.deleteQuietly(temp);
-                }
-            }
-        } catch (Exception ex) {
-            Logger.printDebug(() -> "Could not save BotGuard interpreter cache", ex);
-        }
-        return script;
     }
 
     private static String sha256(String content) throws NoSuchAlgorithmException {

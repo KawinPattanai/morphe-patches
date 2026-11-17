@@ -113,7 +113,31 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
 
             if (playerChanged) {
                 // Try to get preprocessed player from cache
-                String player = readPreprocessedPlayer(playerJSHash);
+                String player;
+                readPreprocessedPlayer: {
+                    String playerHash = playerJSHash;
+                    if (!legacyPlayerCacheRemoved) {
+                        legacyPlayerCacheRemoved = true;
+                        try {
+                            cacheService.removePlayerEntries(CACHE_SECTION);
+                        } catch (CacheError ex) {
+                            Logger.printDebug(() -> "Ignoring legacy player cache error", ex);
+                        }
+                    }
+
+                    File file = getPreprocessedPlayerFile(playerHash);
+                    if (!file.isFile()) {
+                        player = null;
+                        break readPreprocessedPlayer;
+                    }
+                    try {
+                        player = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+                    } catch (IOException ex) {
+                        Logger.printDebug(() -> "Could not read preprocessed player", ex);
+                        player = null;
+                    }
+                }
+
                 final boolean preprocessed = (player != null);
 
                 if (!preprocessed) {
@@ -198,30 +222,6 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
 
     private static File getPreprocessedPlayerFile(String playerHash) {
         return new File(Utils.getContext().getCacheDir(), PREPROCESSED_PLAYER_PREFIX + playerHash + ".js");
-    }
-
-    @SuppressWarnings("ReadWriteStringCanBeUsed")
-    @Nullable
-    private String readPreprocessedPlayer(String playerHash) {
-        if (!legacyPlayerCacheRemoved) {
-            legacyPlayerCacheRemoved = true;
-            try {
-                cacheService.removePlayerEntries(CACHE_SECTION);
-            } catch (CacheError ex) {
-                Logger.printDebug(() -> "Ignoring legacy player cache error", ex);
-            }
-        }
-
-        File file = getPreprocessedPlayerFile(playerHash);
-        if (!file.isFile()) {
-            return null;
-        }
-        try {
-            return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            Logger.printDebug(() -> "Could not read preprocessed player", ex);
-            return null;
-        }
     }
 
     @SuppressWarnings("ReadWriteStringCanBeUsed")

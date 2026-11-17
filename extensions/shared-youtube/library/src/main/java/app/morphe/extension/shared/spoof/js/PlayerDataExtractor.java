@@ -23,42 +23,23 @@ public class PlayerDataExtractor {
         JsEngineChallengeProvider.getInstance().setPlayerJS(playerJS, playerJSHash);
         JsEngineChallengeProvider.getInstance().warmup();
 
-        checkAllData();
+        List<String> param = Collections.singletonList("5cNpZqIJ7ixNqU68Y7S");
+
+        try {
+            List<JsChallengeRequest> requests = new ArrayList<>();
+            requests.add(new JsChallengeRequest(JsChallengeType.N, new ChallengeInput(param)));
+            requests.add(new JsChallengeRequest(JsChallengeType.SIG, new ChallengeInput(param)));
+
+            JsEngineChallengeProvider.getInstance().bulkSolve(requests);
+        } catch (Exception ex) {
+            Logger.printException(() -> "Deobfuscation test failed", ex);
+        }
     }
 
     public Pair<List<String>, List<String>> bulkSigExtract(List<String> nParams, List<String> sParams) {
         List<String> nProcessed = new ArrayList<>();
         List<String> sProcessed = new ArrayList<>();
 
-        List<JsChallengeRequest> requests = getJsChallengeRequests(nParams, sParams);
-        List<JsChallengeProviderResponse> result = JsEngineChallengeProvider.getInstance().bulkSolve(requests);
-
-        for (JsChallengeProviderResponse item : result) {
-            var response = item.response();
-            if (response == null) continue;
-
-            var type = response.type();
-            if (type == JsChallengeType.N) {
-                if (nParams != null && !nParams.isEmpty()) {
-                    for (String key : nParams) {
-                        nProcessed.add(response.output().results().get(key));
-                    }
-                }
-            } else if (type == JsChallengeType.SIG) {
-                if (sParams != null && !sParams.isEmpty()) {
-                    for (String key : sParams) {
-                        sProcessed.add(response.output().results().get(key));
-                    }
-                }
-            }
-        }
-
-        return new Pair<>(nProcessed, sProcessed);
-    }
-
-    @NonNull
-    @SuppressWarnings("ExtractMethodRecommender")
-    private static List<JsChallengeRequest> getJsChallengeRequests(List<String> nParams, List<String> sParams) {
         JsChallengeRequest nRequest = null;
         if (nParams != null && !nParams.isEmpty()) {
             List<String> filtered = new ArrayList<>();
@@ -86,20 +67,28 @@ public class PlayerDataExtractor {
         List<JsChallengeRequest> requests = new ArrayList<>();
         if (nRequest != null) requests.add(nRequest);
         if (sRequest != null) requests.add(sRequest);
-        return requests;
-    }
+        List<JsChallengeProviderResponse> result = JsEngineChallengeProvider.getInstance().bulkSolve(requests);
 
-    private void checkAllData() {
-        List<String> param = Collections.singletonList("5cNpZqIJ7ixNqU68Y7S");
+        for (JsChallengeProviderResponse item : result) {
+            var response = item.response();
+            if (response == null) continue;
 
-        try {
-            List<JsChallengeRequest> requests = new ArrayList<>();
-            requests.add(new JsChallengeRequest(JsChallengeType.N, new ChallengeInput(param)));
-            requests.add(new JsChallengeRequest(JsChallengeType.SIG, new ChallengeInput(param)));
-
-            JsEngineChallengeProvider.getInstance().bulkSolve(requests);
-        } catch (Exception ex) {
-            Logger.printException(() -> "Deobfuscation test failed", ex);
+            var type = response.type();
+            if (type == JsChallengeType.N) {
+                if (nParams != null && !nParams.isEmpty()) {
+                    for (String key : nParams) {
+                        nProcessed.add(response.output().results().get(key));
+                    }
+                }
+            } else if (type == JsChallengeType.SIG) {
+                if (sParams != null && !sParams.isEmpty()) {
+                    for (String key : sParams) {
+                        sProcessed.add(response.output().results().get(key));
+                    }
+                }
+            }
         }
+
+        return new Pair<>(nProcessed, sProcessed);
     }
 }

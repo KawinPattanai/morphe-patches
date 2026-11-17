@@ -158,7 +158,70 @@ fun settingsPatch (
         // Add-on bundles are loaded in their own class loader and cannot use the preference
         // classes of this bundle, so they declare their preferences as plain XML instead.
         // This runs last, because the screens an add-on adds to are created above.
-        mergeAddOnPreferences()
+        // Merges the preferences declared by add-on patch bundles into the Morphe preference files.
+        // The declaration file is a list of screens, and each screen declares where its preferences go.
+        // Either next to an existing preference, which is how an add-on adds itself next to the built-in
+        // feature it extends, or into a screen by key:
+        // ```xml
+        // <morphe-add-on-preferences>
+        //     <screen after="morphe_vot_screen">
+        //         <PreferenceScreen android:key="..." android:title="@string/..." />
+        //     </screen>
+        //     <screen key="morphe_settings_screen_12_video">
+        //         <SwitchPreference android:key="..." android:title="@string/..." />
+        //     </screen>
+        // </morphe-add-on-preferences>
+        // ```
+        // Both attributes are optional. Preferences of a screen without either of them, or with keys
+        // that do not exist, are added to the root screen. Screens that sort their preferences do so
+        // by key, so an add-on that wants to stay next to a preference must also use a key that sorts next
+        // to it. Icons are not supported, since the same nodes are used for all preference file variants.
+        resourceXmlOrNull(ADD_ON_PREFERENCES_FILE_PATH)?.use { declarations ->
+            val declarationsNode = declarations.root.takeIf { it.tag == "morphe-add-on-preferences" }
+                ?: throw PatchException("Invalid add-on preference declaration: $ADD_ON_PREFERENCES_FILE_PATH")
+
+            val addOnPreferences = declarationsNode.children.map { screen ->
+                AddOnPreferences(
+                    screenKey = screen.attribute("key")?.takeIf { it.isNotEmpty() },
+                    afterKey = screen.attribute("after")?.takeIf { it.isNotEmpty() },
+                    preferences = screen.children,
+                )
+            }
+
+            if (addOnPreferences.isNotEmpty()) {
+                arrayOf(
+                    "res/xml/morphe_prefs.xml",
+                    "res/xml/morphe_prefs_icons.xml",
+                    "res/xml/morphe_prefs_icons_bold.xml"
+                ).forEach { preferenceFilePath ->
+                    resourceXmlOrNull(preferenceFilePath)?.use { xml ->
+                        val rootNode = xml.elements("PreferenceScreen").first()
+
+                        addOnPreferences.forEach { addOn ->
+                            val siblingNode = addOn.afterKey?.let { rootNode.findPreferenceByKey(it) }
+
+                            if (siblingNode != null) {
+                                val parent = siblingNode.parent!!
+                                var index = siblingNode.index
+                                addOn.preferences.forEach { preference ->
+                                    parent.insertCopy(++index, preference)
+                                }
+                            } else {
+                                val screenNode = addOn.screenKey?.let { rootNode.findPreferenceByKey(it) }
+                                    ?: rootNode
+
+                                addOn.preferences.forEach { preference ->
+                                    screenNode.appendCopy(preference)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The declaration file itself is not part of the app.
+        resourceFile(ADD_ON_PREFERENCES_FILE_PATH).delete()
     }
 }
 
@@ -184,78 +247,6 @@ private class AddOnPreferences(
     val afterKey: String?,
     val preferences: List<XmlElement>,
 )
-
-/**
- * Merges the preferences declared by add-on patch bundles into the Morphe preference files.
- *
- * The declaration file is a list of screens, and each screen declares where its preferences go.
- * Either next to an existing preference, which is how an add-on adds itself next to the built-in
- * feature it extends, or into a screen by key:
- *
- * ```xml
- * <morphe-add-on-preferences>
- *     <screen after="morphe_vot_screen">
- *         <PreferenceScreen android:key="..." android:title="@string/..." />
- *     </screen>
- *     <screen key="morphe_settings_screen_12_video">
- *         <SwitchPreference android:key="..." android:title="@string/..." />
- *     </screen>
- * </morphe-add-on-preferences>
- * ```
- *
- * Both attributes are optional. Preferences of a screen without either of them, or with keys
- * that do not exist, are added to the root screen. Screens that sort their preferences do so
- * by key, so an add-on that wants to stay next to a preference must also use a key that sorts next
- * to it. Icons are not supported, since the same nodes are used for all preference file variants.
- */
-private fun mergeAddOnPreferences() {
-    resourceXmlOrNull(ADD_ON_PREFERENCES_FILE_PATH)?.use { declarations ->
-        val declarationsNode = declarations.root.takeIf { it.tag == "morphe-add-on-preferences" }
-            ?: throw PatchException("Invalid add-on preference declaration: $ADD_ON_PREFERENCES_FILE_PATH")
-
-        val addOnPreferences = declarationsNode.children.map { screen ->
-            AddOnPreferences(
-                screenKey = screen.attribute("key")?.takeIf { it.isNotEmpty() },
-                afterKey = screen.attribute("after")?.takeIf { it.isNotEmpty() },
-                preferences = screen.children,
-            )
-        }
-
-        if (addOnPreferences.isNotEmpty()) {
-            arrayOf(
-                "res/xml/morphe_prefs.xml",
-                "res/xml/morphe_prefs_icons.xml",
-                "res/xml/morphe_prefs_icons_bold.xml"
-            ).forEach { preferenceFilePath ->
-                resourceXmlOrNull(preferenceFilePath)?.use { xml ->
-                    val rootNode = xml.elements("PreferenceScreen").first()
-
-                    addOnPreferences.forEach { addOn ->
-                        val siblingNode = addOn.afterKey?.let { rootNode.findPreferenceByKey(it) }
-
-                        if (siblingNode != null) {
-                            val parent = siblingNode.parent!!
-                            var index = siblingNode.index
-                            addOn.preferences.forEach { preference ->
-                                parent.insertCopy(++index, preference)
-                            }
-                        } else {
-                            val screenNode = addOn.screenKey?.let { rootNode.findPreferenceByKey(it) }
-                                ?: rootNode
-
-                            addOn.preferences.forEach { preference ->
-                                screenNode.appendCopy(preference)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // The declaration file itself is not part of the app.
-    resourceFile(ADD_ON_PREFERENCES_FILE_PATH).delete()
-}
 
 /**
  * @return The preference element with the given key,

@@ -739,7 +739,34 @@ public final class MinimalMiniplayerPatch {
                 barSpan.right - BAR_MARGIN, bottom);
 
         if (GLASS && !DOCKED) {
-            fitLandscapeWidth(playerLayout);
+            // A bar across a landscape screen is too wide, so the glass bar is as wide as the capsule of the
+            // glass navigation bar and above it, at least GLASS_LANDSCAPE_MIN_WIDTH wide.
+            // Without the capsule, such as with a navigation rail, it is at most GLASS_LANDSCAPE_MAX_WIDTH wide.
+            fitLandscapeWidth: {
+                View root = playerLayout != null ? playerLayout.getRootView() : null;
+                final int screenWidth = root != null ? root.getWidth() : Dim.getMetrics().widthPixels;
+                final int screenHeight = root != null ? root.getHeight() : Dim.getMetrics().heightPixels;
+                if (screenWidth <= screenHeight) break fitLandscapeWidth;
+
+                int width = GLASS_LANDSCAPE_MAX_WIDTH;
+                int center = barBounds.centerX();
+                if (YouTubeGlassNavigationBar.getCapsuleSpanInWindow(navigationCapsuleSpan)) {
+                    // The bounds are relative to the layout that holds the player, not to the window.
+                    int origin = 0;
+                    if (playerLayout != null) {
+                        playerLayout.getLocationInWindow(windowLocation);
+                        origin = windowLocation[0];
+                    }
+                    width = Math.max(GLASS_LANDSCAPE_MIN_WIDTH, navigationCapsuleSpan[1] - navigationCapsuleSpan[0]);
+                    center = (navigationCapsuleSpan[0] + navigationCapsuleSpan[1]) / 2 - origin;
+                }
+
+                if (width >= barBounds.width()) break fitLandscapeWidth;
+
+                final int left = Math.max(barBounds.left, Math.min(barBounds.right - width, center - width / 2));
+                barBounds.left = left;
+                barBounds.right = left + width;
+            }
         }
 
         if (atTop) {
@@ -1328,7 +1355,34 @@ public final class MinimalMiniplayerPatch {
             }
         }
 
-        updateGlass();
+        // Type 1 is drawn as glass while the player holds the bar shape, and has the background of the app
+        // otherwise. Type 2 gets the glass when its container is moved in front of the player.
+        updateGlass: {
+            if (!GLASS) break updateGlass;
+
+            View container = barContainerRef.get();
+            if (container == null) break updateGlass;
+
+            GlassCapsuleDrawable glass = glassFor(container);
+            Drawable background = container.getBackground();
+            if (getCurrentMiniplayerType() == MINIMAL_BAR) {
+                if (inBarMode()) {
+                    if (background != glass) {
+                        glassOriginalBackground = background;
+                        container.setBackground(glass);
+                    }
+                } else if (background == glass) {
+                    container.setBackground(glassOriginalBackground);
+                    glassOriginalBackground = null;
+                }
+            }
+
+            if (container.getBackground() == glass) {
+                // The theme may have changed, and the glass follows the player while it moves.
+                glass.updateStyle();
+                container.invalidate();
+            }
+        }
 
         final int height = currentBounds.height();
         final int width = currentBounds.width();
@@ -1458,37 +1512,6 @@ public final class MinimalMiniplayerPatch {
     }
 
     /**
-     * A bar across a landscape screen is too wide, so the glass bar is as wide as the capsule of the
-     * glass navigation bar and above it, at least {@link #GLASS_LANDSCAPE_MIN_WIDTH} wide.
-     * Without the capsule, such as with a navigation rail, it is at most {@link #GLASS_LANDSCAPE_MAX_WIDTH} wide.
-     */
-    private static void fitLandscapeWidth(@Nullable View playerLayout) {
-        View root = playerLayout != null ? playerLayout.getRootView() : null;
-        final int screenWidth = root != null ? root.getWidth() : Dim.getMetrics().widthPixels;
-        final int screenHeight = root != null ? root.getHeight() : Dim.getMetrics().heightPixels;
-        if (screenWidth <= screenHeight) return;
-
-        int width = GLASS_LANDSCAPE_MAX_WIDTH;
-        int center = barBounds.centerX();
-        if (YouTubeGlassNavigationBar.getCapsuleSpanInWindow(navigationCapsuleSpan)) {
-            // The bounds are relative to the layout that holds the player, not to the window.
-            int origin = 0;
-            if (playerLayout != null) {
-                playerLayout.getLocationInWindow(windowLocation);
-                origin = windowLocation[0];
-            }
-            width = Math.max(GLASS_LANDSCAPE_MIN_WIDTH, navigationCapsuleSpan[1] - navigationCapsuleSpan[0]);
-            center = (navigationCapsuleSpan[0] + navigationCapsuleSpan[1]) / 2 - origin;
-        }
-
-        if (width >= barBounds.width()) return;
-
-        final int left = Math.max(barBounds.left, Math.min(barBounds.right - width, center - width / 2));
-        barBounds.left = left;
-        barBounds.right = left + width;
-    }
-
-    /**
      * Injection point.
      * <p>
      * Called at the start of each frame the progress bar draws. Under the glass bar, the progress bar runs
@@ -1534,57 +1557,6 @@ public final class MinimalMiniplayerPatch {
 
         Logger.printDebug(() -> "Glass miniplayer applied");
         return glass;
-    }
-
-    /**
-     * Type 1 is drawn as glass while the player holds the bar shape, and has the background of the app
-     * otherwise. Type 2 gets the glass when its container is moved in front of the player.
-     */
-    private static void updateGlass() {
-        if (!GLASS) return;
-
-        View container = barContainerRef.get();
-        if (container == null) return;
-
-        GlassCapsuleDrawable glass = glassFor(container);
-        Drawable background = container.getBackground();
-        if (getCurrentMiniplayerType() == MINIMAL_BAR) {
-            if (inBarMode()) {
-                if (background != glass) {
-                    glassOriginalBackground = background;
-                    container.setBackground(glass);
-                }
-            } else if (background == glass) {
-                container.setBackground(glassOriginalBackground);
-                glassOriginalBackground = null;
-            }
-        }
-
-        if (container.getBackground() == glass) {
-            // The theme may have changed, and the glass follows the player while it moves.
-            glass.updateStyle();
-            container.invalidate();
-        }
-    }
-
-    /**
-     * The views drawn before the bar container, which are behind it, in the order they are drawn.
-     * The player is left out, its video is drawn over the glass.
-     */
-    private static void collectViewsBehind(View target, List<View> out) {
-        View player = watchPlayer();
-        View child = target;
-        for (ViewParent parent = target.getParent(); parent instanceof ViewGroup group; parent = group.getParent()) {
-            final int index = group.indexOfChild(child);
-            for (int i = index - 1; i >= 0; i--) {
-                View view = group.getChildAt(i);
-                if (view.getVisibility() == View.VISIBLE && view.getWidth() > 0 && view.getHeight() > 0
-                        && view.getAlpha() > 0 && !holds(view, player)) {
-                    out.add(0, view);
-                }
-            }
-            child = group;
-        }
     }
 
     private static boolean holds(View view, @Nullable View descendant) {
@@ -1652,7 +1624,22 @@ public final class MinimalMiniplayerPatch {
 
             recordingBackdrop = true;
             try {
-                collectViewsBehind(container, viewsBehind);
+                // The views drawn before the bar container, which are behind it, in the order they are drawn.
+                // The player is left out, its video is drawn over the glass.
+                List<View> out = viewsBehind;
+                View player = watchPlayer();
+                View child = container;
+                for (ViewParent parent = container.getParent(); parent instanceof ViewGroup group; parent = group.getParent()) {
+                    final int index = group.indexOfChild(child);
+                    for (int i = index - 1; i >= 0; i--) {
+                        View view = group.getChildAt(i);
+                        if (view.getVisibility() == View.VISIBLE && view.getWidth() > 0 && view.getHeight() > 0
+                                && view.getAlpha() > 0 && !holds(view, player)) {
+                            out.add(0, view);
+                        }
+                    }
+                    child = group;
+                }
                 if (glassBackdrop == null) {
                     glassBackdrop = new GlassBackdrop("GlassMinimalMiniplayer", GLASS_BLUR_RADIUS);
                 }

@@ -251,20 +251,16 @@ public final class FeedViewCountPatch {
 
     static {
         if (ENABLED) {
-            loadCardPaths();
-        }
-    }
-
-    private static void loadCardPaths() {
-        try {
-            for (String path : Settings.FEED_VIEW_COUNT_PATHS.get().split(PATH_SEPARATOR)) {
-                if (!path.isEmpty()) {
-                    cardPaths.add(path);
+            try {
+                for (String path : Settings.FEED_VIEW_COUNT_PATHS.get().split(PATH_SEPARATOR)) {
+                    if (!path.isEmpty()) {
+                        cardPaths.add(path);
+                    }
                 }
+            } catch (Exception ex) {
+                Logger.printException(() -> "Could not load the card paths", ex);
+                Settings.FEED_VIEW_COUNT_PATHS.resetToDefault();
             }
-        } catch (Exception ex) {
-            Logger.printException(() -> "Could not load the card paths", ex);
-            Settings.FEED_VIEW_COUNT_PATHS.resetToDefault();
         }
     }
 

@@ -218,7 +218,24 @@ public final class TextTranslator {
      */
     public static Translation translateText(String text, String targetLanguage) throws Exception {
         try {
-            return translateHtml(text, targetLanguage);
+            // The endpoint takes HTML, so the text is escaped to keep characters such as < as
+            // they are, and the escaped result is decoded again.
+            // Request: [[[texts], source, target], "wt_lib"]
+            JSONArray request = new JSONArray()
+                    .put(new JSONArray().put(TextUtils.htmlEncode(text)))
+                    .put("auto")
+                    .put(targetLanguage);
+            JSONArray body = new JSONArray().put(request).put("wt_lib");
+
+            // Response: [[translated texts], [detected languages]]
+            JSONArray response = new JSONArray(post(GOOGLE_TRANSLATE_HTML_URL,
+                    "application/json+protobuf", body.toString(),
+                    "X-Goog-API-Key", GOOGLE_TRANSLATE_HTML_API_KEY, "Website translation"));
+            String translated = Html.fromHtml(response.getJSONArray(0).getString(0),
+                    Html.FROM_HTML_MODE_LEGACY).toString();
+            JSONArray detected = response.optJSONArray(1);
+            String language = detected == null || detected.isNull(0) ? null : detected.getString(0);
+            return new Translation(translated, language == null || language.isEmpty() ? null : language);
         } catch (Exception ex) {
             Logger.printDebug(() -> "Website translator endpoint failed, using gtx", ex);
         }
@@ -230,29 +247,6 @@ public final class TextTranslator {
                     return new Translation(joinSentences(response.getJSONArray(0)),
                             detected == null || detected.isEmpty() ? null : detected);
                 });
-    }
-
-    /**
-     * The endpoint takes HTML, so the text is escaped to keep characters such as {@code <} as
-     * they are, and the escaped result is decoded again.
-     */
-    private static Translation translateHtml(String text, String targetLanguage) throws Exception {
-        // Request: [[[texts], source, target], "wt_lib"]
-        JSONArray request = new JSONArray()
-                .put(new JSONArray().put(TextUtils.htmlEncode(text)))
-                .put("auto")
-                .put(targetLanguage);
-        JSONArray body = new JSONArray().put(request).put("wt_lib");
-
-        // Response: [[translated texts], [detected languages]]
-        JSONArray response = new JSONArray(post(GOOGLE_TRANSLATE_HTML_URL,
-                "application/json+protobuf", body.toString(),
-                "X-Goog-API-Key", GOOGLE_TRANSLATE_HTML_API_KEY, "Website translation"));
-        String translated = Html.fromHtml(response.getJSONArray(0).getString(0),
-                Html.FROM_HTML_MODE_LEGACY).toString();
-        JSONArray detected = response.optJSONArray(1);
-        String language = detected == null || detected.isNull(0) ? null : detected.getString(0);
-        return new Translation(translated, language == null || language.isEmpty() ? null : language);
     }
 
 /**
@@ -268,7 +262,22 @@ public final class TextTranslator {
         final String fallbackUrl = GOOGLE_ROMANIZE_FALLBACK_URL + targetCode(targetLanguage);
         List<String> romanized = requestLines(lines, url, fallbackUrl, true,
                 preferTranslated(targetLanguage), "\n");
-        if (romanized.size() == lines.size() || containsSeparator(lines)) {
+        if (romanized.size() == lines.size()) {
+            return romanized;
+        }
+
+        // Whether a line already holds a bar, which would make the fallback split it wrongly.
+        boolean containsSeparator;
+        containsSeparator: {
+            for (String line : lines) {
+                if (line.contains(LINE_FALLBACK_SEPARATOR) || line.contains("|")) {
+                    containsSeparator = true;
+                    break containsSeparator;
+                }
+            }
+            containsSeparator = false;
+        }
+        if (containsSeparator) {
             return romanized;
         }
 
@@ -292,16 +301,6 @@ public final class TextTranslator {
 
     private static boolean isDefault(@NonNull String targetLanguage) {
         return "DEFAULT".equalsIgnoreCase(targetLanguage);
-    }
-
-    /** Whether a line already holds a bar, which would make the fallback split it wrongly. */
-    private static boolean containsSeparator(@NonNull List<String> lines) {
-        for (String line : lines) {
-            if (line.contains(LINE_FALLBACK_SEPARATOR) || line.contains("|")) {
-                return true;
-            }
-        }
-        return false;
     }
 
 /**
@@ -453,13 +452,8 @@ public final class TextTranslator {
         if ("null".equals(romanized)) {
             romanized = "";
         }
-        return splitRomanized(romanized, lineSeparator);
-    }
 
-    /** Cuts the batch romanization back into the lines that were sent. */
-    @NonNull
-    private static List<String> splitRomanized(@NonNull String romanized,
-                                              @NonNull String lineSeparator) {
+        // Cuts the batch romanization back into the lines that were sent.
         if (LINE_FALLBACK_SEPARATOR.equals(lineSeparator)) {
             List<String> lines = new ArrayList<>();
             for (String line : romanized.split("\\|", -1)) {

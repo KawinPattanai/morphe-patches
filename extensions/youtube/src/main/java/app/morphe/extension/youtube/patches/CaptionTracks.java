@@ -609,7 +609,15 @@ public final class CaptionTracks {
                     CaptionBlockTranslator.DEFAULT,
                     Utils::runOnBackgroundThread,
                     () -> translationChanged(token),
-                    () -> translationFailed(token), !firstUploaded, !secondUploaded);
+                    () -> {
+                        Utils.runOnMainThread(() -> {
+                            synchronized (CaptionTracks.class) {
+                                if (token == translatedToken) {
+                                    Utils.showToastShort(StringRef.str("morphe_caption_block_translation_failed"));
+                                }
+                            }
+                        });
+                    }, !firstUploaded, !secondUploaded);
         }
 
         state.translation = translatedSession;
@@ -628,16 +636,6 @@ public final class CaptionTracks {
                 for (WeakReference<StableCaptionBlocks.State> reference : translatedStates) {
                     StableCaptionBlocks.State state = reference.get();
                     if (state != null) StableCaptionBlocks.refreshTranslation(state, translatedSession);
-                }
-            }
-        });
-    }
-
-    private static void translationFailed(Object token) {
-        Utils.runOnMainThread(() -> {
-            synchronized (CaptionTracks.class) {
-                if (token == translatedToken) {
-                    Utils.showToastShort(StringRef.str("morphe_caption_block_translation_failed"));
                 }
             }
         });

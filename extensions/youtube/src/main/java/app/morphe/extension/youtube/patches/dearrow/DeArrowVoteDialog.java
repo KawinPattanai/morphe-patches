@@ -709,7 +709,9 @@ final class DeArrowVoteDialog {
                     stepRow.setOrientation(LinearLayout.HORIZONTAL);
                     for (int i = 0, count = steps.length; i < count; i++) {
                         final long step = steps[i];
-                        Button button = CustomDialog.createButton(context, null, formatFrameStep(step),
+                        DecimalFormat format = new DecimalFormat("+0.###;-0.###");
+                        String stepText = str("morphe_dearrow_vote_frame_step", format.format(step / 1000.0));
+                        Button button = CustomDialog.createButton(context, null, stepText,
                                 () -> stepFrame(playerButton, chosen, step, videoLength, updateViews),
                                 false, false);
                         LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(0, Dim.dp36, 1.0f);
@@ -792,21 +794,26 @@ final class DeArrowVoteDialog {
     }
 
     /**
-     * @return The step as signed seconds, such as -1 s or +0.1 s.
-     */
-    private static String formatFrameStep(long stepMilliseconds) {
-        DecimalFormat format = new DecimalFormat("+0.###;-0.###");
-        return str("morphe_dearrow_vote_frame_step", format.format(stepMilliseconds / 1000.0));
-    }
-
-    /**
      * Copies the frame shown in the player. The thumbnail cache is not used, since it only has
      * images of submitted frames, and asking it for another frame makes and keeps an image of it.
      *
      * @param onCaptured Called on the main thread with the frame, or with null if it could not be copied.
      */
     private static void captureCurrentFrame(View playerButton, Consumer<Bitmap> onCaptured) {
-        View video = findVideoSurface(playerButton);
+        // or null if none is found.
+        View video;
+        findVideoSurface: {
+            ViewParent parent = playerButton.getParent();
+            for (int i = 0; i < MAX_PLAYER_ANCESTORS && parent instanceof ViewGroup group;
+                 i++, parent = parent.getParent()) {
+                View surface = findLargestSurface(group, null);
+                if (surface != null) {
+                    video = surface;
+                    break findVideoSurface;
+                }
+            }
+            video = null;
+        }
         if (video == null) {
             Logger.printDebug(() -> "Video surface not found");
             onCaptured.accept(null);
@@ -844,23 +851,6 @@ final class DeArrowVoteDialog {
             Logger.printInfo(() -> "Video surface went away during the copy", ex);
             onCaptured.accept(null);
         }
-    }
-
-    /**
-     * @return The largest shown video surface in the closest player layout above the button,
-     *         or null if none is found.
-     */
-    @Nullable
-    private static View findVideoSurface(View playerButton) {
-        ViewParent parent = playerButton.getParent();
-        for (int i = 0; i < MAX_PLAYER_ANCESTORS && parent instanceof ViewGroup group;
-             i++, parent = parent.getParent()) {
-            View surface = findLargestSurface(group, null);
-            if (surface != null) {
-                return surface;
-            }
-        }
-        return null;
     }
 
     @Nullable

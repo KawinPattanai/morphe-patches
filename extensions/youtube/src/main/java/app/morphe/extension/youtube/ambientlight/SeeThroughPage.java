@@ -161,9 +161,42 @@ final class SeeThroughPage {
             panelWrapperRef = new WeakReference<>(page.findViewById(PANEL_WRAPPER_ID) instanceof ViewGroup found ? found : null);
         }
         clearBackgrounds(page, player, page.getWidth() / 3, pageColor, 0);
-        lightPageContent(page);
-        lightPageInfoPanel(page);
-        lightPageBackdrop(page, player);
+        lightPageContent: {
+            View content = PAGE_CONTENT_ID == 0 ? null : page.findViewById(PAGE_CONTENT_ID);
+            if (content == null || content.getBackground() instanceof LightDrawable) break lightPageContent;
+
+            restorePageContent();
+            pageContentRef = new WeakReference<>(content);
+            pageContentBackground = content.getBackground();
+            content.setBackground(new LightDrawable(content));
+        }
+        lightPageInfoPanel: {
+            View panel = PAGE_INFO_PANEL_ID == 0 ? null : page.findViewById(PAGE_INFO_PANEL_ID);
+            if (panel == null || panel.getBackground() instanceof LightDrawable) break lightPageInfoPanel;
+
+            restorePageInfoPanel();
+            pageInfoPanelRef = new WeakReference<>(panel);
+            pageInfoPanelBackground = panel.getBackground();
+            panel.setBackground(new LightDrawable(panel));
+        }
+        lightPageBackdrop: {
+            View backdrop = PAGE_BACKDROP_ID == 0 ? null : page.findViewById(PAGE_BACKDROP_ID);
+            // The light on the backdrop is under the views that are drawn after the backdrop. It
+            // must not cover the player and the content of the page.
+            if (backdrop != null && !(page instanceof ViewGroup group && isChildBefore(group, backdrop, player)
+                    && isChildBefore(group, backdrop, pageContentRef.get()))) {
+                backdrop = null;
+            }
+            LightDrawable light = pageBackdropLightRef.get();
+            if (backdrop == (light == null ? null : light.view)) break lightPageBackdrop;
+
+            restorePageBackdrop();
+            if (backdrop == null) break lightPageBackdrop;
+            light = new LightDrawable(backdrop);
+            // An overlay is drawn over what the view draws, and under the views that come after it.
+            backdrop.getOverlay().add(light);
+            pageBackdropLightRef = new WeakReference<>(light);
+        }
         lightPanels(true);
         View playlistBar = playlistBarRef.get();
         if (PLAYLIST_BAR_ID != 0 && (playlistBar == null || !playlistBar.isAttachedToWindow())) {
@@ -188,16 +221,6 @@ final class SeeThroughPage {
         }
     }
 
-    private static void lightPageContent(View page) {
-        View content = PAGE_CONTENT_ID == 0 ? null : page.findViewById(PAGE_CONTENT_ID);
-        if (content == null || content.getBackground() instanceof LightDrawable) return;
-
-        restorePageContent();
-        pageContentRef = new WeakReference<>(content);
-        pageContentBackground = content.getBackground();
-        content.setBackground(new LightDrawable(content));
-    }
-
     private static void restorePageContent() {
         View content = pageContentRef.get();
         if (content != null) content.setBackground(pageContentBackground);
@@ -205,40 +228,11 @@ final class SeeThroughPage {
         pageContentBackground = null;
     }
 
-    private static void lightPageInfoPanel(View page) {
-        View panel = PAGE_INFO_PANEL_ID == 0 ? null : page.findViewById(PAGE_INFO_PANEL_ID);
-        if (panel == null || panel.getBackground() instanceof LightDrawable) return;
-
-        restorePageInfoPanel();
-        pageInfoPanelRef = new WeakReference<>(panel);
-        pageInfoPanelBackground = panel.getBackground();
-        panel.setBackground(new LightDrawable(panel));
-    }
-
     private static void restorePageInfoPanel() {
         View panel = pageInfoPanelRef.get();
         if (panel != null) panel.setBackground(pageInfoPanelBackground);
         pageInfoPanelRef = new WeakReference<>(null);
         pageInfoPanelBackground = null;
-    }
-
-    private static void lightPageBackdrop(View page, View player) {
-        View backdrop = PAGE_BACKDROP_ID == 0 ? null : page.findViewById(PAGE_BACKDROP_ID);
-        // The light on the backdrop is under the views that are drawn after the backdrop. It
-        // must not cover the player and the content of the page.
-        if (backdrop != null && !(page instanceof ViewGroup group && isChildBefore(group, backdrop, player)
-                && isChildBefore(group, backdrop, pageContentRef.get()))) {
-            backdrop = null;
-        }
-        LightDrawable light = pageBackdropLightRef.get();
-        if (backdrop == (light == null ? null : light.view)) return;
-
-        restorePageBackdrop();
-        if (backdrop == null) return;
-        light = new LightDrawable(backdrop);
-        // An overlay is drawn over what the view draws, and under the views that come after it.
-        backdrop.getOverlay().add(light);
-        pageBackdropLightRef = new WeakReference<>(light);
     }
 
     /**
@@ -389,10 +383,47 @@ final class SeeThroughPage {
         // layer empty for the light, so the layer is drawn in place of what is under it.
         if (background instanceof PanelLight && layer != null && layer.getWidth() == view.getWidth()
                 && layer.getHeight() == view.getHeight()) {
-            replaceWithLayer(layer);
+            replaceWithLayer: {
+                for (WeakReference<View> reference : panelLayers) {
+                    if (reference.get() == layer) {
+                        // YouTube has given the view a layer again, which has the paint of every layer.
+                        layer.setLayerPaint(REPLACING_LAYER_PAINT);
+                        break replaceWithLayer;
+                    }
+                }
+                panelLayers.removeIf(reference -> reference.get() == null);
+                panelLayers.add(new WeakReference<>(layer));
+                layer.setLayerPaint(REPLACING_LAYER_PAINT);
+            }
         }
-        if (background instanceof PanelLight && view.getParent() instanceof ViewGroup parent && holdsList(view)) {
-            lightStuckHeaders(parent, view, minWidth);
+        if (background instanceof PanelLight && view.getParent() instanceof ViewGroup parent) {
+            boolean holdsList;
+            holdsList: {
+                if (view instanceof ViewGroup group) {
+                    for (int i = 0; i < group.getChildCount(); i++) {
+                        if (group.getChildAt(i) instanceof RecyclerView) {
+                            holdsList = true;
+                            break holdsList;
+                        }
+                    }
+                }
+                holdsList = false;
+            }
+            if (holdsList) {
+                // A header of the list of a panel that sticks to the top, as the search field of the
+                // transcript, lies over the list as a view of its own. What it draws is see-through, so
+                // it shows the light as its background, which hides the list that scrolls under it.
+                for (int i = parent.indexOfChild(view) + 1; i < parent.getChildCount(); i++) {
+                    View header = parent.getChildAt(i);
+                    if (header.getVisibility() == View.VISIBLE && header.getBackground() == null
+                            && header.getWidth() >= minWidth && header.getHeight() > 0
+                            // Not a view that lies over all of the list.
+                            && header.getHeight() * 2 < parent.getHeight() && header.getTop() <= view.getTop() + 1) {
+                        panelBackgrounds.put(header, null);
+                        header.setBackground(new PanelLight(header, pageColor));
+                    }
+                }
+            }
         }
         if (view instanceof ViewGroup group && (lists || !(view instanceof RecyclerView))) {
             for (int i = 0; i < group.getChildCount(); i++) {
@@ -420,79 +451,11 @@ final class SeeThroughPage {
         return found;
     }
 
-    private static boolean holdsList(View view) {
-        if (view instanceof ViewGroup group) {
-            for (int i = 0; i < group.getChildCount(); i++) {
-                if (group.getChildAt(i) instanceof RecyclerView) return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * A header of the list of a panel that sticks to the top, as the search field of the
-     * transcript, lies over the list as a view of its own. What it draws is see-through, so
-     * it shows the light as its background, which hides the list that scrolls under it.
-     *
-     * @param list The view that holds the list. The headers are drawn after it.
-     */
-    private static void lightStuckHeaders(ViewGroup parent, View list, int minWidth) {
-        for (int i = parent.indexOfChild(list) + 1; i < parent.getChildCount(); i++) {
-            View header = parent.getChildAt(i);
-            if (header.getVisibility() == View.VISIBLE && header.getBackground() == null
-                    && header.getWidth() >= minWidth && header.getHeight() > 0
-                    // Not a view that lies over all of the list.
-                    && header.getHeight() * 2 < parent.getHeight() && header.getTop() <= list.getTop() + 1) {
-                panelBackgrounds.put(header, null);
-                header.setBackground(new PanelLight(header, pageColor));
-            }
-        }
-    }
-
-    private static void replaceWithLayer(View layer) {
-        for (WeakReference<View> reference : panelLayers) {
-            if (reference.get() == layer) {
-                // YouTube has given the view a layer again, which has the paint of every layer.
-                layer.setLayerPaint(REPLACING_LAYER_PAINT);
-                return;
-            }
-        }
-        panelLayers.removeIf(reference -> reference.get() == null);
-        panelLayers.add(new WeakReference<>(layer));
-        layer.setLayerPaint(REPLACING_LAYER_PAINT);
-    }
-
     /**
      * @return If a background of this color hides what is under it, and is see-through on the page.
      */
     private static boolean isOpaquePageColor(int color) {
         return Color.alpha(color) != 0 && AmbientLightMath.seeThroughColor(color, pageColor) == 0;
-    }
-
-    private static void restorePanels() {
-        for (Map.Entry<View, Drawable> entry : panelBackgrounds.entrySet()) {
-            if (entry.getKey().getBackground() instanceof PanelLight) entry.getKey().setBackground(entry.getValue());
-        }
-        panelBackgrounds.clear();
-        for (WeakReference<View> reference : panelLayers) {
-            View layer = reference.get();
-            if (layer != null) layer.setLayerPaint(null);
-        }
-        panelLayers.clear();
-        for (View view : panelRowLights.keySet()) view.invalidate();
-        panelRowLights.clear();
-        for (Map.Entry<Drawable, Integer> entry : panelRowFills.entrySet()) {
-            entry.getKey().setAlpha(entry.getValue());
-        }
-        panelRowFills.clear();
-        panelShown = false;
-        panelWrapperRef = new WeakReference<>(null);
-        View playlistBar = playlistBarRef.get();
-        if (playlistBar != null && playlistBar.getBackground() instanceof RoundLight) {
-            playlistBar.setBackground(playlistBarBackground);
-        }
-        playlistBarRef = new WeakReference<>(null);
-        playlistBarBackground = null;
     }
 
     /**
@@ -764,7 +727,29 @@ final class SeeThroughPage {
         restorePageContent();
         restorePageInfoPanel();
         restorePageBackdrop();
-        restorePanels();
+        for (Map.Entry<View, Drawable> entry : panelBackgrounds.entrySet()) {
+            if (entry.getKey().getBackground() instanceof PanelLight) entry.getKey().setBackground(entry.getValue());
+        }
+        panelBackgrounds.clear();
+        for (WeakReference<View> reference : panelLayers) {
+            View layer = reference.get();
+            if (layer != null) layer.setLayerPaint(null);
+        }
+        panelLayers.clear();
+        for (View view : panelRowLights.keySet()) view.invalidate();
+        panelRowLights.clear();
+        for (Map.Entry<Drawable, Integer> entry : panelRowFills.entrySet()) {
+            entry.getKey().setAlpha(entry.getValue());
+        }
+        panelRowFills.clear();
+        panelShown = false;
+        panelWrapperRef = new WeakReference<>(null);
+        View playlistBar = playlistBarRef.get();
+        if (playlistBar != null && playlistBar.getBackground() instanceof RoundLight) {
+            playlistBar.setBackground(playlistBarBackground);
+        }
+        playlistBarRef = new WeakReference<>(null);
+        playlistBarBackground = null;
         setListClip(null, 0);
         stickyHeaderContainerRef = new WeakReference<>(null);
         listItems.clear();
@@ -784,27 +769,33 @@ final class SeeThroughPage {
         }
 
         Drawable background = view.getBackground();
-        if (background != null && isPageBackground(view, background, minWidth, pageColor)) {
-            clear(view);
+        if (background != null) {
+            boolean isPageBackground;
+            isPageBackground: {
+                if (background instanceof LightDrawable) {
+                    isPageBackground = false;
+                    break isPageBackground;
+                }
+
+                // The second column of the watch page of a tablet is narrower than a third of the page.
+                for (int id : SCRIM_IDS) {
+                    if (id != 0 && view.getId() == id) {
+                        isPageBackground = true;
+                        break isPageBackground;
+                    }
+                }
+                isPageBackground = view.getWidth() >= minWidth && background instanceof ColorDrawable
+                        && AmbientLightMath.seeThroughColor(((ColorDrawable) background).getColor(), pageColor) == 0;
+            }
+            if (isPageBackground) {
+                clear(view);
+            }
         }
         if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
                 clearBackgrounds(group.getChildAt(i), player, minWidth, pageColor, depth + 1);
             }
         }
-    }
-
-    /**
-     * @param minWidth A page colored background that is narrower belongs to a small view, and stays.
-     */
-    private static boolean isPageBackground(View view, Drawable background, int minWidth, int pageColor) {
-        if (background instanceof LightDrawable) return false;
-        // The second column of the watch page of a tablet is narrower than a third of the page.
-        for (int id : SCRIM_IDS) {
-            if (id != 0 && view.getId() == id) return true;
-        }
-        return view.getWidth() >= minWidth && background instanceof ColorDrawable
-                && AmbientLightMath.seeThroughColor(((ColorDrawable) background).getColor(), pageColor) == 0;
     }
 
     private static void clear(@Nullable View view) {

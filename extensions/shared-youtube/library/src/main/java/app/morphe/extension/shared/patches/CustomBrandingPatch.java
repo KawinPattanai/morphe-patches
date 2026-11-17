@@ -433,49 +433,43 @@ public class CustomBrandingPatch {
     }
 
     /**
-     * Asks a launcher to reload the icon of the app after the branding was applied by patching.
-     * <p>
-     * Mounting changes nothing a launcher uses to notice the app was updated, because the package
-     * is still the one the unpatched app was installed with. So a launcher keeps showing the icon
-     * it cached when the unpatched app was first seen, and not even a reboot refreshes it.
-     * <p>
-     * Changing the state of a component makes the system broadcast that the package changed, which
-     * is what makes a launcher reload the icon. The launch component is enabled either way, so
-     * setting it and then restoring it changes nothing else.
-     */
-    private static void refreshMountedLauncherIcon() {
-        String patchedIconStyle = defaultIconStyleName();
-        if (patchedIconStyle.equals(SharedYouTubeSettings.CUSTOM_BRANDING_ICON_PATCHED.get())) {
-            return;
-        }
-
-        Context context = Utils.getContext();
-        PackageManager pm = context.getPackageManager();
-        Intent launchIntent = pm.getLaunchIntentForPackage(context.getPackageName());
-        ComponentName launchComponent = launchIntent == null ? null : launchIntent.getComponent();
-
-        if (launchComponent == null) {
-            Logger.printException(() -> "Could not find the launch component of the app");
-            return;
-        }
-
-        pm.setComponentEnabledSetting(launchComponent,
-                PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);
-        pm.setComponentEnabledSetting(launchComponent,
-                PackageManager.COMPONENT_ENABLED_STATE_DEFAULT, PackageManager.DONT_KILL_APP);
-
-        SharedYouTubeSettings.CUSTOM_BRANDING_ICON_PATCHED.save(patchedIconStyle);
-        Logger.printInfo(() -> "Asked the launcher to reload the icon: " + patchedIconStyle);
-    }
-
-    /**
      * Injection point.
      */
     public static void setBranding() {
         try {
             if (GmsCoreSupportPatch.isPackageNameOriginal()) {
                 Logger.printInfo(() -> "App is root mounted. Branding was applied while patching");
-                refreshMountedLauncherIcon();
+                // Asks a launcher to reload the icon of the app after the branding was applied by patching.
+                // Mounting changes nothing a launcher uses to notice the app was updated, because the package
+                // is still the one the unpatched app was installed with. So a launcher keeps showing the icon
+                // it cached when the unpatched app was first seen, and not even a reboot refreshes it.
+                // Changing the state of a component makes the system broadcast that the package changed, which
+                // is what makes a launcher reload the icon. The launch component is enabled either way, so
+                // setting it and then restoring it changes nothing else.
+                refreshMountedLauncherIcon: {
+                    String patchedIconStyle = defaultIconStyleName();
+                    if (patchedIconStyle.equals(SharedYouTubeSettings.CUSTOM_BRANDING_ICON_PATCHED.get())) {
+                        break refreshMountedLauncherIcon;
+                    }
+
+                    Context context = Utils.getContext();
+                    PackageManager pm = context.getPackageManager();
+                    Intent launchIntent = pm.getLaunchIntentForPackage(context.getPackageName());
+                    ComponentName launchComponent = launchIntent == null ? null : launchIntent.getComponent();
+
+                    if (launchComponent == null) {
+                        Logger.printException(() -> "Could not find the launch component of the app");
+                        break refreshMountedLauncherIcon;
+                    }
+
+                    pm.setComponentEnabledSetting(launchComponent,
+                            PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);
+                    pm.setComponentEnabledSetting(launchComponent,
+                            PackageManager.COMPONENT_ENABLED_STATE_DEFAULT, PackageManager.DONT_KILL_APP);
+
+                    SharedYouTubeSettings.CUSTOM_BRANDING_ICON_PATCHED.save(patchedIconStyle);
+                    Logger.printInfo(() -> "Asked the launcher to reload the icon: " + patchedIconStyle);
+                }
                 return;
             }
 

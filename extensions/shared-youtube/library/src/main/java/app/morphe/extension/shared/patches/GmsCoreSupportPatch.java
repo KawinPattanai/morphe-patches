@@ -264,11 +264,72 @@ public class GmsCoreSupportPatch {
             // the conflicting installs, which is remembered until they change.
             boolean conflictsIgnored = false;
             if (!conflicts.isEmpty()) {
-                final String conflictsSignature = conflictSignature(conflicts);
+                // the user chose to ignore. Installing or updating a MicroG variant changes it,
+                // which asks again.
+                List<String> entries = new ArrayList<>();
+                for (VariantPackage variant : conflicts) {
+                    entries.add(variant.packageName + "@" + variant.userId + "@" + variant.versionName);
+                }
+                Collections.sort(entries);
+
+                StringBuilder signature = new StringBuilder();
+                for (String entry : entries) {
+                    if (Utils.isNotEmpty(signature)) signature.append(';');
+                    signature.append(entry);
+                }
+
+                final String conflictsSignature = signature.toString();
                 conflictsIgnored = conflictsSignature.equals(GMS_CORE_IGNORED_CONFLICTS.get());
 
                 if (!conflictsIgnored) {
-                    showMicroGConflictDialog(context, conflicts, conflictsSignature);
+                    // Shows a dialog listing every conflicting MicroG install, with an action to uninstall them
+                    // all before installing MicroG-RE, and an action to keep using the app as it is.
+                    // Use a delay to allow the activity to finish initializing.
+                    // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
+                    Utils.runOnMainThreadDelayed(() -> {
+                        StringBuilder list = new StringBuilder();
+                        for (VariantPackage variant : conflicts) {
+                            if (Utils.isNotEmpty(list)) list.append('\n');
+                            list.append(variant);
+                        }
+
+                        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                                context,
+                                str("gms_core_dialog_title"), // Title.
+                                str("gms_core_dialog_conflict_message", list), // Message.
+                                null, // No EditText.
+                                str("gms_core_dialog_uninstall_text"), // Uninstall button text.
+                                () -> {
+                                    // Starts the system uninstall flow for every conflicting package, spacing out the
+                                    // confirmation prompts so each one can appear. Every copy of the package is removed,
+                                    // including copies installed for other users. After all are removed, reopening the app
+                                    // will prompt to install the official MicroG-RE.
+                                    // Ask to uninstall each package only once, even when it is installed for several users,
+                                    // since uninstalling removes it for every user at once.
+                                    List<String> packageNames = new ArrayList<>();
+                                    for (VariantPackage variant : conflicts) {
+                                        if (!packageNames.contains(variant.packageName)) {
+                                            packageNames.add(variant.packageName);
+                                        }
+                                    }
+
+                                    for (int i = 0, size = packageNames.size(); i < size; i++) {
+                                        String packageName = packageNames.get(i);
+                                        Utils.runOnMainThreadDelayed(() -> uninstallForAllUsers(context, packageName),
+                                                UNINSTALL_PROMPT_DELAY_MILLIS * i);
+                                    }
+                                }, // Uninstall action.
+                                null, // No Cancel button.
+                                str("gms_core_dialog_ignore_text"), // Ignore button text.
+                                // Remember which installs were ignored, and only ask again when they change.
+                                () -> GMS_CORE_IGNORED_CONFLICTS.save(conflictsSignature), // Ignore action.
+                                true // Dismiss dialog when the Ignore button is clicked.
+                        );
+
+                        Dialog dialog = dialogPair.first;
+                        dialog.setCancelable(true);
+                        Utils.showDialog(context, dialog);
+                    }, 100);
                     return;
                 }
             }
@@ -306,7 +367,56 @@ public class GmsCoreSupportPatch {
             // Check if GmsCore is outdated. An installation signed by a different key cannot be
             // updated by installing a MicroG-RE release, so it is not asked to update.
             if (officialGmsCoreInstalled) {
-                checkForMicroGUpdate(context);
+                // Compares the installed MicroG version against the latest stable version fetched from GitHub,
+                // and shows the update dialog when the installed version is older. Runs in the background.
+                Utils.runOnBackgroundThread(() -> {
+                    try {
+                        String installedVersionName = context.getPackageManager()
+                                .getPackageInfo(GMS_CORE_PACKAGE_NAME, 0).versionName;
+                        if (installedVersionName == null || parseVersion(installedVersionName) == null) {
+                            // Unknown installed version format, do not nag the user.
+                            return;
+                        }
+
+                        String latestVersionName = fetchLatestMicroGVersion();
+                        if (latestVersionName == null || compareVersions(installedVersionName, latestVersionName) >= 0) {
+                            // Version could not be fetched, or MicroG is already up to date.
+                            return;
+                        }
+
+                        String ignoredVersion = GMS_CORE_IGNORED_VERSION.get();
+                        if (!ignoredVersion.isEmpty() && compareVersions(latestVersionName, ignoredVersion) <= 0) {
+                            // The user already ignored this version (or a newer one), do not ask again.
+                            return;
+                        }
+
+                        Utils.runOnMainThread(() -> {
+                            // Use a delay to allow the activity to finish initializing.
+                            // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
+                            Utils.runOnMainThreadDelayed(() -> {
+                                Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                                        context,
+                                        str("gms_core_dialog_title"), // Title.
+                                        str("gms_core_dialog_outdated_message", installedVersionName, latestVersionName), // Message.
+                                        null, // No EditText.
+                                        str("gms_core_dialog_update_text"), // Update button text.
+                                        () -> open(context, getGmsCoreDownload()), // Update action.
+                                        null, // No Cancel button.
+                                        str("gms_core_dialog_ignore_text"), // Ignore button text.
+                                        () -> GMS_CORE_IGNORED_VERSION.save(latestVersionName), // Ignore action: persist and dismiss.
+                                        true // Dismiss dialog when the Ignore button is clicked.
+                                );
+
+                                Dialog dialog = dialogPair.first;
+                                dialog.setCancelable(true);
+                                Utils.showDialog(context, dialog);
+                            }, 100);
+                        });
+                    } catch (Exception ex) {
+                        // MicroG keeps working, so a failed check is only informational.
+                        Logger.printInfo(() -> "Could not check for MicroG update", ex);
+                    }
+                });
             }
 
             // Check if GmsCore is whitelisted from battery optimizations.
@@ -332,12 +442,48 @@ public class GmsCoreSupportPatch {
                     Logger.printInfo(() -> "GmsCore is not running in the background");
 
                     if (SharedSettings.GMS_CORE_BATTERY_OPTIMIZATION_DIALOG.get()) {
-                        checkIfDontKillMyAppSupportsManufacturer();
+                        Utils.runOnBackgroundThread(() -> {
+                            try {
+                                final long start = System.currentTimeMillis();
+                                HttpURLConnection connection = Requester.getConnectionFromRoute(
+                                        DONT_KILL_MY_APP_URL, DONT_KILL_MY_APP_MANUFACTURER_API, BUILD_MANUFACTURER);
+                                connection.setConnectTimeout(5000);
+                                connection.setReadTimeout(5000);
+
+                                final boolean supported = connection.getResponseCode() == 200;
+                                Logger.printInfo(() -> "Manufacturer is " + (supported ? "" : "NOT ")
+                                        + "listed on DontKillMyApp: " + BUILD_MANUFACTURER
+                                        + " fetch took: " + (System.currentTimeMillis() - start) + "ms");
+                                DONT_KILL_MY_APP_MANUFACTURER_SUPPORTED = supported;
+                            } catch (Exception ex) {
+                                Logger.printInfo(() -> "Could not check if manufacturer is listed on DontKillMyApp: "
+                                        + BUILD_MANUFACTURER, ex);
+                                DONT_KILL_MY_APP_MANUFACTURER_SUPPORTED = null;
+                            }
+                        });
 
                         showBatteryOptimizationDialog(context,
                                 "gms_core_dialog_not_whitelisted_not_allowed_in_background_message",
                                 "gms_core_dialog_open_website_text",
-                                (dialog, id) -> openDontKillMyApp(context));
+                                (dialog, id) -> {
+                                    final Boolean manufacturerSupported = DONT_KILL_MY_APP_MANUFACTURER_SUPPORTED;
+
+                                    String manufacturerPageToOpen;
+                                    if (manufacturerSupported == null) {
+                                        // Fetch has not completed yet. Only happens on extremely slow internet connections
+                                        // and the user spends less than 1 second reading what's on screen.
+                                        // Instead of waiting for the fetch (which may time out),
+                                        // open the website without a vendor.
+                                        manufacturerPageToOpen = "";
+                                    } else if (manufacturerSupported) {
+                                        manufacturerPageToOpen = BUILD_MANUFACTURER;
+                                    } else {
+                                        // No manufacturer specific page exists. Open the general page.
+                                        manufacturerPageToOpen = "general";
+                                    }
+
+                                    open(context, DONT_KILL_MY_APP_URL + manufacturerPageToOpen + DONT_KILL_MY_APP_NAME_PARAMETER);
+                                });
                     }
                 }
             }
@@ -363,7 +509,20 @@ public class GmsCoreSupportPatch {
             if (userManager != null) {
                 List<UserHandle> profiles = userManager.getUserProfiles();
                 for (UserHandle handle : profiles) {
-                    int userId = userHandleIdentifier(handle);
+                    // The id of the given user handle, or -1 if it cannot be resolved.
+                    int userId;
+                    userHandleIdentifier: {
+                        try {
+                            if (USER_HANDLE_GET_IDENTIFIER == null) {
+                                userId = -1;
+                                break userHandleIdentifier;
+                            }
+                            Object result = USER_HANDLE_GET_IDENTIFIER.invoke(handle);
+                            userId = result instanceof Integer ? (Integer) result : -1;
+                        } catch (InvocationTargetException | IllegalAccessException ex) {
+                            userId = -1;
+                        }
+                    }
                     if (userId < 0 || userId == currentUserId) continue;
                     scanUser(context, userId, handle, variants);
                 }
@@ -374,18 +533,6 @@ public class GmsCoreSupportPatch {
         }
 
         return variants;
-    }
-
-    /**
-     * @return Every package name that can hold a MicroG install, without duplicates.
-     */
-    private static String[] getMicroGPackageNames() {
-        List<String> packageNames = new ArrayList<>();
-        addPackageName(packageNames, GMS_CORE_PACKAGE_NAME);
-        for (String packageName : CONFLICTING_GMS_PACKAGE_NAMES) {
-            addPackageName(packageNames, packageName);
-        }
-        return packageNames.toArray(new String[0]);
     }
 
     private static void addPackageName(List<String> packageNames, @Nullable String packageName) {
@@ -401,8 +548,64 @@ public class GmsCoreSupportPatch {
      */
     private static void scanUser(Context context, int userId, @Nullable UserHandle handle,
                                  List<VariantPackage> variants) {
-        for (String packageName : getMicroGPackageNames()) {
-            PackageInfo info = getPackageInfoForUser(context, packageName, userId, handle);
+        // Every package name that can hold a MicroG install, without duplicates.
+        List<String> packageNames = new ArrayList<>();
+        addPackageName(packageNames, GMS_CORE_PACKAGE_NAME);
+        for (String packageName : CONFLICTING_GMS_PACKAGE_NAMES) {
+            addPackageName(packageNames, packageName);
+        }
+        String[] microGPackageNames = packageNames.toArray(new String[0]);
+        for (String packageName : microGPackageNames) {
+            // Queries a package for the given user. The current user is queried directly, other users are
+            // queried through a context scoped to that user when the device allows it, and otherwise
+            // through the hidden PackageManager.getPackageInfoAsUser.
+            // The package information, or null when the package is not installed for that user
+            // or when that user cannot be queried at all.
+            PackageInfo info;
+            getPackageInfoForUser: {
+                if (userId == currentUserId()) {
+                    try {
+                        // Direct call; available in every SDK.
+                        info = context.getPackageManager().getPackageInfo(packageName, signatureFlags());
+                        break getPackageInfoForUser;
+                    } catch (PackageManager.NameNotFoundException ex) {
+                        info = null;
+                        break getPackageInfoForUser;
+                    }
+                }
+
+                // Public API: use a context scoped to the other user.
+                if (handle != null && CREATE_CONTEXT_AS_USER != null) {
+                    try {
+                        Context userContext = (Context) CREATE_CONTEXT_AS_USER.invoke(context, handle, 0);
+                        if (userContext != null) {
+                            info = userContext.getPackageManager()
+                                    .getPackageInfo(packageName, signatureFlags());
+                            break getPackageInfoForUser;
+                        }
+                    } catch (PackageManager.NameNotFoundException ex) {
+                        info = null;
+                        break getPackageInfoForUser;
+                    } catch (InvocationTargetException | IllegalAccessException ex) {
+                        if (ex.getCause() instanceof PackageManager.NameNotFoundException) {
+                            info = null;
+                            break getPackageInfoForUser;
+                        }
+                    }
+                }
+
+                // Hidden API fallback, not available to every app.
+                if (PACKAGE_MANAGER_GET_PACKAGE_INFO_AS_USER == null) {
+                    info = null;
+                    break getPackageInfoForUser;
+                }
+                try {
+                    info = (PackageInfo) PACKAGE_MANAGER_GET_PACKAGE_INFO_AS_USER.invoke(
+                            context.getPackageManager(), packageName, signatureFlags(), userId);
+                } catch (InvocationTargetException | IllegalAccessException ex) {
+                    info = null;
+                }
+            }
             if (info == null) continue;
 
             final boolean officialMicroG = packageName.equals(GMS_CORE_PACKAGE_NAME)
@@ -418,66 +621,6 @@ public class GmsCoreSupportPatch {
      */
     private static int currentUserId() {
         return Process.myUid() / 100000;
-    }
-
-    /**
-     * Queries a package for the given user. The current user is queried directly, other users are
-     * queried through a context scoped to that user when the device allows it, and otherwise
-     * through the hidden {@code PackageManager.getPackageInfoAsUser}.
-     *
-     * @return The package information, or null when the package is not installed for that user
-     *         or when that user cannot be queried at all.
-     */
-    @Nullable
-    private static PackageInfo getPackageInfoForUser(Context context, String packageName, int userId,
-                                                     @Nullable UserHandle handle) {
-        if (userId == currentUserId()) {
-            try {
-                // Direct call; available in every SDK.
-                return context.getPackageManager().getPackageInfo(packageName, signatureFlags());
-            } catch (PackageManager.NameNotFoundException ex) {
-                return null;
-            }
-        }
-
-        // Public API: use a context scoped to the other user.
-        if (handle != null && CREATE_CONTEXT_AS_USER != null) {
-            try {
-                Context userContext = (Context) CREATE_CONTEXT_AS_USER.invoke(context, handle, 0);
-                if (userContext != null) {
-                    return userContext.getPackageManager()
-                            .getPackageInfo(packageName, signatureFlags());
-                }
-            } catch (PackageManager.NameNotFoundException ex) {
-                return null;
-            } catch (InvocationTargetException | IllegalAccessException ex) {
-                if (ex.getCause() instanceof PackageManager.NameNotFoundException) return null;
-            }
-        }
-
-        // Hidden API fallback, not available to every app.
-        if (PACKAGE_MANAGER_GET_PACKAGE_INFO_AS_USER == null) {
-            return null;
-        }
-        try {
-            return (PackageInfo) PACKAGE_MANAGER_GET_PACKAGE_INFO_AS_USER.invoke(
-                    context.getPackageManager(), packageName, signatureFlags(), userId);
-        } catch (InvocationTargetException | IllegalAccessException ex) {
-            return null;
-        }
-    }
-
-    /**
-     * @return The id of the given user handle, or -1 if it cannot be resolved.
-     */
-    private static int userHandleIdentifier(UserHandle handle) {
-        try {
-            if (USER_HANDLE_GET_IDENTIFIER == null) return -1;
-            Object result = USER_HANDLE_GET_IDENTIFIER.invoke(handle);
-            return result instanceof Integer ? (Integer) result : -1;
-        } catch (InvocationTargetException | IllegalAccessException ex) {
-            return -1;
-        }
     }
 
     /**
@@ -561,106 +704,25 @@ public class GmsCoreSupportPatch {
     private static boolean matchesAnySigningCert(@Nullable Signature[] signatures) {
         if (signatures == null) return false;
         for (Signature signature : signatures) {
-            if (GmsCoreSupportPatch.OFFICIAL_MICROG_SIGNING_CERT_SHA256.equalsIgnoreCase(
-                    sha256Hex(signature.toByteArray()))) {
+            String sha256Hex;
+            byte[] data = signature.toByteArray();
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                byte[] hash = digest.digest(data);
+                StringBuilder sb = new StringBuilder(hash.length * 2);
+                for (byte b : hash) {
+                    sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                    sb.append(Character.forDigit(b & 0xF, 16));
+                }
+                sha256Hex = sb.toString();
+            } catch (Exception ex) {
+                sha256Hex = null;
+            }
+            if (GmsCoreSupportPatch.OFFICIAL_MICROG_SIGNING_CERT_SHA256.equalsIgnoreCase(sha256Hex)) {
                 return true;
             }
         }
         return false;
-    }
-
-    @Nullable
-    private static String sha256Hex(byte[] data) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(data);
-            StringBuilder sb = new StringBuilder(hash.length * 2);
-            for (byte b : hash) {
-                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
-                sb.append(Character.forDigit(b & 0xF, 16));
-            }
-            return sb.toString();
-        } catch (Exception ex) {
-            return null;
-        }
-    }
-
-    /**
-     * @return A value that identifies the conflicting installs, used to remember which installs
-     *         the user chose to ignore. Installing or updating a MicroG variant changes it,
-     *         which asks again.
-     */
-    private static String conflictSignature(List<VariantPackage> conflicts) {
-        List<String> entries = new ArrayList<>();
-        for (VariantPackage variant : conflicts) {
-            entries.add(variant.packageName + "@" + variant.userId + "@" + variant.versionName);
-        }
-        Collections.sort(entries);
-
-        StringBuilder signature = new StringBuilder();
-        for (String entry : entries) {
-            if (Utils.isNotEmpty(signature)) signature.append(';');
-            signature.append(entry);
-        }
-        return signature.toString();
-    }
-
-    /**
-     * Shows a dialog listing every conflicting MicroG install, with an action to uninstall them
-     * all before installing MicroG-RE, and an action to keep using the app as it is.
-     */
-    private static void showMicroGConflictDialog(Activity context, List<VariantPackage> conflicts,
-                                                 String conflictsSignature) {
-        // Use a delay to allow the activity to finish initializing.
-        // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
-        Utils.runOnMainThreadDelayed(() -> {
-            StringBuilder list = new StringBuilder();
-            for (VariantPackage variant : conflicts) {
-                if (Utils.isNotEmpty(list)) list.append('\n');
-                list.append(variant);
-            }
-
-            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                    context,
-                    str("gms_core_dialog_title"), // Title.
-                    str("gms_core_dialog_conflict_message", list), // Message.
-                    null, // No EditText.
-                    str("gms_core_dialog_uninstall_text"), // Uninstall button text.
-                    () -> uninstallConflictingMicroG(context, conflicts), // Uninstall action.
-                    null, // No Cancel button.
-                    str("gms_core_dialog_ignore_text"), // Ignore button text.
-                    // Remember which installs were ignored, and only ask again when they change.
-                    () -> GMS_CORE_IGNORED_CONFLICTS.save(conflictsSignature), // Ignore action.
-                    true // Dismiss dialog when the Ignore button is clicked.
-            );
-
-            Dialog dialog = dialogPair.first;
-            dialog.setCancelable(true);
-            Utils.showDialog(context, dialog);
-        }, 100);
-    }
-
-    /**
-     * Starts the system uninstall flow for every conflicting package, spacing out the
-     * confirmation prompts so each one can appear. Every copy of the package is removed,
-     * including copies installed for other users. After all are removed, reopening the app
-     * will prompt to install the official MicroG-RE.
-     */
-    private static void uninstallConflictingMicroG(Activity context, List<VariantPackage> conflicts) {
-        // Ask to uninstall each package only once, even when it is installed for several users,
-        // since uninstalling removes it for every user at once.
-        List<String> packageNames = new ArrayList<>();
-        for (VariantPackage variant : conflicts) {
-            if (!packageNames.contains(variant.packageName)) {
-                packageNames.add(variant.packageName);
-            }
-        }
-
-        for (int i = 0, size = packageNames.size(); i < size; i++) {
-            String packageName = packageNames.get(i);
-            Utils.runOnMainThreadDelayed(() -> uninstallForAllUsers(context, packageName),
-                    UNINSTALL_PROMPT_DELAY_MILLIS * i);
-        }
     }
 
     /**
@@ -698,63 +760,6 @@ public class GmsCoreSupportPatch {
             return Utils.getTextDirectionString() + str("gms_core_dialog_conflict_entry",
                     (versionName == null) ? packageName : versionName);
         }
-    }
-
-    private static void showOutdatedMicroGDialog(Activity context, String installedVersion, String latestVersion) {
-        // Use a delay to allow the activity to finish initializing.
-        // Otherwise, if device is in dark mode the dialog is shown with wrong color scheme.
-        Utils.runOnMainThreadDelayed(() -> {
-            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                    context,
-                    str("gms_core_dialog_title"), // Title.
-                    str("gms_core_dialog_outdated_message", installedVersion, latestVersion), // Message.
-                    null, // No EditText.
-                    str("gms_core_dialog_update_text"), // Update button text.
-                    () -> open(context, getGmsCoreDownload()), // Update action.
-                    null, // No Cancel button.
-                    str("gms_core_dialog_ignore_text"), // Ignore button text.
-                    () -> GMS_CORE_IGNORED_VERSION.save(latestVersion), // Ignore action: persist and dismiss.
-                    true // Dismiss dialog when the Ignore button is clicked.
-            );
-
-            Dialog dialog = dialogPair.first;
-            dialog.setCancelable(true);
-            Utils.showDialog(context, dialog);
-        }, 100);
-    }
-
-    /**
-     * Compares the installed MicroG version against the latest stable version fetched from GitHub,
-     * and shows the update dialog when the installed version is older. Runs in the background.
-     */
-    private static void checkForMicroGUpdate(Activity context) {
-        Utils.runOnBackgroundThread(() -> {
-            try {
-                String installedVersionName = context.getPackageManager()
-                        .getPackageInfo(GMS_CORE_PACKAGE_NAME, 0).versionName;
-                if (installedVersionName == null || parseVersion(installedVersionName) == null) {
-                    // Unknown installed version format, do not nag the user.
-                    return;
-                }
-
-                String latestVersionName = fetchLatestMicroGVersion();
-                if (latestVersionName == null || compareVersions(installedVersionName, latestVersionName) >= 0) {
-                    // Version could not be fetched, or MicroG is already up to date.
-                    return;
-                }
-
-                String ignoredVersion = GMS_CORE_IGNORED_VERSION.get();
-                if (!ignoredVersion.isEmpty() && compareVersions(latestVersionName, ignoredVersion) <= 0) {
-                    // The user already ignored this version (or a newer one), do not ask again.
-                    return;
-                }
-
-                Utils.runOnMainThread(() -> showOutdatedMicroGDialog(context, installedVersionName, latestVersionName));
-            } catch (Exception ex) {
-                // MicroG keeps working, so a failed check is only informational.
-                Logger.printInfo(() -> "Could not check for MicroG update", ex);
-            }
-        });
     }
 
     /**
@@ -823,48 +828,6 @@ public class GmsCoreSupportPatch {
         Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
         intent.setData(Uri.fromParts("package", GMS_CORE_PACKAGE_NAME, null));
         activity.startActivityForResult(intent, 0);
-    }
-
-    private static void checkIfDontKillMyAppSupportsManufacturer() {
-        Utils.runOnBackgroundThread(() -> {
-            try {
-                final long start = System.currentTimeMillis();
-                HttpURLConnection connection = Requester.getConnectionFromRoute(
-                        DONT_KILL_MY_APP_URL, DONT_KILL_MY_APP_MANUFACTURER_API, BUILD_MANUFACTURER);
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(5000);
-
-                final boolean supported = connection.getResponseCode() == 200;
-                Logger.printInfo(() -> "Manufacturer is " + (supported ? "" : "NOT ")
-                        + "listed on DontKillMyApp: " + BUILD_MANUFACTURER
-                        + " fetch took: " + (System.currentTimeMillis() - start) + "ms");
-                DONT_KILL_MY_APP_MANUFACTURER_SUPPORTED = supported;
-            } catch (Exception ex) {
-                Logger.printInfo(() -> "Could not check if manufacturer is listed on DontKillMyApp: "
-                        + BUILD_MANUFACTURER, ex);
-                DONT_KILL_MY_APP_MANUFACTURER_SUPPORTED = null;
-            }
-        });
-    }
-
-    private static void openDontKillMyApp(Activity activity) {
-        final Boolean manufacturerSupported = DONT_KILL_MY_APP_MANUFACTURER_SUPPORTED;
-
-        String manufacturerPageToOpen;
-        if (manufacturerSupported == null) {
-            // Fetch has not completed yet. Only happens on extremely slow internet connections
-            // and the user spends less than 1 second reading what's on screen.
-            // Instead of waiting for the fetch (which may time out),
-            // open the website without a vendor.
-            manufacturerPageToOpen = "";
-        } else if (manufacturerSupported) {
-            manufacturerPageToOpen = BUILD_MANUFACTURER;
-        } else {
-            // No manufacturer specific page exists. Open the general page.
-            manufacturerPageToOpen = "general";
-        }
-
-        open(activity, DONT_KILL_MY_APP_URL + manufacturerPageToOpen + DONT_KILL_MY_APP_NAME_PARAMETER);
     }
 
     /**

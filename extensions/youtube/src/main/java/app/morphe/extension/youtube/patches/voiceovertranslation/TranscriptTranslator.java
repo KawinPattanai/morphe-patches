@@ -242,19 +242,92 @@ public final class TranscriptTranslator {
                 reprioritize = false;
 
                 final long timeMs = VoiceOverTranslationPatch.videoPositionHint;
-                int index = pickNextBatch(batches, batchDone, timeMs);
+                // Picks the not-yet-translated batch to translate next: the batch under the play head, then
+                // batches ahead of it (closest first), then batches behind it (closest first). Returns -1 when
+                // every batch is done. With timeMs 0 (playback from the start) this degrades to plain
+                // front-to-back order.
+                int index;
+                pickNextBatch: {
+                    final int size = batches.size();
+                    final int current = findBatchAtTime(batches, timeMs);
+                    for (int i = current; i < size; i++) {
+                        if (!batchDone.get(i)) {
+                            index = i;
+                            break pickNextBatch;
+                        }
+                    }
+                    for (int i = current - 1; i >= 0; i--) {
+                        if (!batchDone.get(i)) {
+                            index = i;
+                            break pickNextBatch;
+                        }
+                    }
+                    index = -1;
+                }
                 if (index < 0) break;
 
                 // Split the picked batch at the play head when the play head sits in its middle,
                 // so the streaming model's first output line is for the audible segment. Without
                 // this, a seek mid-batch leaves the play-head segment near the END of the stream
                 // and the play head moves past it before its translation arrives.
-                index = splitBatchAtPlayhead(batches, batchDone, index, timeMs);
+                // If the play head sits inside the picked batch (not at its first segment), split the batch so
+                // the new batch starts with the play-head segment. The "before" portion stays as a separate
+                // batch that the dispatcher will pick up later. Returns the index of the batch to translate
+                // now (which becomes index+1 after the split).
+                splitBatchAtPlayhead: {
+                    if (timeMs <= 0) {
+                        index = index;
+                        break splitBatchAtPlayhead;
+                    }
+                    List<TranscriptSegment> batch = batches.get(index);
+                    final int batchSize = batch.size();
+                    if (batchSize <= 1) {
+                        index = index;
+                        break splitBatchAtPlayhead;
+                    }
+                    int splitAt = -1;
+                    for (int i = 0; i < batchSize; i++) {
+                        if (batch.get(i).endMs > timeMs) {
+                            if (i > 0) splitAt = i;
+                            break;
+                        }
+                    }
+                    if (splitAt <= 0) {
+                        index = index;
+                        break splitBatchAtPlayhead;
+                    }
+                    List<TranscriptSegment> before = new ArrayList<>(batch.subList(0, splitAt));
+                    List<TranscriptSegment> after = new ArrayList<>(batch.subList(splitAt, batchSize));
+                    batches.set(index, before);
+                    batches.add(index + 1, after);
+                    batchDone.add(index + 1, false);
+                    index = index + 1;
+                }
                 if (index < 0) break;
 
                 // Cap the first OpenRouter batch to a small budget; other services run unchanged.
                 if (isOpenRouter && firstBatchAfterReposition) {
-                    capFirstBatch(batches, batchDone, index);
+                    // Splits the batch at index so it stays within OPENROUTER_FIRST_BATCH_CHARS,
+                    // moving the overflow into a follow-up batch. Always keeps at least the first segment. No-op
+                    // when the batch already fits or has a single segment.
+                    capFirstBatch: {
+                        List<TranscriptSegment> batch = batches.get(index);
+                        final int batchSize = batch.size();
+                        if (batchSize <= 1) break capFirstBatch;
+                        int chars = 0;
+                        int splitAt = 0;
+                        for (int i = 0; i < batchSize; i++) {
+                            chars += batch.get(i).text.length() + 1;
+                            splitAt = i + 1;
+                            if (chars >= OPENROUTER_FIRST_BATCH_CHARS) break;
+                        }
+                        if (splitAt >= batchSize) break capFirstBatch; // Whole batch already within budget.
+                        List<TranscriptSegment> head = new ArrayList<>(batch.subList(0, splitAt));
+                        List<TranscriptSegment> tail = new ArrayList<>(batch.subList(splitAt, batchSize));
+                        batches.set(index, head);
+                        batches.add(index + 1, tail);
+                        batchDone.add(index + 1, false);
+                    }
                 }
                 firstBatchAfterReposition = false;
 
@@ -360,77 +433,6 @@ public final class TranscriptTranslator {
     }
 
     /**
-     * If the play head sits inside the picked batch (not at its first segment), split the batch so
-     * the new batch starts with the play-head segment. The "before" portion stays as a separate
-     * batch that the dispatcher will pick up later. Returns the index of the batch to translate
-     * now (which becomes index+1 after the split).
-     */
-    private static int splitBatchAtPlayhead(List<List<TranscriptSegment>> batches,
-                                            List<Boolean> batchDone, int index, long timeMs) {
-        if (timeMs <= 0) return index;
-        List<TranscriptSegment> batch = batches.get(index);
-        final int batchSize = batch.size();
-        if (batchSize <= 1) return index;
-        int splitAt = -1;
-        for (int i = 0; i < batchSize; i++) {
-            if (batch.get(i).endMs > timeMs) {
-                if (i > 0) splitAt = i;
-                break;
-            }
-        }
-        if (splitAt <= 0) return index;
-        List<TranscriptSegment> before = new ArrayList<>(batch.subList(0, splitAt));
-        List<TranscriptSegment> after = new ArrayList<>(batch.subList(splitAt, batchSize));
-        batches.set(index, before);
-        batches.add(index + 1, after);
-        batchDone.add(index + 1, false);
-        return index + 1;
-    }
-
-    /**
-     * Splits the batch at {@code index} so it stays within {@link #OPENROUTER_FIRST_BATCH_CHARS},
-     * moving the overflow into a follow-up batch. Always keeps at least the first segment. No-op
-     * when the batch already fits or has a single segment.
-     */
-    private static void capFirstBatch(List<List<TranscriptSegment>> batches,
-                                      List<Boolean> batchDone, int index) {
-        List<TranscriptSegment> batch = batches.get(index);
-        final int batchSize = batch.size();
-        if (batchSize <= 1) return;
-        int chars = 0;
-        int splitAt = 0;
-        for (int i = 0; i < batchSize; i++) {
-            chars += batch.get(i).text.length() + 1;
-            splitAt = i + 1;
-            if (chars >= OPENROUTER_FIRST_BATCH_CHARS) break;
-        }
-        if (splitAt >= batchSize) return; // Whole batch already within budget.
-        List<TranscriptSegment> head = new ArrayList<>(batch.subList(0, splitAt));
-        List<TranscriptSegment> tail = new ArrayList<>(batch.subList(splitAt, batchSize));
-        batches.set(index, head);
-        batches.add(index + 1, tail);
-        batchDone.add(index + 1, false);
-    }
-
-    /**
-     * Picks the not-yet-translated batch to translate next: the batch under the play head, then
-     * batches ahead of it (closest first), then batches behind it (closest first). Returns -1 when
-     * every batch is done. With timeMs 0 (playback from the start) this degrades to plain
-     * front-to-back order.
-     */
-    private static int pickNextBatch(List<List<TranscriptSegment>> batches, List<Boolean> done, long timeMs) {
-        final int size = batches.size();
-        final int current = findBatchAtTime(batches, timeMs);
-        for (int i = current; i < size; i++) {
-            if (!done.get(i)) return i;
-        }
-        for (int i = current - 1; i >= 0; i--) {
-            if (!done.get(i)) return i;
-        }
-        return -1;
-    }
-
-    /**
      * Writes translated text over the batch's slots in {@code target}, preserving timings.
      * A {@code null} translation (failed batch) leaves the original text in place.
      */
@@ -473,7 +475,253 @@ public final class TranscriptTranslator {
                                                    List<TranscriptSegment> batch, String targetLang,
                                                    @Nullable Consumer<List<String>> onLineStreamed) {
         try {
-            return translateBatch(videoId, batch, targetLang, onLineStreamed);
+            String service = Settings.VOT_TRANSLATION_SERVICE.get();
+            if (service.equals(TRANSLATION_SERVICE_MY_MEMORY)) {
+                Utils.verifyOffMainThread();
+                final long start = System.currentTimeMillis();
+                Logger.printDebug(() -> "MyMemory translation starting: " + videoId + " lang: " + targetLang);
+
+                StringBuilder joined = new StringBuilder(100 * batch.size());
+                for (TranscriptSegment seg : batch) {
+                    if (Utils.isNotEmpty(joined)) joined.append('\n');
+                    joined.append(seg.text);
+                }
+
+                String source = TranscriptFetcher.lastSourceLang;
+                //noinspection CharsetObjectCanBeUsed
+                String encoded = URLEncoder.encode(joined.toString(), StandardCharsets.UTF_8.name());
+
+                String email = Settings.VOT_MYMEMORY_EMAIL.get();
+                //noinspection CharsetObjectCanBeUsed
+                String emailParam = email.isEmpty() ? "" : "&de=" + URLEncoder.encode(email, StandardCharsets.UTF_8.name());
+                HttpURLConnection conn = Requester.openConnection(
+                        "https://api.mymemory.translated.net/get?q=" + encoded
+                                + "&langpair=" + source + "|" + targetLang + emailParam
+                );
+                conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+                conn.setReadTimeout(READ_TIMEOUT_MS);
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+
+                final int httpCode = conn.getResponseCode();
+                if (httpCode != 200) {
+                    // Must use the error stream for non-200; getInputStream() throws FileNotFoundException
+                    // on Android's HttpURLConnection for 4xx/5xx responses.
+                    final String body = readErrorBody(conn);
+                    VoiceOverTranslationPatch.notifyMyMemoryError(httpCode, body);
+                    throw new Exception("MyMemory HTTP status: " + httpCode + " language: " + targetLang
+                            + " response: " + body);
+                }
+
+                // Response: {"responseStatus": 200, "responseData": {"translatedText": "..."}}
+                // On error responseStatus is the string form of an HTTP-like code (e.g. "403" for quota).
+                JSONObject json = new JSONObject(Requester.parseString(conn));
+                final int responseStatus = json.optInt("responseStatus", 200);
+                if (responseStatus != 200) {
+                    final String details = json.optString("responseDetails", "unknown error");
+                    VoiceOverTranslationPatch.notifyMyMemoryError(responseStatus, details);
+                    throw new Exception("MyMemory error " + responseStatus + ": " + details);
+                }
+
+                String translation = json.getJSONObject("responseData").getString("translatedText");
+                List<String> result = Arrays.asList(translation.split("\n", -1));
+
+                Logger.printDebug(() -> "MyMemory translation complete: " + targetLang
+                        + " fetchTime: " + (System.currentTimeMillis() - start) + "ms");
+                return result;
+            }
+            if (service.equals(TRANSLATION_SERVICE_OPENROUTER)) {
+                Utils.verifyOffMainThread();
+
+                String model = Settings.VOT_OPENROUTER_MODEL.get();
+                final long start = System.currentTimeMillis();
+                Logger.printDebug(() -> "OpenRouter translation starting: " + videoId + " lang: " + targetLang + " model: " + model);
+
+                String apiKey = Settings.VOT_OPENROUTER_API_KEY.get().trim();
+                if (apiKey.isEmpty()) throw new Exception("OpenRouter API key is not set");
+
+                // Number each line so the model cannot silently merge or skip lines.
+                StringBuilder joined = new StringBuilder();
+                for (int i = 0, size = batch.size(); i < size; i++) {
+                    if (i > 0) joined.append('\n');
+                    joined.append(i + 1).append(": ").append(batch.get(i).text);
+                }
+
+                String targetLangName = Locale.forLanguageTag(targetLang).getDisplayLanguage(Locale.ENGLISH);
+                JSONObject systemMessage = new JSONObject()
+                        .put("role", "system")
+                        .put("content", "Translate numbered YouTube caption lines to " + targetLangName + " (" + targetLang + "). "
+                                + "The text may have misspellings or noise - translate the intent. "
+                                + "Prefix each translation with its original line number and a colon. One line per number. Do not merge or skip.");
+                JSONObject userMessage = new JSONObject()
+                        .put("role", "user")
+                        .put("content", joined.toString());
+
+                // Route to the provider with the lowest time to first token.
+                JSONObject provider = new JSONObject()
+                        .put("sort", "latency");
+                JSONObject body = new JSONObject()
+                        .put("model", model)
+                        .put("temperature", 0)
+                        .put("stream", true)
+                        .put("max_tokens", batch.size() * 30)
+                        .put("provider", provider)
+                        .put("messages", new JSONArray().put(systemMessage).put(userMessage));
+
+                byte[] bodyBytes = body.toString().getBytes(StandardCharsets.UTF_8);
+
+                HttpURLConnection conn = Requester.openConnection(
+                        "https://openrouter.ai/api/v1/chat/completions"
+                );
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+                conn.setReadTimeout(OPENROUTER_READ_TIMEOUT_MS);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+                conn.setRequestProperty("Accept-Encoding", "identity");
+                conn.setDoOutput(true);
+                conn.setFixedLengthStreamingMode(bodyBytes.length);
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(bodyBytes);
+                }
+
+                List<String> result = new ArrayList<>(batch.size());
+                for (TranscriptSegment seg : batch) result.add(seg.text);
+                int[] matched = {0};
+                // Full raw model output, kept so a positional fallback can run if numbered parsing fails.
+                final StringBuilder rawOutput = new StringBuilder();
+
+                activeConnection = conn;
+                try {
+                    final int code = conn.getResponseCode();
+                    if (code != 200) {
+                        String errorBody = readErrorBody(conn);
+                        reportNextTranslationError = false; // notifyOpenRouterError shows a specific message
+                        VoiceOverTranslationPatch.notifyOpenRouterError(code, errorBody);
+                        throw new Exception("OpenRouter HTTP status: " + code + " language: " + targetLang
+                                + " response: " + errorBody);
+                    }
+
+                    // SSE: each "data: {...}" event carries a content delta; rawOutput mirrors it for
+                    // the positional fallback in case numbered parsing yields no matches.
+                    StringBuilder lineBuffer = new StringBuilder();
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                        String sseLine;
+                        while ((sseLine = reader.readLine()) != null) {
+                            if (!sseLine.startsWith("data: ")) continue;
+                            final String data = sseLine.substring(6).trim();
+                            if (data.equals("[DONE]")) break;
+
+                            JSONObject chunk;
+                            try {
+                                chunk = new JSONObject(data);
+                            } catch (Exception ignored) {
+                                continue;
+                            }
+                            JSONArray choices = chunk.optJSONArray("choices");
+                            if (choices == null || choices.length() == 0) continue;
+                            JSONObject delta = choices.getJSONObject(0).optJSONObject("delta");
+                            if (delta == null) continue;
+
+                            String content = delta.optString("content", "");
+                            rawOutput.append(content);
+                            for (int ci = 0, contentLength = content.length(); ci < contentLength; ci++) {
+                                final char c = content.charAt(ci);
+                                if (c == '\n') {
+                                    String line = lineBuffer.toString().trim();
+                                    lineBuffer.setLength(0);
+                                    if (applyStreamedLine(line, result, batch.size(), matched)
+                                            && onLineStreamed != null) {
+                                        onLineStreamed.accept(new ArrayList<>(result));
+                                    }
+                                } else {
+                                    lineBuffer.append(c);
+                                }
+                            }
+                        }
+
+                        // Flush any remaining content that arrived without a trailing newline.
+                        if (Utils.isNotEmpty(lineBuffer)) {
+                            String line = lineBuffer.toString().trim();
+                            if (applyStreamedLine(line, result, batch.size(), matched)
+                                    && onLineStreamed != null) {
+                                onLineStreamed.accept(new ArrayList<>(result));
+                            }
+                        }
+                    }
+                } finally {
+                    if (activeConnection == conn) activeConnection = null;
+                }
+
+                final int segmentSize = batch.size();
+                // Some models translate correctly but omit or mangle the line numbers, leaving most
+                // segments on their original text. When the stripped output lines up one-to-one with the
+                // inputs, recover it by mapping positionally instead of dropping the translation.
+                if (matched[0] != segmentSize) {
+                    // Maps unnumbered or mis-numbered model output to segments by position. Succeeds only when the
+                    // stripped, non-empty line count matches the segment count exactly, so a merged or padded
+                    // response (which cannot be mapped safely) is rejected rather than scrambled across segments.
+                    String raw = rawOutput.toString();
+                    List<String> lines = new ArrayList<>(segmentSize);
+                    for (String line : raw.split("\n")) {
+                        String trimmed = line.trim();
+                        if (trimmed.isEmpty()) continue;
+                        // Strips a leading line number ("3: ", "3. ", "3) ") if present, returning the remaining text.
+                        String stripNumberPrefix;
+                        stripNumberPrefix: {
+                            int i = 0;
+                            final int lineLength = trimmed.length();
+                            while (i < lineLength && Character.isDigit(trimmed.charAt(i))) i++;
+                            if (i > 0 && i < lineLength) {
+                                final char sep = trimmed.charAt(i);
+                                if (sep == ':' || sep == '.' || sep == ')') {
+                                    stripNumberPrefix = trimmed.substring(i + 1).trim();
+                                    break stripNumberPrefix;
+                                }
+                            }
+                            stripNumberPrefix = trimmed;
+                        }
+                        lines.add(stripNumberPrefix);
+                    }
+                    List<String> positional = lines.size() == segmentSize ? lines : null;
+                    if (positional != null) {
+                        for (int i = 0; i < segmentSize; i++) result.set(i, positional.get(i));
+                        matched[0] = segmentSize;
+                        if (onLineStreamed != null) onLineStreamed.accept(new ArrayList<>(result));
+                        Logger.printDebug(() -> "OpenRouter positional fallback applied: " + segmentSize + " lines");
+                    }
+                }
+
+                final int matchedFirst = matched[0];
+                Logger.printDebug(() -> "OpenRouter translation complete: " + targetLang
+                        + " fetchTime: " + (System.currentTimeMillis() - start) + "ms");
+
+                if (matchedFirst != segmentSize) {
+                    Logger.printDebug(() -> "OpenRouter line mismatch - expected: " + segmentSize
+                            + ", got: " + matchedFirst + "; last: " + (segmentSize - matchedFirst)
+                            + " segment(s) queued for retry");
+                    if (matchedFirst > 0) {
+                        // Return only the translated portion; the caller re-queues the tail for retry.
+                        return new ArrayList<>(result.subList(0, matchedFirst));
+                    }
+                }
+                return result;
+            }
+            Logger.printDebug(() -> "Google translation starting: " + videoId + " lang: " + targetLang);
+
+            List<String> lines = new ArrayList<>(batch.size());
+            for (TranscriptSegment segment : batch) {
+                lines.add(segment.text);
+            }
+
+            try {
+                return TextTranslator.translate(lines, targetLang);
+            } catch (TextTranslator.TranslationHttpException ex) {
+                // Reported here rather than in the shared translator, because the toast
+                // belongs to this patch.
+                VoiceOverTranslationPatch.notifyHttpError(ex.statusCode);
+                throw ex;
+            }
         } catch (Exception ex) {
             if (abortTranslation || reprioritize) {
                 Logger.printDebug(() -> "Translation aborted: " + ex.getMessage());
@@ -526,20 +774,6 @@ public final class TranscriptTranslator {
         return batches;
     }
 
-    private static List<String> translateBatch(String videoId,
-                                               List<TranscriptSegment> segments,
-                                               String targetLang,
-                                               @Nullable Consumer<List<String>> onLineStreamed) throws Exception {
-        String service = Settings.VOT_TRANSLATION_SERVICE.get();
-        if (service.equals(TRANSLATION_SERVICE_MY_MEMORY)) {
-            return translateBatchMyMemory(videoId, segments, targetLang);
-        }
-        if (service.equals(TRANSLATION_SERVICE_OPENROUTER)) {
-            return translateBatchOpenRouter(videoId, segments, targetLang, onLineStreamed);
-        }
-        return translateBatchGoogle(videoId, segments, targetLang);
-    }
-
     private static boolean parseLine(String line, List<String> result, int segmentCount) {
         int i = 0;
         while (i < line.length() && Character.isDigit(line.charAt(i))) i++;
@@ -574,116 +808,8 @@ public final class TranscriptTranslator {
         return false;
     }
 
-    /**
-     * Strips a leading line number ("3: ", "3. ", "3) ") if present, returning the remaining text.
-     */
-    private static String stripNumberPrefix(String line) {
-        int i = 0;
-        final int lineLength = line.length();
-        while (i < lineLength && Character.isDigit(line.charAt(i))) i++;
-        if (i > 0 && i < lineLength) {
-            final char sep = line.charAt(i);
-            if (sep == ':' || sep == '.' || sep == ')') {
-                return line.substring(i + 1).trim();
-            }
-        }
-        return line;
-    }
-
-    /**
-     * Maps unnumbered or mis-numbered model output to segments by position. Succeeds only when the
-     * stripped, non-empty line count matches the segment count exactly, so a merged or padded
-     * response (which cannot be mapped safely) is rejected rather than scrambled across segments.
-     */
-    @Nullable
-    private static List<String> positionalFallback(String raw, int segmentCount) {
-        List<String> lines = new ArrayList<>(segmentCount);
-        for (String line : raw.split("\n")) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) continue;
-            lines.add(stripNumberPrefix(trimmed));
-        }
-        return lines.size() == segmentCount ? lines : null;
-    }
-
-    private static List<String> translateBatchGoogle(String videoId,
-                                                     List<TranscriptSegment> segments,
-                                                     String targetLang) throws Exception {
-        Logger.printDebug(() -> "Google translation starting: " + videoId + " lang: " + targetLang);
-
-        List<String> lines = new ArrayList<>(segments.size());
-        for (TranscriptSegment segment : segments) {
-            lines.add(segment.text);
-        }
-
-        try {
-            return TextTranslator.translate(lines, targetLang);
-        } catch (TextTranslator.TranslationHttpException ex) {
-            // Reported here rather than in the shared translator, because the toast
-            // belongs to this patch.
-            VoiceOverTranslationPatch.notifyHttpError(ex.statusCode);
-            throw ex;
-        }
-    }
-
     // MyMemory limits q to 500 bytes per request.
     private static final int MYMEMORY_MAX_CHARS = 450;
-
-    private static List<String> translateBatchMyMemory(String videoId,
-                                                       List<TranscriptSegment> segments,
-                                                       String targetLang) throws Exception {
-        Utils.verifyOffMainThread();
-        final long start = System.currentTimeMillis();
-        Logger.printDebug(() -> "MyMemory translation starting: " + videoId + " lang: " + targetLang);
-
-        StringBuilder joined = new StringBuilder(100 * segments.size());
-        for (TranscriptSegment seg : segments) {
-            if (Utils.isNotEmpty(joined)) joined.append('\n');
-            joined.append(seg.text);
-        }
-
-        String source = TranscriptFetcher.lastSourceLang;
-        //noinspection CharsetObjectCanBeUsed
-        String encoded = URLEncoder.encode(joined.toString(), StandardCharsets.UTF_8.name());
-
-        String email = Settings.VOT_MYMEMORY_EMAIL.get();
-        //noinspection CharsetObjectCanBeUsed
-        String emailParam = email.isEmpty() ? "" : "&de=" + URLEncoder.encode(email, StandardCharsets.UTF_8.name());
-        HttpURLConnection conn = Requester.openConnection(
-                "https://api.mymemory.translated.net/get?q=" + encoded
-                        + "&langpair=" + source + "|" + targetLang + emailParam
-        );
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-
-        final int httpCode = conn.getResponseCode();
-        if (httpCode != 200) {
-            // Must use the error stream for non-200; getInputStream() throws FileNotFoundException
-            // on Android's HttpURLConnection for 4xx/5xx responses.
-            final String body = readErrorBody(conn);
-            VoiceOverTranslationPatch.notifyMyMemoryError(httpCode, body);
-            throw new Exception("MyMemory HTTP status: " + httpCode + " language: " + targetLang
-                    + " response: " + body);
-        }
-
-        // Response: {"responseStatus": 200, "responseData": {"translatedText": "..."}}
-        // On error responseStatus is the string form of an HTTP-like code (e.g. "403" for quota).
-        JSONObject json = new JSONObject(Requester.parseString(conn));
-        final int responseStatus = json.optInt("responseStatus", 200);
-        if (responseStatus != 200) {
-            final String details = json.optString("responseDetails", "unknown error");
-            VoiceOverTranslationPatch.notifyMyMemoryError(responseStatus, details);
-            throw new Exception("MyMemory error " + responseStatus + ": " + details);
-        }
-
-        String translation = json.getJSONObject("responseData").getString("translatedText");
-        List<String> result = Arrays.asList(translation.split("\n", -1));
-
-        Logger.printDebug(() -> "MyMemory translation complete: " + targetLang
-                + " fetchTime: " + (System.currentTimeMillis() - start) + "ms");
-        return result;
-    }
 
     private static String readErrorBody(HttpURLConnection conn) {
         try (InputStream es = conn.getErrorStream()) {
@@ -699,20 +825,15 @@ public final class TranscriptTranslator {
         }
     }
 
-    /**
-     * Extracts the inner {@code error.code} from an OpenRouter JSON error body.
-     * Returns -1 when the body is missing or unparseable.
-     */
-    private static int parseOpenRouterErrorCode(String body) {
-        try {
-            return new JSONObject(body).getJSONObject("error").getInt("code");
-        } catch (Exception ignored) {
-            return -1;
-        }
-    }
-
     static boolean isOpenRouterCreditsError(int httpCode, String body) {
-        final int innerCode = parseOpenRouterErrorCode(body);
+        // Extracts the inner error.code from an OpenRouter JSON error body.
+        // Returns -1 when the body is missing or unparseable.
+        int innerCode;
+        try {
+            innerCode = new JSONObject(body).getJSONObject("error").getInt("code");
+        } catch (Exception ignored) {
+            innerCode = -1;
+        }
         if (innerCode == 402 || httpCode == 402) return true;
         // OpenRouter returns 403 for both moderation blocks and spending limits;
         // distinguish by checking the message text.
@@ -749,162 +870,6 @@ public final class TranscriptTranslator {
         if (hoursStr == null) return null;
         return Integer.parseInt(hoursStr) * 60L
                 + (minutesStr != null ? Integer.parseInt(minutesStr) : 0);
-    }
-
-    private static List<String> translateBatchOpenRouter(
-            String videoId,
-            List<TranscriptSegment> segments, String targetLang,
-            @Nullable Consumer<List<String>> onLineStreamed) throws Exception {
-        Utils.verifyOffMainThread();
-
-        String model = Settings.VOT_OPENROUTER_MODEL.get();
-        final long start = System.currentTimeMillis();
-        Logger.printDebug(() -> "OpenRouter translation starting: " + videoId + " lang: " + targetLang + " model: " + model);
-
-        String apiKey = Settings.VOT_OPENROUTER_API_KEY.get().trim();
-        if (apiKey.isEmpty()) throw new Exception("OpenRouter API key is not set");
-
-        // Number each line so the model cannot silently merge or skip lines.
-        StringBuilder joined = new StringBuilder();
-        for (int i = 0, size = segments.size(); i < size; i++) {
-            if (i > 0) joined.append('\n');
-            joined.append(i + 1).append(": ").append(segments.get(i).text);
-        }
-
-        String targetLangName = Locale.forLanguageTag(targetLang).getDisplayLanguage(Locale.ENGLISH);
-        JSONObject systemMessage = new JSONObject()
-                .put("role", "system")
-                .put("content", "Translate numbered YouTube caption lines to " + targetLangName + " (" + targetLang + "). "
-                        + "The text may have misspellings or noise - translate the intent. "
-                        + "Prefix each translation with its original line number and a colon. One line per number. Do not merge or skip.");
-        JSONObject userMessage = new JSONObject()
-                .put("role", "user")
-                .put("content", joined.toString());
-
-        // Route to the provider with the lowest time to first token.
-        JSONObject provider = new JSONObject()
-                .put("sort", "latency");
-        JSONObject body = new JSONObject()
-                .put("model", model)
-                .put("temperature", 0)
-                .put("stream", true)
-                .put("max_tokens", segments.size() * 30)
-                .put("provider", provider)
-                .put("messages", new JSONArray().put(systemMessage).put(userMessage));
-
-        byte[] bodyBytes = body.toString().getBytes(StandardCharsets.UTF_8);
-
-        HttpURLConnection conn = Requester.openConnection(
-                "https://openrouter.ai/api/v1/chat/completions"
-        );
-        conn.setRequestMethod("POST");
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(OPENROUTER_READ_TIMEOUT_MS);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
-        conn.setRequestProperty("Accept-Encoding", "identity");
-        conn.setDoOutput(true);
-        conn.setFixedLengthStreamingMode(bodyBytes.length);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(bodyBytes);
-        }
-
-        List<String> result = new ArrayList<>(segments.size());
-        for (TranscriptSegment seg : segments) result.add(seg.text);
-        int[] matched = {0};
-        // Full raw model output, kept so a positional fallback can run if numbered parsing fails.
-        final StringBuilder rawOutput = new StringBuilder();
-
-        activeConnection = conn;
-        try {
-            final int code = conn.getResponseCode();
-            if (code != 200) {
-                String errorBody = readErrorBody(conn);
-                reportNextTranslationError = false; // notifyOpenRouterError shows a specific message
-                VoiceOverTranslationPatch.notifyOpenRouterError(code, errorBody);
-                throw new Exception("OpenRouter HTTP status: " + code + " language: " + targetLang
-                        + " response: " + errorBody);
-            }
-
-            // SSE: each "data: {...}" event carries a content delta; rawOutput mirrors it for
-            // the positional fallback in case numbered parsing yields no matches.
-            StringBuilder lineBuffer = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-                String sseLine;
-                while ((sseLine = reader.readLine()) != null) {
-                    if (!sseLine.startsWith("data: ")) continue;
-                    final String data = sseLine.substring(6).trim();
-                    if (data.equals("[DONE]")) break;
-
-                    JSONObject chunk;
-                    try {
-                        chunk = new JSONObject(data);
-                    } catch (Exception ignored) {
-                        continue;
-                    }
-                    JSONArray choices = chunk.optJSONArray("choices");
-                    if (choices == null || choices.length() == 0) continue;
-                    JSONObject delta = choices.getJSONObject(0).optJSONObject("delta");
-                    if (delta == null) continue;
-
-                    String content = delta.optString("content", "");
-                    rawOutput.append(content);
-                    for (int ci = 0, contentLength = content.length(); ci < contentLength; ci++) {
-                        final char c = content.charAt(ci);
-                        if (c == '\n') {
-                            String line = lineBuffer.toString().trim();
-                            lineBuffer.setLength(0);
-                            if (applyStreamedLine(line, result, segments.size(), matched)
-                                    && onLineStreamed != null) {
-                                onLineStreamed.accept(new ArrayList<>(result));
-                            }
-                        } else {
-                            lineBuffer.append(c);
-                        }
-                    }
-                }
-                // Flush any remaining content that arrived without a trailing newline.
-                if (Utils.isNotEmpty(lineBuffer)) {
-                    String line = lineBuffer.toString().trim();
-                    if (applyStreamedLine(line, result, segments.size(), matched)
-                            && onLineStreamed != null) {
-                        onLineStreamed.accept(new ArrayList<>(result));
-                    }
-                }
-            }
-        } finally {
-            if (activeConnection == conn) activeConnection = null;
-        }
-
-        final int segmentSize = segments.size();
-        // Some models translate correctly but omit or mangle the line numbers, leaving most
-        // segments on their original text. When the stripped output lines up one-to-one with the
-        // inputs, recover it by mapping positionally instead of dropping the translation.
-        if (matched[0] != segmentSize) {
-            List<String> positional = positionalFallback(rawOutput.toString(), segmentSize);
-            if (positional != null) {
-                for (int i = 0; i < segmentSize; i++) result.set(i, positional.get(i));
-                matched[0] = segmentSize;
-                if (onLineStreamed != null) onLineStreamed.accept(new ArrayList<>(result));
-                Logger.printDebug(() -> "OpenRouter positional fallback applied: " + segmentSize + " lines");
-            }
-        }
-
-        final int matchedFirst = matched[0];
-        Logger.printDebug(() -> "OpenRouter translation complete: " + targetLang
-                + " fetchTime: " + (System.currentTimeMillis() - start) + "ms");
-
-        if (matchedFirst != segmentSize) {
-            Logger.printDebug(() -> "OpenRouter line mismatch - expected: " + segmentSize
-                    + ", got: " + matchedFirst + "; last: " + (segmentSize - matchedFirst)
-                    + " segment(s) queued for retry");
-            if (matchedFirst > 0) {
-                // Return only the translated portion; the caller re-queues the tail for retry.
-                return new ArrayList<>(result.subList(0, matchedFirst));
-            }
-        }
-        return result;
     }
 
     static void fetchOpenRouterModelCost(@Nullable String model, Consumer<Float> onResult) {

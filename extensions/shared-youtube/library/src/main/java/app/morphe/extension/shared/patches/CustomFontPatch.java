@@ -199,7 +199,17 @@ public final class CustomFontPatch {
             }
 
             baseTypeface = typeface;
-            replaceSystemTypefaces();
+            // Most text uses the platform default typefaces, and not the fonts of the app.
+            // The default typefaces are not public API, so each one is replaced on its own,
+            // and any that cannot be replaced keeps the system font.
+            Typeface regular = getTypeface(DEFAULT_WEIGHT, false);
+            Typeface bold = getTypeface(BOLD_WEIGHT, false);
+
+            replaceSystemFontMap();
+            replaceDefaultStyles();
+            replaceStaticField("DEFAULT", regular);
+            replaceStaticField("DEFAULT_BOLD", bold);
+            replaceStaticField("SANS_SERIF", regular);
         } catch (Exception ex) {
             Logger.printException(() -> "applyCustomFont failure", ex);
         }
@@ -213,22 +223,6 @@ public final class CustomFontPatch {
         }
 
         Utils.showToastLong(str("morphe_custom_font_failed_to_load"));
-    }
-
-    /**
-     * Most text uses the platform default typefaces, and not the fonts of the app.
-     * The default typefaces are not public API, so each one is replaced on its own,
-     * and any that cannot be replaced keeps the system font.
-     */
-    private static void replaceSystemTypefaces() {
-        Typeface regular = getTypeface(DEFAULT_WEIGHT, false);
-        Typeface bold = getTypeface(BOLD_WEIGHT, false);
-
-        replaceSystemFontMap();
-        replaceDefaultStyles();
-        replaceStaticField("DEFAULT", regular);
-        replaceStaticField("DEFAULT_BOLD", bold);
-        replaceStaticField("SANS_SERIF", regular);
     }
 
     @SuppressLint("DiscouragedPrivateApi")
@@ -325,7 +319,28 @@ public final class CustomFontPatch {
             return createCustomTypeface(base, weight, italic);
         }
         if (isSystemFont()) {
-            return createSystemTypeface(weight, italic);
+            if (Utils.isSDKAbove(28)) {
+                return Typeface.create(Typeface.DEFAULT, weight, italic);
+            }
+
+            // Before Android 9, a weight can only be selected using the font family name.
+            final String family;
+            int style = italic ? Typeface.ITALIC : Typeface.NORMAL;
+            if (weight >= BLACK_WEIGHT) {
+                family = "sans-serif-black";
+            } else if (weight >= SEMI_BOLD_WEIGHT) {
+                family = "sans-serif";
+                style |= Typeface.BOLD;
+            } else if (weight >= MEDIUM_WEIGHT) {
+                family = "sans-serif-medium";
+            } else if (weight >= DEFAULT_WEIGHT) {
+                family = "sans-serif";
+            } else if (weight >= LIGHT_WEIGHT) {
+                family = "sans-serif-light";
+            } else {
+                family = "sans-serif-thin";
+            }
+            return Typeface.create(family, style);
         }
         return null;
     }
@@ -353,31 +368,6 @@ public final class CustomFontPatch {
         return typeface;
     }
 
-    private static Typeface createSystemTypeface(int weight, boolean italic) {
-        if (Utils.isSDKAbove(28)) {
-            return Typeface.create(Typeface.DEFAULT, weight, italic);
-        }
-
-        // Before Android 9, a weight can only be selected using the font family name.
-        final String family;
-        int style = italic ? Typeface.ITALIC : Typeface.NORMAL;
-        if (weight >= BLACK_WEIGHT) {
-            family = "sans-serif-black";
-        } else if (weight >= SEMI_BOLD_WEIGHT) {
-            family = "sans-serif";
-            style |= Typeface.BOLD;
-        } else if (weight >= MEDIUM_WEIGHT) {
-            family = "sans-serif-medium";
-        } else if (weight >= DEFAULT_WEIGHT) {
-            family = "sans-serif";
-        } else if (weight >= LIGHT_WEIGHT) {
-            family = "sans-serif-light";
-        } else {
-            family = "sans-serif-thin";
-        }
-        return Typeface.create(family, style);
-    }
-
     @Nullable
     private static Typeface getTypeface(int weight, int style, boolean italic) {
         // A negative style means the caller did not ask for one, which must not read as bold italic.
@@ -389,23 +379,6 @@ public final class CustomFontPatch {
         }
         italic |= (style & Typeface.ITALIC) != 0;
         return getTypeface(weight, italic);
-    }
-
-    /**
-     * Brand fonts bundled in the app, and Roboto. Monospace, icon and emoji fonts keep their look.
-     */
-    private static boolean isReplacedFontName(String name) {
-        if (name.contains("mono") || name.contains("icon")
-                || name.contains("emoji") || name.contains("symbol")) {
-            return false;
-        }
-        return name.startsWith("youtube_sans")
-                || name.startsWith("ytsans")
-                || name.startsWith("youtubemarquee")
-                || name.startsWith("google_sans")
-                || name.startsWith("gm3_ref_typeface")
-                || name.startsWith("yt_ref_typography")
-                || name.startsWith("roboto");
     }
 
     private static int weightFromName(String name) {
@@ -422,7 +395,23 @@ public final class CustomFontPatch {
     @Nullable
     private static Typeface getTypefaceFromName(String name, int style) {
         name = name.toLowerCase(Locale.ENGLISH);
-        if (!isReplacedFontName(name)) {
+        // Brand fonts bundled in the app, and Roboto. Monospace, icon and emoji fonts keep their look.
+        boolean isReplacedFontName;
+        isReplacedFontName: {
+            if (name.contains("mono") || name.contains("icon")
+                    || name.contains("emoji") || name.contains("symbol")) {
+                isReplacedFontName = false;
+                break isReplacedFontName;
+            }
+            isReplacedFontName = name.startsWith("youtube_sans")
+                    || name.startsWith("ytsans")
+                    || name.startsWith("youtubemarquee")
+                    || name.startsWith("google_sans")
+                    || name.startsWith("gm3_ref_typeface")
+                    || name.startsWith("yt_ref_typography")
+                    || name.startsWith("roboto");
+        }
+        if (!isReplacedFontName) {
             return null;
         }
         return getTypeface(weightFromName(name), style, name.contains("italic"));

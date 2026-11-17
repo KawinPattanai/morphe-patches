@@ -198,29 +198,6 @@ public final class YouTubeGlassNavigationBar {
     private static final int SEEN_ROOM_TOLERANCE = Dim.dp2;
 
     /**
-     * Some configurations, such as with the layout updates of the app disabled, add the room
-     * for the system navigation buttons to the height of the bar another way, so it is not known
-     * as the room the app added, and it would be added twice. The bar is then given its full
-     * height plus exactly its bottom padding, which is remembered for as long as the padding
-     * stays the same, also while the app animates the height to hide the bar.
-     */
-    private static void updateSeenAppRoom(View navigationBar, int height) {
-        final int padding = navigationBar.getPaddingBottom();
-        if (padding != seenAppRoomPadding) {
-            seenAppRoom = 0;
-            seenAppRoomPadding = padding;
-        }
-
-        // The app can round the room it adds differently from the padding, such as 109 for a padding of 110.
-        final int base = baseHeight;
-        final int room = height - base;
-        if (base > 0 && padding > 0 && Math.abs(room - padding) <= SEEN_ROOM_TOLERANCE && seenAppRoom != room) {
-            seenAppRoom = room;
-            Logger.printDebug(() -> "Glass navigation bar room added by the app: " + room + " padding: " + padding);
-        }
-    }
-
-    /**
      * @return The room below the buttons the app added to the height of the bar itself.
      */
     private static int getAppRoom(View navigationBar) {
@@ -248,7 +225,25 @@ public final class YouTubeGlassNavigationBar {
             }
 
             final int height = View.MeasureSpec.getSize(heightMeasureSpec);
-            updateSeenAppRoom(navigationBar, height);
+            // Some configurations, such as with the layout updates of the app disabled, add the room
+            // for the system navigation buttons to the height of the bar another way, so it is not known
+            // as the room the app added, and it would be added twice. The bar is then given its full
+            // height plus exactly its bottom padding, which is remembered for as long as the padding
+            // stays the same, also while the app animates the height to hide the bar.
+            final int padding = navigationBar.getPaddingBottom();
+            if (padding != seenAppRoomPadding) {
+                seenAppRoom = 0;
+                seenAppRoomPadding = padding;
+            }
+
+            // The app can round the room it adds differently from the padding, such as 109 for a padding of 110.
+            final int base = baseHeight;
+            final int room = height - base;
+            if (base > 0 && padding > 0 && Math.abs(room - padding) <= SEEN_ROOM_TOLERANCE && seenAppRoom != room) {
+                seenAppRoom = room;
+                Logger.printDebug(() -> "Glass navigation bar room added by the app: " + room + " padding: " + padding);
+            }
+
             final int added = getAddedRoom(navigationBar, height);
             if (added == 0) return heightMeasureSpec;
 

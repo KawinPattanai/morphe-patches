@@ -10,14 +10,6 @@ public abstract class JsChallengeProvider {
 
     protected abstract List<JsChallengeType> getSupportedTypes();
 
-    private void validateRequest(JsChallengeRequest request) throws JsChallengeProviderRejectedRequest {
-        if (!getSupportedTypes().contains(request.type())) {
-            throw new JsChallengeProviderRejectedRequest(
-                    "JS Challenge type " + request.type() + " is not supported by the provider " + this.getClass().getSimpleName()
-            );
-        }
-    }
-
     /**
      * Solve multiple JS challenges and return the results
      */
@@ -27,7 +19,11 @@ public abstract class JsChallengeProvider {
 
         for (JsChallengeRequest request : requests) {
             try {
-                validateRequest(request);
+                if (!getSupportedTypes().contains(request.type())) {
+                    throw new JsChallengeProviderRejectedRequest(
+                            "JS Challenge type " + request.type() + " is not supported by the provider " + this.getClass().getSimpleName()
+                    );
+                }
                 validatedRequests.add(request);
             } catch (JsChallengeProviderRejectedRequest e) {
                 responses.add(new JsChallengeProviderResponse(request, e));

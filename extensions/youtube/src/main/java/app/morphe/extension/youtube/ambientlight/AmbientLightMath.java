@@ -651,22 +651,26 @@ final class AmbientLightMath {
                 + (color & 0xFF) * 114) / 1000;
     }
 
-    private static boolean isOpaqueNeutral(int color) {
-        if ((color >>> 24) < MIN_OPAQUE_ALPHA) return false;
-        final int red = (color >> 16) & 0xFF;
-        final int green = (color >> 8) & 0xFF;
-        final int blue = color & 0xFF;
-        return Math.max(red, Math.max(green, blue)) - Math.min(red, Math.min(green, blue))
-                <= MAX_NEUTRAL_CHROMA;
-    }
-
     /**
      * What a background color becomes on the see-through watch page. The page color turns
      * transparent, a slightly raised surface such as a card turns into a translucent veil,
      * and everything else keeps its color.
      */
     static int seeThroughColor(int color, int pageColor) {
-        if (!isOpaqueNeutral(color)) return color;
+        boolean isOpaqueNeutral;
+        isOpaqueNeutral: {
+            if ((color >>> 24) < MIN_OPAQUE_ALPHA) {
+                isOpaqueNeutral = false;
+                break isOpaqueNeutral;
+            }
+
+            final int red = (color >> 16) & 0xFF;
+            final int green = (color >> 8) & 0xFF;
+            final int blue = color & 0xFF;
+            isOpaqueNeutral = Math.max(red, Math.max(green, blue)) - Math.min(red, Math.min(green, blue))
+                    <= MAX_NEUTRAL_CHROMA;
+        }
+        if (!isOpaqueNeutral) return color;
 
         final int difference = luma(color) - luma(pageColor);
         final boolean darkPage = luma(pageColor) < 128;

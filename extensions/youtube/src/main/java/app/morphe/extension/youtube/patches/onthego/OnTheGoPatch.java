@@ -227,7 +227,28 @@ public final class OnTheGoPatch {
                 return bytes;
             }
 
-            byte[] request = getUpsellRequest(bytes, browseIdIndex);
+            // or null if the bytes are not a browse id followed by parameters.
+            byte[] request;
+            getUpsellRequest: {
+                final int start = browseIdIndex - 2;
+                final int paramsTagIndex = browseIdIndex + UPSELL_BROWSE_ID.length;
+                if (start < 0 || paramsTagIndex + 1 >= bytes.length
+                        || bytes[start] != BROWSE_ID_TAG
+                        || bytes[start + 1] != UPSELL_BROWSE_ID.length
+                        || bytes[paramsTagIndex] != BROWSE_PARAMS_TAG) {
+                    request = null;
+                    break getUpsellRequest;
+                }
+
+                final int paramsLength = bytes[paramsTagIndex + 1];
+                final int end = paramsTagIndex + 2 + paramsLength;
+                if (paramsLength <= 0 || end > bytes.length) {
+                    request = null;
+                    break getUpsellRequest;
+                }
+
+                request = Arrays.copyOfRange(bytes, start, end);
+            }
             if (request == null) {
                 Logger.printException(() -> "Unknown On-the-go upsell request");
                 return bytes;
@@ -251,31 +272,6 @@ public final class OnTheGoPatch {
             Logger.printException(() -> "onElementLoaded failure", ex);
             return bytes;
         }
-    }
-
-    /**
-     * @param browseIdIndex Index of the browse id of the upsell.
-     * @return The browse id and parameters fields of the upsell request,
-     *         or null if the bytes are not a browse id followed by parameters.
-     */
-    @Nullable
-    private static byte[] getUpsellRequest(byte[] bytes, int browseIdIndex) {
-        final int start = browseIdIndex - 2;
-        final int paramsTagIndex = browseIdIndex + UPSELL_BROWSE_ID.length;
-        if (start < 0 || paramsTagIndex + 1 >= bytes.length
-                || bytes[start] != BROWSE_ID_TAG
-                || bytes[start + 1] != UPSELL_BROWSE_ID.length
-                || bytes[paramsTagIndex] != BROWSE_PARAMS_TAG) {
-            return null;
-        }
-
-        final int paramsLength = bytes[paramsTagIndex + 1];
-        final int end = paramsTagIndex + 2 + paramsLength;
-        if (paramsLength <= 0 || end > bytes.length) {
-            return null;
-        }
-
-        return Arrays.copyOfRange(bytes, start, end);
     }
 
     /**

@@ -579,10 +579,47 @@ internal fun baseThemeResourcePatch(
         // A color that is set while patching is the only color the app can have,
         // so none of the variants and themes below are of any use.
         if (usePatchedThemeColor) {
-            replaceColors(
-                colorFiles, styleFiles, declaredColors,
-                styleColorNamesDarkMap, styleColorNamesLightMap, includeLightColor
-            )
+            // Gives the theme colors of the app the color that is set as a patch option, which is what
+            // the Theme patch did before the color could be changed in the app settings.
+            val darkColor = patchedThemeColorDark
+            if (!validateColorName(darkColor)) {
+                throw PatchException("Invalid dark theme color: $darkColor")
+            }
+
+            val lightColor = patchedThemeColorLight
+            if (includeLightColor && !validateColorName(lightColor)) {
+                throw PatchException("Invalid light theme color: $lightColor")
+            }
+
+            colorFiles.forEach { path ->
+                resourceXml(path).use { colors ->
+                    colors.transformColors { name, value ->
+                        val color = when (name) {
+                            in darkColorNames -> darkColor
+                            in lightColorNames -> lightColor
+                            else -> return@transformColors null
+                        }
+
+                        val alpha = parseAlpha(resolveColorValue(value, declaredColors))
+                        applyAlpha(color, alpha)
+                    }
+                }
+            }
+
+            styleFiles.forEach { path ->
+                resourceXml(path).use { styles ->
+                    styles.transformStyleItems { styleName, itemName, value ->
+                        val color = when {
+                            itemName in styleColorNamesDarkMap[styleName].orEmpty() -> darkColor
+                            includeLightColor && itemName in styleColorNamesLightMap[styleName].orEmpty() -> lightColor
+                            else -> return@transformStyleItems null
+                        }
+
+                        val alpha = parseAlpha(resolveColorValue(value, declaredColors))
+                        applyAlpha(color, alpha)
+                    }
+                }
+            }
             return@execute
         }
 
@@ -606,10 +643,68 @@ internal fun baseThemeResourcePatch(
             emptyMap()
         }
 
-        val aliasAlphas = addColorAliases(
-            colorFiles, styleFiles, declaredColors,
-            styleColorNamesDarkMap, styleColorNamesLightMap, includeLightColor
-        )
+        // Gives every theme color of the app the value of a single color, which the generated
+        // variants then declare instead of every name, and keeps the alpha channel of each alias color.
+        // The app keeps resolving the names it always did, including the ones its own code reads by id,
+        // because only the value of a name is replaced and not the name itself.
+        val aliasAlphas = LinkedHashMap<String, Int>()
+
+        fun colorAlias(aliasBaseName: String, value: String): String {
+            val alpha = parseAlpha(resolveColorValue(value, declaredColors))
+            val colorAlias = if (alpha == 0xFF) {
+                aliasBaseName
+            } else {
+                "${aliasBaseName}_opacity_${"%02X".format(alpha)}"
+            }
+
+            aliasAlphas[colorAlias] = alpha
+            return "@color/$colorAlias"
+        }
+
+        colorFiles.forEach { path ->
+            resourceXml(path).use { colors ->
+                colors.transformColors { name, value ->
+                    val aliasBaseName = when (name) {
+                        in darkColorNames -> THEME_COLOR_DARK
+                        in lightColorNames -> if (includeLightColor) THEME_COLOR_LIGHT else null
+                        else -> null
+                    } ?: return@transformColors null
+
+                    colorAlias(aliasBaseName, value)
+                }
+            }
+        }
+
+        styleFiles.forEach { path ->
+            resourceXml(path).use { styles ->
+                styles.transformStyleItems { styleName, itemName, value ->
+                    val aliasBaseName = when {
+                        itemName in styleColorNamesDarkMap[styleName].orEmpty() -> THEME_COLOR_DARK
+                        includeLightColor && itemName in styleColorNamesLightMap[styleName].orEmpty() -> THEME_COLOR_LIGHT
+                        else -> return@transformStyleItems null
+                    }
+
+                    colorAlias(aliasBaseName, value)
+                }
+            }
+        }
+
+        // Without a variant the alias resolves to the color of the unpatched app, which is
+        // what the system draws the splash screen of the app default with.
+        resourceXml("res/values/colors.xml", copy = false).use { colors ->
+            aliasAlphas.forEach { (name, alpha) ->
+                // The color is the unpatched color of the app.
+                val originalColor = if (isDarkThemeColorAlias(name)) {
+                    DEFAULT_THEME_COLOR_DARK
+                } else {
+                    DEFAULT_THEME_COLOR_LIGHT
+                }
+                colors.root.appendChild("color") {
+                    setAttribute("name", name)
+                    text = applyAlpha(originalColor, alpha)
+                }
+            }
+        }
 
         val darkAliasAlphas = aliasAlphas.filterKeys { isDarkThemeColorAlias(it) }
         darkAliasNames = darkAliasAlphas.keys.toList()
@@ -627,17 +722,77 @@ internal fun baseThemeResourcePatch(
             )
         }
 
-        declareOverlayableColors(
-            if (includeLightColor) {
-                listOf(THEME_COLOR_DARK, THEME_COLOR_LIGHT)
-            } else {
-                listOf(THEME_COLOR_DARK)
+        // Declares the theme colors as overlayable, which an overlay the app registers for itself
+        // requires. Without this the system rejects the overlay of a custom theme color.
+        val colorNames = if (includeLightColor) {
+            listOf(THEME_COLOR_DARK, THEME_COLOR_LIGHT)
+        } else {
+            listOf(THEME_COLOR_DARK)
+        }
+
+        // A policy item is resolved while encoding, and every name is one of the app declares.
+        // The app can declare overlayables of its own, which are kept, as this only adds one.
+        resourceXml("res/values/overlayable.xml", copy = false).use { overlayables ->
+            overlayables.root.appendChild("overlayable") {
+                setAttribute("name", THEME_COLOR_OVERLAYABLE_NAME)
+                appendChild("policy") {
+                    setAttribute("type", "public")
+                    colorNames.forEach { name ->
+                        appendChild("item") {
+                            setAttribute("type", "color")
+                            setAttribute("name", name)
+                        }
+                    }
+                }
             }
-        )
+        }
 
         // An app without a launcher theme keeps the splash screen it draws itself.
         if (splashScreenThemeParent != null) {
-            addSplashScreenThemes(splashScreenThemeParent, includeLightColor)
+            // Adds a theme for every color, which the system can draw the splash screen of the app with.
+            // The splash screen is drawn before the app runs and with the configuration of the device, so the
+            // resource variant of the selected color is never used for it. The extension hands one of
+            // these themes to the system instead, and the system draws the splash screen with it from then on.
+            resourceXml("res/values/styles.xml", copy = false).use { styles ->
+                fun addThemes(
+                    indexOffset: Int,
+                    colors: List<ThemeColor>,
+                    lLevels: FloatArray,
+                    appColor: String?
+                ) {
+                    // The system resolves the splash screen with the configuration of the device, where
+                    // no variant applies, so the app default needs the color of the app itself.
+                    themeColors(indexOffset, colors, lLevels, appColor).forEach { (index, color) ->
+                        styles.root.appendChild("style") {
+                            setAttribute("name", "$SPLASH_THEME_NAME$index")
+                            setAttribute("parent", splashScreenThemeParent)
+
+                            // The first is used since Android 12, and the second by everything the app draws
+                            // until the splash screen is gone.
+                            arrayOf(
+                                "android:windowSplashScreenBackground",
+                                "android:windowBackground"
+                            ).forEach { name ->
+                                appendChild("item") {
+                                    setAttribute("name", name)
+                                    text = color
+                                }
+                            }
+                        }
+                    }
+                }
+
+                addThemes(
+                    THEME_INDEX_OFFSET_DARK, THEME_COLORS_DARK, PALETTE_L_LEVELS_DARK,
+                    appThemeColorDark
+                )
+                if (includeLightColor) {
+                    addThemes(
+                        THEME_INDEX_OFFSET_LIGHT, THEME_COLORS_LIGHT, PALETTE_L_LEVELS_LIGHT,
+                        appThemeColorLight
+                    )
+                }
+            }
         }
     }
 }
@@ -672,144 +827,6 @@ private fun verifySettingEntries(
 }
 
 /**
- * Gives the theme colors of the app the color that is set as a patch option, which is what
- * the Theme patch did before the color could be changed in the app settings.
- */
-private fun replaceColors(
-    colorFiles: List<String>,
-    styleFiles: List<String>,
-    declaredColors: Map<String, String>,
-    styleColorNamesDark: Map<String, Set<String>>,
-    styleColorNamesLight: Map<String, Set<String>>,
-    includeLightColor: Boolean
-) {
-    val darkColor = patchedThemeColorDark
-    if (!validateColorName(darkColor)) {
-        throw PatchException("Invalid dark theme color: $darkColor")
-    }
-
-    val lightColor = patchedThemeColorLight
-    if (includeLightColor && !validateColorName(lightColor)) {
-        throw PatchException("Invalid light theme color: $lightColor")
-    }
-
-    colorFiles.forEach { path ->
-        resourceXml(path).use { colors ->
-            colors.transformColors { name, value ->
-                val color = when (name) {
-                    in darkColorNames -> darkColor
-                    in lightColorNames -> lightColor
-                    else -> return@transformColors null
-                }
-
-                val alpha = parseAlpha(resolveColorValue(value, declaredColors))
-                applyAlpha(color, alpha)
-            }
-        }
-    }
-
-    styleFiles.forEach { path ->
-        resourceXml(path).use { styles ->
-            styles.transformStyleItems { styleName, itemName, value ->
-                val color = when {
-                    itemName in styleColorNamesDark[styleName].orEmpty() -> darkColor
-                    includeLightColor && itemName in styleColorNamesLight[styleName].orEmpty() -> lightColor
-                    else -> return@transformStyleItems null
-                }
-
-                val alpha = parseAlpha(resolveColorValue(value, declaredColors))
-                applyAlpha(color, alpha)
-            }
-        }
-    }
-}
-
-/**
- * Adds a theme for every color, which the system can draw the splash screen of the app with.
- *
- * The splash screen is drawn before the app runs and with the configuration of the device, so the
- * resource variant of the selected color is never used for it. The extension hands one of
- * these themes to the system instead, and the system draws the splash screen with it from then on.
- *
- * @param parentStyle The theme of the launcher activity, so that only the color of it differs.
- */
-private fun addSplashScreenThemes(
-    parentStyle: String,
-    includeLightColor: Boolean
-) {
-    resourceXml("res/values/styles.xml", copy = false).use { styles ->
-        fun addTheme(index: Int, color: String) {
-            styles.root.appendChild("style") {
-                setAttribute("name", "$SPLASH_THEME_NAME$index")
-                setAttribute("parent", parentStyle)
-
-                // The first is used since Android 12, and the second by everything the app draws
-                // until the splash screen is gone.
-                arrayOf(
-                    "android:windowSplashScreenBackground",
-                    "android:windowBackground"
-                ).forEach { name ->
-                    appendChild("item") {
-                        setAttribute("name", name)
-                        text = color
-                    }
-                }
-            }
-        }
-
-        fun addThemes(
-            indexOffset: Int,
-            colors: List<ThemeColor>,
-            lLevels: FloatArray,
-            appColor: String?
-        ) {
-            // The system resolves the splash screen with the configuration of the device, where
-            // no variant applies, so the app default needs the color of the app itself.
-            themeColors(indexOffset, colors, lLevels, appColor)
-                .forEach { (index, color) -> addTheme(index, color) }
-        }
-
-        addThemes(
-            THEME_INDEX_OFFSET_DARK, THEME_COLORS_DARK, PALETTE_L_LEVELS_DARK,
-            appThemeColorDark
-        )
-        if (includeLightColor) {
-            addThemes(
-                THEME_INDEX_OFFSET_LIGHT, THEME_COLORS_LIGHT, PALETTE_L_LEVELS_LIGHT,
-                appThemeColorLight
-            )
-        }
-    }
-}
-
-/**
- * Declares the theme colors as overlayable, which an overlay the app registers for itself
- * requires. Without this the system rejects the overlay of a custom theme color.
- */
-private fun declareOverlayableColors(colorNames: List<String>) {
-    // A policy item is resolved while encoding, and every name is one of the app declares.
-    if (colorNames.isEmpty()) {
-        throw PatchException("Could not find any theme color to declare as overlayable")
-    }
-
-    // The app can declare overlayables of its own, which are kept, as this only adds one.
-    resourceXml("res/values/overlayable.xml", copy = false).use { overlayables ->
-        overlayables.root.appendChild("overlayable") {
-            setAttribute("name", THEME_COLOR_OVERLAYABLE_NAME)
-            appendChild("policy") {
-                setAttribute("type", "public")
-                colorNames.forEach { name ->
-                    appendChild("item") {
-                        setAttribute("type", "color")
-                        setAttribute("name", name)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
  * The color of every theme the extension can ask for, mapped to the index it asks with.
  * The color variants and the splash screen themes are both generated from this.
  *
@@ -835,7 +852,47 @@ private fun themeColors(
     }
 
     for (index in 0 until 256) {
-        put(indexOffset + PALETTE_INDEX_OFFSET + index, paletteColor(lLevels, index))
+        // The color of a value of the 8 bit palette, which the extension picks the index of.
+        val l = lLevels[(index shr 5) and 0x7].toDouble()
+        val c = PALETTE_C_LEVELS[(index shr 3) and 0x3].toDouble()
+        val h = PALETTE_H_LEVELS[index and 0x7].toDouble()
+
+        val hRad = h * (PI / 180.0)
+        val a = c * cos(hRad)
+        val b = c * sin(hRad)
+
+        val lOklab = l + 0.3963377774 * a + 0.2158037573 * b
+        val mOklab = l - 0.1055613458 * a - 0.0638541728 * b
+        val sOklab = l - 0.0894841775 * a - 1.2914855480 * b
+
+        val lCubed = lOklab * lOklab * lOklab
+        val mCubed = mOklab * mOklab * mOklab
+        val sCubed = sOklab * sOklab * sOklab
+
+        var rRgb = +4.0767416621 * lCubed - 3.3077115913 * mCubed + 0.2309699292 * sCubed
+        var gRgb = -1.2684380046 * lCubed + 2.6097574011 * mCubed - 0.3413193965 * sCubed
+        var bRgb = -0.0041960863 * lCubed - 0.7034186147 * mCubed + 1.7076127010 * sCubed
+
+        // Clamping and sRGB gamma correction
+        fun delinearizeSrgb(v: Double): Double {
+            return if (v > 0.0031308) {
+                1.055 * v.pow(1.0 / 2.4) - 0.055
+            } else {
+                12.92 * v
+            }
+        }
+
+        rRgb = delinearizeSrgb(rRgb)
+        gRgb = delinearizeSrgb(gRgb)
+        bRgb = delinearizeSrgb(bRgb)
+
+        fun toColorInt(v: Double) = (v.toFloat().coerceIn(0f, 1f) * 255).toInt()
+
+        val ri = toColorInt(rRgb)
+        val gi = toColorInt(gRgb)
+        val bi = toColorInt(bRgb)
+
+        put(indexOffset + PALETTE_INDEX_OFFSET + index, "#%02X%02X%02X".format(ri, gi, bi))
     }
 }
 
@@ -869,88 +926,6 @@ private fun addColorVariants(
         val mappedColors = aliasAlphas.mapValues { (_, alpha) -> applyAlpha(color, alpha) }
         writeColorVariant(index, mappedColors, isDark)
     }
-}
-
-/**
- * Gives every theme color of the app the value of a single color, which the generated
- * variants then declare instead of every name.
- *
- * The app keeps resolving the names it always did, including the ones its own code reads by id,
- * because only the value of a name is replaced and not the name itself.
- *
- * @param colorFiles             All color resource files.
- * @param declaredColors         The names and values of every color the app declares.
- * @param includeLightColor      If the light theme has its own theme color.
- * @return The alpha channel of each alias color.
- */
-private fun addColorAliases(
-    colorFiles: List<String>,
-    styleFiles: List<String>,
-    declaredColors: Map<String, String>,
-    styleColorNamesDark: Map<String, Set<String>>,
-    styleColorNamesLight: Map<String, Set<String>>,
-    includeLightColor: Boolean
-): Map<String, Int> {
-    val aliasAlphas = LinkedHashMap<String, Int>()
-
-    fun colorAlias(aliasBaseName: String, value: String): String {
-        val alpha = parseAlpha(resolveColorValue(value, declaredColors))
-        val colorAlias = if (alpha == 0xFF) {
-            aliasBaseName
-        } else {
-            "${aliasBaseName}_opacity_${"%02X".format(alpha)}"
-        }
-
-        aliasAlphas[colorAlias] = alpha
-        return "@color/$colorAlias"
-    }
-
-    colorFiles.forEach { path ->
-        resourceXml(path).use { colors ->
-            colors.transformColors { name, value ->
-                val aliasBaseName = when (name) {
-                    in darkColorNames -> THEME_COLOR_DARK
-                    in lightColorNames -> if (includeLightColor) THEME_COLOR_LIGHT else null
-                    else -> null
-                } ?: return@transformColors null
-
-                colorAlias(aliasBaseName, value)
-            }
-        }
-    }
-
-    styleFiles.forEach { path ->
-        resourceXml(path).use { styles ->
-            styles.transformStyleItems { styleName, itemName, value ->
-                val aliasBaseName = when {
-                    itemName in styleColorNamesDark[styleName].orEmpty() -> THEME_COLOR_DARK
-                    includeLightColor && itemName in styleColorNamesLight[styleName].orEmpty() -> THEME_COLOR_LIGHT
-                    else -> return@transformStyleItems null
-                }
-
-                colorAlias(aliasBaseName, value)
-            }
-        }
-    }
-
-    // Without a variant the alias resolves to the color of the unpatched app, which is
-    // what the system draws the splash screen of the app default with.
-    resourceXml("res/values/colors.xml", copy = false).use { colors ->
-        aliasAlphas.forEach { (name, alpha) ->
-            // The color is the unpatched color of the app.
-            val originalColor = if (isDarkThemeColorAlias(name)) {
-                DEFAULT_THEME_COLOR_DARK
-            } else {
-                DEFAULT_THEME_COLOR_LIGHT
-            }
-            colors.root.appendChild("color") {
-                setAttribute("name", name)
-                text = applyAlpha(originalColor, alpha)
-            }
-        }
-    }
-
-    return aliasAlphas
 }
 
 /**
@@ -1011,52 +986,6 @@ private fun applyAlpha(color: String, alpha: Int): String {
 
     val hex = color.substring(1)
     return "#%02X%s".format(alpha, if (hex.length == 8) hex.substring(2) else hex)
-}
-
-/**
- * The color of a value of the 8 bit palette, which the extension picks the index of.
- */
-private fun paletteColor(lLevels: FloatArray, index: Int): String {
-    val l = lLevels[(index shr 5) and 0x7].toDouble()
-    val c = PALETTE_C_LEVELS[(index shr 3) and 0x3].toDouble()
-    val h = PALETTE_H_LEVELS[index and 0x7].toDouble()
-
-    val hRad = h * (PI / 180.0)
-    val a = c * cos(hRad)
-    val b = c * sin(hRad)
-
-    val lOklab = l + 0.3963377774 * a + 0.2158037573 * b
-    val mOklab = l - 0.1055613458 * a - 0.0638541728 * b
-    val sOklab = l - 0.0894841775 * a - 1.2914855480 * b
-
-    val lCubed = lOklab * lOklab * lOklab
-    val mCubed = mOklab * mOklab * mOklab
-    val sCubed = sOklab * sOklab * sOklab
-
-    var rRgb = +4.0767416621 * lCubed - 3.3077115913 * mCubed + 0.2309699292 * sCubed
-    var gRgb = -1.2684380046 * lCubed + 2.6097574011 * mCubed - 0.3413193965 * sCubed
-    var bRgb = -0.0041960863 * lCubed - 0.7034186147 * mCubed + 1.7076127010 * sCubed
-
-    // Clamping and sRGB gamma correction
-    fun delinearizeSrgb(v: Double): Double {
-        return if (v > 0.0031308) {
-            1.055 * v.pow(1.0 / 2.4) - 0.055
-        } else {
-            12.92 * v
-        }
-    }
-
-    rRgb = delinearizeSrgb(rRgb)
-    gRgb = delinearizeSrgb(gRgb)
-    bRgb = delinearizeSrgb(bRgb)
-
-    fun toColorInt(v: Double) = (v.toFloat().coerceIn(0f, 1f) * 255).toInt()
-
-    val ri = toColorInt(rRgb)
-    val gi = toColorInt(gRgb)
-    val bi = toColorInt(bRgb)
-
-    return "#%02X%02X%02X".format(ri, gi, bi)
 }
 
 private fun writeColorVariant(

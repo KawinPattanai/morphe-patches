@@ -101,34 +101,32 @@ public final class AiSListSubmitDialog {
                     return;
                 }
 
-                Utils.runOnMainThread(() -> showConfirmDialog(videoId, handle, username));
+                Utils.runOnMainThread(() -> {
+                    Activity activity = Utils.getActivity();
+                    if (activity == null) {
+                        return;
+                    }
+
+                    Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                            activity,
+                            str("morphe_aislist_submit_title"),
+                            BulletPointPreference.formatIntoBulletPoints(
+                                    str("morphe_aislist_submit_dialog_message", handle)),
+                            null,                                    // No EditText.
+                            str("morphe_aislist_submit_dialog_confirm"), // OK button text.
+                            () -> submit(videoId, handle, username),         // OK button action.
+                            () -> {},                                        // Cancel button action (dismiss only).
+                            null,                                            // No Neutral button text.
+                            null,                                            // No Neutral button action.
+                            false                                            // Do not dismiss dialog when onNeutralClick.
+                    );
+
+                    Utils.showDialog(activity, dialogPair.first, false, null);
+                });
             });
         } catch (Exception ex) {
             Logger.printException(() -> "show failure", ex);
         }
-    }
-
-    private static void showConfirmDialog(String videoId, String handle, String username) {
-        Activity activity = Utils.getActivity();
-        if (activity == null) {
-            return;
-        }
-
-        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                activity,
-                str("morphe_aislist_submit_title"),
-                BulletPointPreference.formatIntoBulletPoints(
-                        str("morphe_aislist_submit_dialog_message", handle)),
-                null,                                    // No EditText.
-                str("morphe_aislist_submit_dialog_confirm"), // OK button text.
-                () -> submit(videoId, handle, username),         // OK button action.
-                () -> {},                                        // Cancel button action (dismiss only).
-                null,                                            // No Neutral button text.
-                null,                                            // No Neutral button action.
-                false                                            // Do not dismiss dialog when onNeutralClick.
-        );
-
-        Utils.showDialog(activity, dialogPair.first, false, null);
     }
 
     private static void submit(String videoId, String handle, String username) {

@@ -213,7 +213,27 @@ public class ReturnYouTubeDislike {
                 votingData.updateUsingVote(userVote);
             }
             originalDislikeSpan = original;
-            replacementLikeDislikeSpan = createDislikeSpan(original, votingData);
+            createDislikeSpan: {
+                CharSequence oldLikes = original;
+
+                // YouTube creators can hide the like count on a video,
+                // and the like count appears as a device language specific string that says 'Like'.
+                // Check if the string contains any numbers.
+                if (!Utils.containsNumber(oldLikes)) {
+                    // Likes are hidden by video creator
+                    if (!SharedYouTubeSettings.RYD_ESTIMATED_LIKE.get()) {
+                        // Change the "Likes" string to show that likes and dislikes are hidden.
+                        String hiddenMessageString = str("morphe_ryd_video_likes_hidden_by_video_owner");
+                        replacementLikeDislikeSpan = newSpanUsingStylingOfAnotherSpan(original, hiddenMessageString);
+                        break createDislikeSpan;
+                    }
+
+                    Logger.printDebug(() -> "Using estimated likes");
+                    oldLikes = formatDislikeCount(votingData.getLikeCount());
+                }
+
+                replacementLikeDislikeSpan = newSpanUsingStylingOfAnotherSpan(original, oldLikes);
+            }
             Logger.printDebug(() -> "Replaced: '" + originalDislikeSpan + "' with: '"
                     + replacementLikeDislikeSpan + "'" + " using video: " + videoId);
 
@@ -223,27 +243,6 @@ public class ReturnYouTubeDislike {
         }
 
         return original;
-    }
-
-    private SpannableString createDislikeSpan(Spanned oldSpannable, RYDVoteData voteData) {
-        CharSequence oldLikes = oldSpannable;
-
-        // YouTube creators can hide the like count on a video,
-        // and the like count appears as a device language specific string that says 'Like'.
-        // Check if the string contains any numbers.
-        if (!Utils.containsNumber(oldLikes)) {
-            // Likes are hidden by video creator
-            if (!SharedYouTubeSettings.RYD_ESTIMATED_LIKE.get()) {
-                // Change the "Likes" string to show that likes and dislikes are hidden.
-                String hiddenMessageString = str("morphe_ryd_video_likes_hidden_by_video_owner");
-                return newSpanUsingStylingOfAnotherSpan(oldSpannable, hiddenMessageString);
-            }
-
-            Logger.printDebug(() -> "Using estimated likes");
-            oldLikes = formatDislikeCount(voteData.getLikeCount());
-        }
-
-        return newSpanUsingStylingOfAnotherSpan(oldSpannable, oldLikes);
     }
 
     private static SpannableString setSpanForegroundColor(SpannableString span) {

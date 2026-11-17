@@ -398,7 +398,25 @@ public final class NiconicoCommentsController {
     private static void applyViewState(NiconicoCommentsOverlayView view) {
         final boolean pictureInPicture = playerType == PlayerType.WATCH_WHILE_PICTURE_IN_PICTURE
                 && Settings.NICONICO_COMMENTS_PIP.get();
-        moveOverlay(view, pictureInPicture);
+        // YouTube removes the controls overlay, which holds the comments, from the player while in
+        // picture-in-picture. The comments move to a layout that stays in the player, and back afterward.
+        moveOverlay: {
+            ViewGroup parent;
+            if (pictureInPicture) {
+                Activity activity = Utils.getActivity();
+                parent = activity == null ? null : activity.findViewById(PIP_OVERLAY_ROOT_ID);
+            } else {
+                parent = overlayRootRef.get();
+            }
+            if (parent == null || parent == view.getParent()) {
+                break moveOverlay;
+            }
+            if (view.getParent() instanceof ViewGroup currentParent) {
+                currentParent.removeView(view);
+            }
+            parent.addView(view, 0, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
         view.setPictureInPicture(pictureInPicture);
         view.setCommentFontSizeSp(SeekBarPreference.clampToRange(getFontSizeSetting()));
         view.setCommentOpacityPercent(SeekBarPreference.clampToRange(Settings.NICONICO_COMMENTS_OPACITY));
@@ -409,28 +427,6 @@ public final class NiconicoCommentsController {
         view.setOverlayActive(Settings.NICONICO_COMMENTS_SHOWN.get()
                 && isPlayerShowingComments() && !currentVideoId.isEmpty());
         view.setVideoPlaying(videoPlaying);
-    }
-
-    /**
-     * YouTube removes the controls overlay, which holds the comments, from the player while in
-     * picture-in-picture. The comments move to a layout that stays in the player, and back afterward.
-     */
-    private static void moveOverlay(NiconicoCommentsOverlayView view, boolean pictureInPicture) {
-        ViewGroup parent = pictureInPicture ? findPictureInPictureOverlayRoot() : overlayRootRef.get();
-        if (parent == null || parent == view.getParent()) {
-            return;
-        }
-        if (view.getParent() instanceof ViewGroup currentParent) {
-            currentParent.removeView(view);
-        }
-        parent.addView(view, 0, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-    }
-
-    @Nullable
-    private static ViewGroup findPictureInPictureOverlayRoot() {
-        Activity activity = Utils.getActivity();
-        return activity == null ? null : activity.findViewById(PIP_OVERLAY_ROOT_ID);
     }
 
     /**

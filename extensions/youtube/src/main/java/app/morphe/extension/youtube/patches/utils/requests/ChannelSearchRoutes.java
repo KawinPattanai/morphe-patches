@@ -272,7 +272,38 @@ public final class ChannelSearchRoutes {
             JSONObject body = new JSONObject();
             body.put("context", createContext(locale));
             body.put("browseId", channelId);
-            body.put("params", createSearchTabParams(query));
+            // Browse params of the channel "Search" tab, byte for byte what the server itself returns
+            // when it resolves a channel search url for a mobile client:
+            // {2: "search", 5: query, 23: 0, 50: "", 110: {1: {11: {}}}}.
+            // The web shape of these params is a different one, which this backend ignores.
+            byte[] queryBytes = query.getBytes(StandardCharsets.UTF_8);
+            ByteArrayOutputStream params = new ByteArrayOutputStream();
+
+            // Tab name.
+            params.write(0x12);
+            params.write(0x06);
+            params.write('s'); params.write('e'); params.write('a');
+            params.write('r'); params.write('c'); params.write('h');
+
+            // Query.
+            params.write(0x2A);
+            int value = queryBytes.length;
+            while ((value & ~0x7F) != 0) {
+                params.write((value & 0x7F) | 0x80);
+                value >>>= 7;
+            }
+            params.write(value);
+            params.write(queryBytes, 0, queryBytes.length);
+
+            // Empty fields the mobile shape carries.
+            params.write(0xB8); params.write(0x01); params.write(0x00);
+            params.write(0x92); params.write(0x03); params.write(0x00);
+
+            // Tab selector.
+            params.write(0xF2); params.write(0x06); params.write(0x04);
+            params.write(0x0A); params.write(0x02); params.write(0x5A); params.write(0x00);
+            String searchTabParams = Base64.encodeToString(params.toByteArray(), Base64.URL_SAFE | Base64.NO_WRAP);
+            body.put("params", searchTabParams);
             body.put("query", query);
 
             return body.toString().getBytes(StandardCharsets.UTF_8);
@@ -313,47 +344,6 @@ public final class ChannelSearchRoutes {
 
     private static String orDefault(String value, String fallback) {
         return value.isEmpty() ? fallback : value;
-    }
-
-    /**
-     * Browse params of the channel "Search" tab, byte for byte what the server itself returns
-     * when it resolves a channel search url for a mobile client:
-     * {2: "search", 5: query, 23: 0, 50: "", 110: {1: {11: {}}}}.
-     * The web shape of these params is a different one, which this backend ignores.
-     */
-    @NonNull
-    private static String createSearchTabParams(String query) {
-        byte[] queryBytes = query.getBytes(StandardCharsets.UTF_8);
-        ByteArrayOutputStream params = new ByteArrayOutputStream();
-
-        // Tab name.
-        params.write(0x12);
-        params.write(0x06);
-        params.write('s'); params.write('e'); params.write('a');
-        params.write('r'); params.write('c'); params.write('h');
-
-        // Query.
-        params.write(0x2A);
-        writeVarInt(params, queryBytes.length);
-        params.write(queryBytes, 0, queryBytes.length);
-
-        // Empty fields the mobile shape carries.
-        params.write(0xB8); params.write(0x01); params.write(0x00);
-        params.write(0x92); params.write(0x03); params.write(0x00);
-
-        // Tab selector.
-        params.write(0xF2); params.write(0x06); params.write(0x04);
-        params.write(0x0A); params.write(0x02); params.write(0x5A); params.write(0x00);
-
-        return Base64.encodeToString(params.toByteArray(), Base64.URL_SAFE | Base64.NO_WRAP);
-    }
-
-    private static void writeVarInt(ByteArrayOutputStream out, int value) {
-        while ((value & ~0x7F) != 0) {
-            out.write((value & 0x7F) | 0x80);
-            value >>>= 7;
-        }
-        out.write(value);
     }
 
     /**

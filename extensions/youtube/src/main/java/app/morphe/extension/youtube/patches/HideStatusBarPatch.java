@@ -390,7 +390,37 @@ public final class HideStatusBarPatch {
 
         Window window = activity.getWindow();
         hideStatusBar(window);
-        addDisplayCutoutInset(window);
+        // The top bars are laid out below the status bar using its inset, which is empty when the status bar
+        // is hidden, so the top bars are covered by a display cutout at the top, such as a front camera hole.
+        // The hidden status bar inset is replaced by the inset of the display cutout, so the top bars
+        // are laid out below the cutout. Display cutouts not at the top, such as in landscape, have no top inset.
+        // Display cutouts have no API before Android 9.
+        View content = window.findViewById(android.R.id.content);
+        if (content == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return;
+        }
+
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Insets cutout = insets.getInsets(WindowInsets.Type.displayCutout());
+                Insets statusBars = insets.getInsets(WindowInsets.Type.statusBars());
+                if (!insets.isVisible(WindowInsets.Type.statusBars()) && cutout.top > statusBars.top) {
+                    insets = new WindowInsets.Builder(insets)
+                            .setInsets(WindowInsets.Type.statusBars(),
+                                    Insets.of(statusBars.left, cutout.top, statusBars.right, statusBars.bottom))
+                            .build();
+                }
+            } else {
+                // The status bar is a part of the system window insets, which have no top inset when it's hidden.
+                DisplayCutout cutout = insets.getDisplayCutout();
+                if (cutout != null && cutout.getSafeInsetTop() > insets.getSystemWindowInsetTop()) {
+                    insets = insets.replaceSystemWindowInsets(insets.getSystemWindowInsetLeft(),
+                            cutout.getSafeInsetTop(), insets.getSystemWindowInsetRight(),
+                            insets.getSystemWindowInsetBottom());
+                }
+            }
+            return view.onApplyWindowInsets(insets);
+        });
     }
 
     /**
@@ -498,42 +528,6 @@ public final class HideStatusBarPatch {
         }
         // Display cutouts have no API before Android 9.
         return 0;
-    }
-
-    /**
-     * The top bars are laid out below the status bar using its inset, which is empty when the status bar
-     * is hidden, so the top bars are covered by a display cutout at the top, such as a front camera hole.
-     * The hidden status bar inset is replaced by the inset of the display cutout, so the top bars
-     * are laid out below the cutout. Display cutouts not at the top, such as in landscape, have no top inset.
-     * Display cutouts have no API before Android 9.
-     */
-    private static void addDisplayCutoutInset(Window window) {
-        View content = window.findViewById(android.R.id.content);
-        if (content == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            return;
-        }
-
-        content.setOnApplyWindowInsetsListener((view, insets) -> {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                Insets cutout = insets.getInsets(WindowInsets.Type.displayCutout());
-                Insets statusBars = insets.getInsets(WindowInsets.Type.statusBars());
-                if (!insets.isVisible(WindowInsets.Type.statusBars()) && cutout.top > statusBars.top) {
-                    insets = new WindowInsets.Builder(insets)
-                            .setInsets(WindowInsets.Type.statusBars(),
-                                    Insets.of(statusBars.left, cutout.top, statusBars.right, statusBars.bottom))
-                            .build();
-                }
-            } else {
-                // The status bar is a part of the system window insets, which have no top inset when it's hidden.
-                DisplayCutout cutout = insets.getDisplayCutout();
-                if (cutout != null && cutout.getSafeInsetTop() > insets.getSystemWindowInsetTop()) {
-                    insets = insets.replaceSystemWindowInsets(insets.getSystemWindowInsetLeft(),
-                            cutout.getSafeInsetTop(), insets.getSystemWindowInsetRight(),
-                            insets.getSystemWindowInsetBottom());
-                }
-            }
-            return view.onApplyWindowInsets(insets);
-        });
     }
 
     private static boolean isStatusBarVisible(View decorView) {

@@ -85,22 +85,6 @@ public class IconListPreference extends CustomDialogListPreference {
         return originalNotificationIconName;
     }
 
-    /**
-     * Resolves the launcher icon of the app that an entry uses, such as the original unpatched icon.
-     * Uses the resource name injected at app startup; falls back to the current app icon.
-     */
-    static Drawable resolveAppLauncherIconDrawable(Context context, String suffix) {
-        String iconName = appLauncherIconNames.get(suffix);
-        if (iconName != null && !iconName.isEmpty()) {
-            int resId = ResourceUtils.getIdentifier(ResourceType.MIPMAP, iconName);
-            if (resId != 0) {
-                Drawable drawable = context.getDrawable(resId);
-                if (drawable != null) return drawable;
-            }
-        }
-        return context.getPackageManager().getApplicationIcon(context.getApplicationInfo());
-    }
-
     @Nullable
     private Drawable[] iconDrawables;
 
@@ -166,10 +150,38 @@ public class IconListPreference extends CustomDialogListPreference {
                 // No morphe assets (e.g. ORIGINAL) - use the launcher icon of the app.
                 source = Objects.requireNonNullElseGet(fg,
                         () -> Objects.requireNonNullElseGet(bg,
-                                () -> resolveAppLauncherIconDrawable(context, suffix)));
+                                () -> {
+                                    // Resolves the launcher icon of the app that an entry uses, such as the original unpatched icon.
+                                    // Uses the resource name injected at app startup; falls back to the current app icon.
+                                    String iconName = appLauncherIconNames.get(suffix);
+                                    if (iconName != null && !iconName.isEmpty()) {
+                                        int resId = ResourceUtils.getIdentifier(ResourceType.MIPMAP, iconName);
+                                        if (resId != 0) {
+                                            Drawable drawable = context.getDrawable(resId);
+                                            if (drawable != null) return drawable;
+                                        }
+                                    }
+                                    return context.getPackageManager().getApplicationIcon(context.getApplicationInfo());
+                                }));
             }
 
-            return renderToRounded(context.getResources(), source, sizePx, cornerRadius, isAdaptive);
+            Resources res = context.getResources();
+            Bitmap bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bmp);
+            Path clip = new Path();
+            clip.addRoundRect(0, 0, sizePx, sizePx, cornerRadius, cornerRadius, Path.Direction.CW);
+            canvas.clipPath(clip);
+            if (isAdaptive) {
+                // Adaptive icon layers use a 108dp canvas with a 72dp safe zone.
+                // Scale so the safe-zone content fills the full bitmap.
+                int scaledSize = Math.round(sizePx * (108f / 72f));
+                int offset = (scaledSize - sizePx) / 2;
+                source.setBounds(-offset, -offset, sizePx + offset, sizePx + offset);
+            } else {
+                source.setBounds(0, 0, sizePx, sizePx);
+            }
+            source.draw(canvas);
+            return new BitmapDrawable(res, bmp);
         } catch (Exception ex) {
             Logger.printInfo(() -> "buildIconDrawable failure: " + suffix, ex);
             return null;
@@ -180,27 +192,6 @@ public class IconListPreference extends CustomDialogListPreference {
         int resId = ResourceUtils.getIdentifier(ResourceType.DRAWABLE, name);
         if (resId == 0) resId = ResourceUtils.getIdentifier(ResourceType.MIPMAP, name);
         return resId;
-    }
-
-    @NonNull
-    static Drawable renderToRounded(
-            Resources res, Drawable source, int sizePx, float cornerRadius, boolean isAdaptive) {
-        Bitmap bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bmp);
-        Path clip = new Path();
-        clip.addRoundRect(0, 0, sizePx, sizePx, cornerRadius, cornerRadius, Path.Direction.CW);
-        canvas.clipPath(clip);
-        if (isAdaptive) {
-            // Adaptive icon layers use a 108dp canvas with a 72dp safe zone.
-            // Scale so the safe-zone content fills the full bitmap.
-            int scaledSize = Math.round(sizePx * (108f / 72f));
-            int offset = (scaledSize - sizePx) / 2;
-            source.setBounds(-offset, -offset, sizePx + offset, sizePx + offset);
-        } else {
-            source.setBounds(0, 0, sizePx, sizePx);
-        }
-        source.draw(canvas);
-        return new BitmapDrawable(res, bmp);
     }
 
     @Override

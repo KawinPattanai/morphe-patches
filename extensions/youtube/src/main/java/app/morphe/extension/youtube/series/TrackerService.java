@@ -248,7 +248,20 @@ public final class TrackerService {
         lastUndo = value;
         long serial = undoSerial.incrementAndGet();
         undoMessage = message;
-        long duration = undoDuration();
+        // Accessibility users may need more time to reach the Undo button.
+        long duration;
+        undoDuration: {
+            final long defaultDuration = 8000;
+            AccessibilityManager manager = (AccessibilityManager)
+                    Utils.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                //noinspection WrongConstant
+                duration = manager.getRecommendedTimeoutMillis((int) defaultDuration,
+                        AccessibilityManager.FLAG_CONTENT_TEXT | AccessibilityManager.FLAG_CONTENT_CONTROLS);
+                break undoDuration;
+            }
+            duration = manager.isEnabled() ? 20000 : defaultDuration;
+        }
         undoUntil = SystemClock.uptimeMillis() + duration;
         main.postDelayed(() -> {
             if (undoSerial.get() == serial) {
@@ -257,21 +270,6 @@ public final class TrackerService {
                 changed();
             }
         }, duration + 1);
-    }
-
-    /**
-     * Accessibility users may need more time to reach the Undo button.
-     */
-    private long undoDuration() {
-        final long defaultDuration = 8000;
-        AccessibilityManager manager = (AccessibilityManager)
-                Utils.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            //noinspection WrongConstant
-            return manager.getRecommendedTimeoutMillis((int) defaultDuration,
-                    AccessibilityManager.FLAG_CONTENT_TEXT | AccessibilityManager.FLAG_CONTENT_CONTROLS);
-        }
-        return manager.isEnabled() ? 20000 : defaultDuration;
     }
 
     public <T> void read(Supplier<T> work, Consumer<T> done, Consumer<String> error) {

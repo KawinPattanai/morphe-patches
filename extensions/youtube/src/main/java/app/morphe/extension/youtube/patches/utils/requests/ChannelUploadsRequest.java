@@ -230,7 +230,33 @@ public final class ChannelUploadsRequest {
                     continue;
                 }
 
-                ChannelSearchResult upload = parseLockup(item.optJSONObject("lockupViewModel"), roundedViewCounts);
+                ChannelSearchResult upload;
+                parseLockup: {
+                    JSONObject lockup = item.optJSONObject("lockupViewModel");
+                    if (lockup == null) {
+                        upload = null;
+                        break parseLockup;
+                    }
+
+                    String videoId = lockup.optString("contentId");
+                    JSONObject metadata = lockup.optJSONObject("metadata");
+                    JSONObject lockupMetadata = metadata == null ? null : metadata.optJSONObject("lockupMetadataViewModel");
+                    String title = lockupMetadata == null ? "" : textContent(lockupMetadata.optJSONObject("title"));
+                    if (videoId.isEmpty() || title.isEmpty()) {
+                        upload = null;
+                        break parseLockup;
+                    }
+
+                    JSONObject contentImage = lockup.optJSONObject("contentImage");
+                    JSONObject thumbnail = contentImage == null ? null : contentImage.optJSONObject("thumbnailViewModel");
+                    List<String> details = parseDetails(lockupMetadata);
+                    if (roundedViewCounts != null && !details.isEmpty() && details.get(0).contains("view")) {
+                        roundedViewCounts.put(videoId, ChannelSearchRequest.parseViewCount("", details.get(0)));
+                    }
+
+                    upload = ChannelSearchRequest.createResult(videoId, title, parseThumbnail(thumbnail),
+                            parseLength(thumbnail), details);
+                }
                 if (upload != null) {
                     page.add(upload);
                 }
@@ -301,32 +327,6 @@ public final class ChannelUploadsRequest {
         JSONObject continuation = command == null ? null : command.optJSONObject("continuationCommand");
         String token = continuation == null ? "" : continuation.optString("token");
         return token.isEmpty() ? null : token;
-    }
-
-    @Nullable
-    private static ChannelSearchResult parseLockup(@Nullable JSONObject lockup,
-                                                   @Nullable Map<String, Long> roundedViewCounts) {
-        if (lockup == null) {
-            return null;
-        }
-
-        String videoId = lockup.optString("contentId");
-        JSONObject metadata = lockup.optJSONObject("metadata");
-        JSONObject lockupMetadata = metadata == null ? null : metadata.optJSONObject("lockupMetadataViewModel");
-        String title = lockupMetadata == null ? "" : textContent(lockupMetadata.optJSONObject("title"));
-        if (videoId.isEmpty() || title.isEmpty()) {
-            return null;
-        }
-
-        JSONObject contentImage = lockup.optJSONObject("contentImage");
-        JSONObject thumbnail = contentImage == null ? null : contentImage.optJSONObject("thumbnailViewModel");
-        List<String> details = parseDetails(lockupMetadata);
-        if (roundedViewCounts != null && !details.isEmpty() && details.get(0).contains("view")) {
-            roundedViewCounts.put(videoId, ChannelSearchRequest.parseViewCount("", details.get(0)));
-        }
-
-        return ChannelSearchRequest.createResult(videoId, title, parseThumbnail(thumbnail),
-                parseLength(thumbnail), details);
     }
 
     private static String parseThumbnail(@Nullable JSONObject thumbnail) {
@@ -421,30 +421,30 @@ public final class ChannelUploadsRequest {
 
         String normalizedText = normalize(text);
         for (String word : queryWords) {
-            if (!containsWordStart(normalizedText, word)) {
+            // A word of the search matches the start of a word, so that it matches plurals and longer
+            // forms of it, but not words that only contain it, such as "time" in "ultime".
+            // Languages written without spaces between words match anywhere.
+            boolean containsWordStart;
+            containsWordStart: {
+                switch (Character.UnicodeScript.of(word.codePointAt(0))) {
+                    case HAN, HIRAGANA, KATAKANA, THAI, LAO, KHMER, MYANMAR -> {
+                        containsWordStart = normalizedText.contains(word);
+                        break containsWordStart;
+                    }
+                }
+
+                for (int index = normalizedText.indexOf(word); index >= 0; index = normalizedText.indexOf(word, index + 1)) {
+                    if (index == 0 || !Character.isLetterOrDigit(normalizedText.codePointBefore(index))) {
+                        containsWordStart = true;
+                        break containsWordStart;
+                    }
+                }
+                containsWordStart = false;
+            }
+            if (!containsWordStart) {
                 return false;
             }
         }
         return true;
-    }
-
-    /**
-     * A word of the search matches the start of a word, so that it matches plurals and longer
-     * forms of it, but not words that only contain it, such as "time" in "ultime".
-     * Languages written without spaces between words match anywhere.
-     */
-    private static boolean containsWordStart(String text, String word) {
-        switch (Character.UnicodeScript.of(word.codePointAt(0))) {
-            case HAN, HIRAGANA, KATAKANA, THAI, LAO, KHMER, MYANMAR -> {
-                return text.contains(word);
-            }
-        }
-
-        for (int index = text.indexOf(word); index >= 0; index = text.indexOf(word, index + 1)) {
-            if (index == 0 || !Character.isLetterOrDigit(text.codePointBefore(index))) {
-                return true;
-            }
-        }
-        return false;
     }
 }

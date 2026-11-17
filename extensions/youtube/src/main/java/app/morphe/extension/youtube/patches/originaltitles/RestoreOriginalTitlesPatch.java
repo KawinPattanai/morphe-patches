@@ -750,7 +750,14 @@ public final class RestoreOriginalTitlesPatch {
             }
             if (DeArrowTitleIcon.hasIcon(text)) {
                 // A reused title can be outdated after its DeArrow icon was tapped.
-                return updatedDeArrowTitle(text);
+                // The text with the other title or icon if its DeArrow icon was tapped meanwhile,
+                // the text with the title that won the vote on the DeArrow titles, or the same text.
+                DeArrowIconSpan[] spans = ((Spanned) text).getSpans(0, text.length(), DeArrowIconSpan.class);
+                if (spans.length == 0 || !spans[0].isOutdated()) {
+                    return text;
+                }
+                String changedTitle = spans[0].changedTitle();
+                return titleText(text, changedTitle != null ? changedTitle : spans[0].title, spans[0].videoId);
             }
             if (!replacesTitlesForCurrentNavigation()) {
                 // A title can be marked when the element was parsed for another navigation.
@@ -758,7 +765,47 @@ public final class RestoreOriginalTitlesPatch {
                 return markerStart < 0 ? text : text.subSequence(0, markerStart);
             }
 
-            CharSequence channelPreview = restoreChannelPreview(text);
+            // Replaces the description of the channel header or the description panel when it's laid out,
+            // if the original description was not yet fetched when the element was parsed.
+            // The loading text is shown until the original description is fetched.
+            // The original description, the loading text marked to be laid out again,
+            // or null if the text is not a translated channel description, the original description
+            // is the same, or it failed to fetch.
+            CharSequence channelPreview;
+            restoreChannelPreview: {
+                if (text.length() > maxTranslatedChannelPreviewLength.get()) {
+                    channelPreview = null;
+                    break restoreChannelPreview;
+                }
+
+                String translatedText = text.toString();
+                ChannelPreview preview = translatedChannelPreviews.get(translatedText.trim());
+                if (preview == null) {
+                    channelPreview = null;
+                    break restoreChannelPreview;
+                }
+
+                String channelId = preview.channelId();
+                // A request that failed is fetched again, but the loading text is shown only once,
+                // so a failing network does not keep loading.
+                final boolean wasPending = OriginalChannelDescriptionRequest.isPending(channelId);
+                String originalPreview = getOriginalChannelPreview(channelId);
+                if (originalPreview == null) {
+                    if (!wasPending || !OriginalChannelDescriptionRequest.isPending(channelId)) {
+                        channelPreview = null;
+                        break restoreChannelPreview;
+                    }
+                    relayoutWhenFetched(OriginalChannelDescriptionRequest.fetch(channelId));
+                    channelPreview = spannedText(text, LOADING_TITLE.toString(), new ChannelPreviewSpan(channelId));
+                    break restoreChannelPreview;
+                }
+                if (originalPreview.equals(preview.translatedDescription())) {
+                    channelPreview = null;
+                    break restoreChannelPreview;
+                }
+
+                channelPreview = spannedText(text, translatedText.replace(preview.translatedDescription(), originalPreview), null);
+            }
             if (channelPreview != null) {
                 return channelPreview;
             }
@@ -930,19 +977,6 @@ public final class RestoreOriginalTitlesPatch {
     }
 
     /**
-     * @return The text with the other title or icon if its DeArrow icon was tapped meanwhile,
-     *         the text with the title that won the vote on the DeArrow titles, or the same text.
-     */
-    private static CharSequence updatedDeArrowTitle(CharSequence text) {
-        DeArrowIconSpan[] spans = ((Spanned) text).getSpans(0, text.length(), DeArrowIconSpan.class);
-        if (spans.length == 0 || !spans[0].isOutdated()) {
-            return text;
-        }
-        String changedTitle = spans[0].changedTitle();
-        return titleText(text, changedTitle != null ? changedTitle : spans[0].title, spans[0].videoId);
-    }
-
-    /**
      * Fetches the titles of the video again after a vote on its DeArrow titles,
      * and lays out the shown titles again when fetched. Can be called on any thread.
      */
@@ -1026,46 +1060,6 @@ public final class RestoreOriginalTitlesPatch {
             spannedText.setSpan(relayoutSpan, 0, newLength, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         return spannedText;
-    }
-
-    /**
-     * Replaces the description of the channel header or the description panel when it's laid out,
-     * if the original description was not yet fetched when the element was parsed.
-     * The loading text is shown until the original description is fetched.
-     *
-     * @return The original description, the loading text marked to be laid out again,
-     *         or null if the text is not a translated channel description, the original description
-     *         is the same, or it failed to fetch.
-     */
-    @Nullable
-    private static CharSequence restoreChannelPreview(CharSequence text) {
-        if (text.length() > maxTranslatedChannelPreviewLength.get()) {
-            return null;
-        }
-
-        String translatedText = text.toString();
-        ChannelPreview preview = translatedChannelPreviews.get(translatedText.trim());
-        if (preview == null) {
-            return null;
-        }
-
-        String channelId = preview.channelId();
-        // A request that failed is fetched again, but the loading text is shown only once,
-        // so a failing network does not keep loading.
-        final boolean wasPending = OriginalChannelDescriptionRequest.isPending(channelId);
-        String originalPreview = getOriginalChannelPreview(channelId);
-        if (originalPreview == null) {
-            if (!wasPending || !OriginalChannelDescriptionRequest.isPending(channelId)) {
-                return null;
-            }
-            relayoutWhenFetched(OriginalChannelDescriptionRequest.fetch(channelId));
-            return spannedText(text, LOADING_TITLE.toString(), new ChannelPreviewSpan(channelId));
-        }
-        if (originalPreview.equals(preview.translatedDescription())) {
-            return null;
-        }
-
-        return spannedText(text, translatedText.replace(preview.translatedDescription(), originalPreview), null);
     }
 
     /**
@@ -1381,59 +1375,61 @@ public final class RestoreOriginalTitlesPatch {
         }
 
         ProtoNode description = findShortsDescription(root, null);
-        if (description == null || description.decodeUtf8().equals(originalDescription)
-                || !isShortsDescriptionOfVideo(textNodes, description.decodeUtf8(), originalDescription, videoId)) {
+        if (description == null || description.decodeUtf8().equals(originalDescription)) {
+            return false;
+        }
+
+        // The description panel does not include the video id, and the opened video can change before
+        // the panel is parsed. The keys of the hashtags and links of the description can include the
+        // video id, and the hashtags are not translated, so they must be the same in the original description.
+        // If the description is of the video.
+        boolean isShortsDescriptionOfVideo;
+        isShortsDescriptionOfVideo: {
+            String shownDescription = description.decodeUtf8();
+            Set<String> keyVideoIds = new HashSet<>();
+            for (ProtoNode node : textNodes) {
+                String text = node.getText();
+                if (!ENTITY_KEY_PATTERN.matcher(text).matches()) {
+                    continue;
+                }
+                try {
+                    byte[] decoded = Base64.decode(text.replace("%3D", ""),
+                            Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                    Matcher matcher = KEY_VIDEO_ID_PATTERN.matcher(new String(decoded, StandardCharsets.ISO_8859_1));
+                    while (matcher.find()) {
+                        keyVideoIds.add(matcher.group(1));
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // Not base64.
+                }
+            }
+            if (!keyVideoIds.isEmpty() && !keyVideoIds.contains(videoId)) {
+                Logger.printDebug(() -> "Description of Short is of other videos: " + keyVideoIds + " opened: " + videoId);
+                isShortsDescriptionOfVideo = false;
+                break isShortsDescriptionOfVideo;
+            }
+
+            Set<String> originalHashtags = new HashSet<>();
+            Matcher originalMatcher = HASHTAG_PATTERN.matcher(originalDescription.toLowerCase(Locale.ROOT));
+            while (originalMatcher.find()) {
+                originalHashtags.add(originalMatcher.group());
+            }
+            Matcher shownMatcher = HASHTAG_PATTERN.matcher(shownDescription.toLowerCase(Locale.ROOT));
+            while (shownMatcher.find()) {
+                if (!originalHashtags.contains(shownMatcher.group())) {
+                    final String hashtag = shownMatcher.group();
+                    Logger.printDebug(() -> "Description of Short has hashtag not in the original: " + hashtag);
+                    isShortsDescriptionOfVideo = false;
+                    break isShortsDescriptionOfVideo;
+                }
+            }
+            isShortsDescriptionOfVideo = true;
+        }
+        if (!isShortsDescriptionOfVideo) {
             return false;
         }
         OriginalDescription.restore(description, originalDescription);
         Logger.printDebug(() -> "Restored description of Short: " + videoId);
-        return true;
-    }
-
-    /**
-     * The description panel does not include the video id, and the opened video can change before
-     * the panel is parsed. The keys of the hashtags and links of the description can include the
-     * video id, and the hashtags are not translated, so they must be the same in the original description.
-     *
-     * @return If the description is of the video.
-     */
-    private static boolean isShortsDescriptionOfVideo(List<ProtoNode> textNodes, String shownDescription,
-                                                      String originalDescription, String videoId) {
-        Set<String> keyVideoIds = new HashSet<>();
-        for (ProtoNode node : textNodes) {
-            String text = node.getText();
-            if (!ENTITY_KEY_PATTERN.matcher(text).matches()) {
-                continue;
-            }
-            try {
-                byte[] decoded = Base64.decode(text.replace("%3D", ""),
-                        Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
-                Matcher matcher = KEY_VIDEO_ID_PATTERN.matcher(new String(decoded, StandardCharsets.ISO_8859_1));
-                while (matcher.find()) {
-                    keyVideoIds.add(matcher.group(1));
-                }
-            } catch (IllegalArgumentException ignored) {
-                // Not base64.
-            }
-        }
-        if (!keyVideoIds.isEmpty() && !keyVideoIds.contains(videoId)) {
-            Logger.printDebug(() -> "Description of Short is of other videos: " + keyVideoIds + " opened: " + videoId);
-            return false;
-        }
-
-        Set<String> originalHashtags = new HashSet<>();
-        Matcher originalMatcher = HASHTAG_PATTERN.matcher(originalDescription.toLowerCase(Locale.ROOT));
-        while (originalMatcher.find()) {
-            originalHashtags.add(originalMatcher.group());
-        }
-        Matcher shownMatcher = HASHTAG_PATTERN.matcher(shownDescription.toLowerCase(Locale.ROOT));
-        while (shownMatcher.find()) {
-            if (!originalHashtags.contains(shownMatcher.group())) {
-                final String hashtag = shownMatcher.group();
-                Logger.printDebug(() -> "Description of Short has hashtag not in the original: " + hashtag);
-                return false;
-            }
-        }
         return true;
     }
 
@@ -1956,7 +1952,56 @@ public final class RestoreOriginalTitlesPatch {
                             ? findLabeledCandidateTitle(textNodes, texts, component)
                             : layoutTitle;
                 },
-                () -> findCandidateTitle(textNodes, nodeTexts, texts, videoId, elementVideoId, component),
+                () -> {
+                    // The text that can be the title is found in order of reliability: a title seen before
+                    // for the video, the title of the opened video that expands the description, the title
+                    // that starts the accessibility label of the video, or the title at the field path learned
+                    // by TitleLayouts for the elements without an accessibility label.
+                    // The opened video title is found before the labeled title, as the element can include
+                    // other labels that look like a video label, such as the channel label of an artist
+                    // '@handle, Official Artist Channel' of a Short.
+                    // The text is only shown as loading until the title is verified, so it can be another text,
+                    // such as the name of a product shown with the video.
+                    // The longest text that is a title seen before for the video.
+                    String title = null;
+                    synchronized (translatedTitles) {
+                        for (String text : texts) {
+                            Set<String> videoIds = translatedTitles.get(text);
+                            if (videoIds != null && videoIds.contains(videoId)
+                                    && (title == null || text.length() > title.length())) {
+                                title = text;
+                            }
+                        }
+                    }
+                    if (title == null && !component.startsWith(SHORTS_TOP_BAR_IDENTIFIER)) {
+                        title = findOpenedVideoTitle(textNodes, texts);
+                    }
+                    if (title == null) {
+                        if (!elementVideoId) {
+                            return null;
+                        }
+
+                        title = findLabeledCandidateTitle(textNodes, texts, component);
+                        if (title == null) {
+                            // The title at the title path learned for the component.
+                            List<String> paths = TitleLayouts.fieldPaths(textNodes);
+                            title = TitleLayouts.findTitle(component, paths, nodeTexts);
+                            if (title == null || !isLabelCandidate(title) || isChannelHandle(title, texts)) {
+                                // Saves the texts of the element, so the title path of the component is learned
+                                // if the title is not translated.
+                                if (RESTORE_ORIGINAL) {
+                                    TitleLayouts.addCandidates(component, videoId, paths, nodeTexts);
+                                    OriginalTitleRequest.OriginalVideo originalVideo = OriginalTitleRequest.getOriginalIfFetched(videoId);
+                                    if (originalVideo != null) {
+                                        TitleLayouts.originalTitleFetched(videoId, originalVideo.title());
+                                    }
+                                }
+                                return null;
+                            }
+                        }
+                    }
+                    return isChannelName(videoId, title) ? null : title;
+                },
                 title -> {
                     if (elementVideoId) {
                         TitleLayouts.confirmTitle(component, videoId, TitleLayouts.fieldPaths(textNodes), nodeTexts, title);
@@ -2043,69 +2088,59 @@ public final class RestoreOriginalTitlesPatch {
     }
 
     /**
-     * The text that can be the title is found in order of reliability: a title seen before
-     * for the video, the title of the opened video that expands the description, the title
-     * that starts the accessibility label of the video, or the title at the field path learned
-     * by {@link TitleLayouts} for the elements without an accessibility label.
-     * The opened video title is found before the labeled title, as the element can include
-     * other labels that look like a video label, such as the channel label of an artist
-     * '@handle, Official Artist Channel' of a Short.
-     * <p>
-     * The text is only shown as loading until the title is verified, so it can be another text,
-     * such as the name of a product shown with the video.
-     *
-     * @return The text that can be the title, or null if none.
-     */
-    @Nullable
-    private static String findCandidateTitle(List<ProtoNode> textNodes, List<String> nodeTexts, Set<String> texts,
-                                             String videoId, boolean elementVideoId, String component) {
-        // The longest text that is a title seen before for the video.
-        String title = null;
-        synchronized (translatedTitles) {
-            for (String text : texts) {
-                Set<String> videoIds = translatedTitles.get(text);
-                if (videoIds != null && videoIds.contains(videoId)
-                        && (title == null || text.length() > title.length())) {
-                    title = text;
-                }
-            }
-        }
-        if (title == null && !component.startsWith(SHORTS_TOP_BAR_IDENTIFIER)) {
-            title = findOpenedVideoTitle(textNodes, texts);
-        }
-        if (title == null) {
-            if (!elementVideoId) {
-                return null;
-            }
-
-            title = findLabeledCandidateTitle(textNodes, texts, component);
-            if (title == null) {
-                // The title at the title path learned for the component.
-                List<String> paths = TitleLayouts.fieldPaths(textNodes);
-                title = TitleLayouts.findTitle(component, paths, nodeTexts);
-                if (title == null || !isLabelCandidate(title) || isChannelHandle(title, texts)) {
-                    // Saves the texts of the element, so the title path of the component is learned
-                    // if the title is not translated.
-                    if (RESTORE_ORIGINAL) {
-                        TitleLayouts.addCandidates(component, videoId, paths, nodeTexts);
-                        OriginalTitleRequest.OriginalVideo originalVideo = OriginalTitleRequest.getOriginalIfFetched(videoId);
-                        if (originalVideo != null) {
-                            TitleLayouts.originalTitleFetched(videoId, originalVideo.title());
-                        }
-                    }
-                    return null;
-                }
-            }
-        }
-        return isChannelName(videoId, title) ? null : title;
-    }
-
-    /**
      * @return The title that starts the accessibility label of the video, or null if none.
      */
     @Nullable
     private static String findLabeledCandidateTitle(List<ProtoNode> textNodes, Set<String> texts, String component) {
-        String[] labelAndTitle = findLabeledTitle(texts);
+        // The accessibility label of a video starts with the title, and can include
+        // the other texts of the video (duration, channel, views, date).
+        // Texts that contain other texts are tried as the label, starting with the texts
+        // that contain the most other texts. Keys and identifiers are ignored,
+        // as they can contain other short keys.
+        String[] labelAndTitle;
+        findLabeledTitle: {
+            List<String> candidates = new ArrayList<>();
+            for (String text : texts) {
+                if (isLabelCandidate(text)) {
+                    candidates.add(text);
+                }
+            }
+
+            Map<String, Integer> containedCounts = new HashMap<>();
+            for (String text : candidates) {
+                final int length = text.length();
+                int containedCount = 0;
+                for (String other : candidates) {
+                    if (other.length() < length && text.contains(other)) {
+                        containedCount++;
+                    }
+                }
+                if (containedCount > 0) {
+                    containedCounts.put(text, containedCount);
+                }
+            }
+
+            List<Map.Entry<String, Integer>> labels = new ArrayList<>(containedCounts.entrySet());
+            labels.sort((a, b) -> {
+                final int countComparison = Integer.compare(b.getValue(), a.getValue());
+                return countComparison != 0
+                        ? countComparison
+                        : Integer.compare(b.getKey().length(), a.getKey().length());
+            });
+            // Labels of some languages do not start with the title, so these labels are tried
+            // only if no label starts with the title.
+            for (boolean afterColon : new boolean[]{false, true}) {
+                for (Map.Entry<String, Integer> entry : labels) {
+                    String label = entry.getKey();
+                    String title = findTitleOfLabel(label, texts, afterColon);
+                    if (title != null) {
+                        labelAndTitle = new String[]{label, title};
+                        break findLabeledTitle;
+                    }
+                }
+            }
+            labelAndTitle = null;
+        }
         String labeledLabel = labelAndTitle == null ? null : labelAndTitle[0];
         String labeledTitle = labelAndTitle == null ? null : labelAndTitle[1];
         if (labeledTitle == null) {
@@ -2282,7 +2317,31 @@ public final class RestoreOriginalTitlesPatch {
             Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
             if (cause instanceof IOException ioException) {
                 Logger.printInfo(() -> "Could not fetch other titles of: " + videoId, ioException);
-                retryCandidateTitle(videoId, texts, candidate, retries, requests, candidateRequest);
+                // Fetches again the other titles of a text that failed to fetch, after the requests to the server
+                // are no longer paused and only if the text is shown, so the elements scrolled off-screen do not
+                // fetch at the same time. The text is shown as loading until the title is verified.
+                // After the maximum number of retries, the text shows the title of the app, and the titles are
+                // fetched again only when the element is loaded again.
+                retryCandidateTitle: {
+                    final long delay = Math.max(CANDIDATE_RETRY_MILLISECONDS, RequestBackoff.pauseRemainingMilliseconds());
+                    if (retries >= MAX_CANDIDATE_RETRIES) {
+                        Utils.runOnMainThreadDelayed(() -> requests.remove(candidate, candidateRequest), delay);
+                        break retryCandidateTitle;
+                    }
+
+                    CandidateRetry retry = new CandidateRetry(videoId, texts, candidate, retries, requests, candidateRequest);
+                    // Saved before the failed request is done, so the texts laid out again find the retry.
+                    candidateRetries.put(candidateKey(videoId), retry);
+                    final long retryTime = System.currentTimeMillis() + delay;
+                    Utils.runOnMainThreadNowOrLater(() -> {
+                        retry.retryTime = retryTime;
+                        pendingRetries.add(retry);
+                        if (pendingRetries.size() > MAX_PENDING_RETRIES) {
+                            cancelRetry(pendingRetries.remove(0));
+                        }
+                        scheduleRetryCheck();
+                    });
+                }
             } else {
                 Logger.printException(() -> "requestCandidateTitle failure", cause);
             }
@@ -2298,36 +2357,6 @@ public final class RestoreOriginalTitlesPatch {
 
     private static String candidateKey(String videoId) {
         return videoId + ' ' + Locale.getDefault().toLanguageTag();
-    }
-
-    /**
-     * Fetches again the other titles of a text that failed to fetch, after the requests to the server
-     * are no longer paused and only if the text is shown, so the elements scrolled off-screen do not
-     * fetch at the same time. The text is shown as loading until the title is verified.
-     * After the maximum number of retries, the text shows the title of the app, and the titles are
-     * fetched again only when the element is loaded again.
-     */
-    private static void retryCandidateTitle(String videoId, Set<String> texts, String candidate, int retries,
-                                            Map<String, CompletableFuture<String>> requests,
-                                            CompletableFuture<String> failedRequest) {
-        final long delay = Math.max(CANDIDATE_RETRY_MILLISECONDS, RequestBackoff.pauseRemainingMilliseconds());
-        if (retries >= MAX_CANDIDATE_RETRIES) {
-            Utils.runOnMainThreadDelayed(() -> requests.remove(candidate, failedRequest), delay);
-            return;
-        }
-
-        CandidateRetry retry = new CandidateRetry(videoId, texts, candidate, retries, requests, failedRequest);
-        // Saved before the failed request is done, so the texts laid out again find the retry.
-        candidateRetries.put(candidateKey(videoId), retry);
-        final long retryTime = System.currentTimeMillis() + delay;
-        Utils.runOnMainThreadNowOrLater(() -> {
-            retry.retryTime = retryTime;
-            pendingRetries.add(retry);
-            if (pendingRetries.size() > MAX_PENDING_RETRIES) {
-                cancelRetry(pendingRetries.remove(0));
-            }
-            scheduleRetryCheck();
-        });
     }
 
     /**
@@ -2771,65 +2800,6 @@ public final class RestoreOriginalTitlesPatch {
             ancestor = ancestor.getParent();
         }
         return false;
-    }
-
-    /**
-     * The accessibility label of a video starts with the title, and can include
-     * the other texts of the video (duration, channel, views, date).
-     * Texts that contain other texts are tried as the label, starting with the texts
-     * that contain the most other texts. Keys and identifiers are ignored,
-     * as they can contain other short keys.
-     *
-     * @return The accessibility label and the title, or null if not found.
-     */
-    @Nullable
-    private static String[] findLabeledTitle(Set<String> texts) {
-        List<String> candidates = new ArrayList<>();
-        for (String text : texts) {
-            if (isLabelCandidate(text)) {
-                candidates.add(text);
-            }
-        }
-
-        List<Map.Entry<String, Integer>> labels = getLabels(candidates);
-        // Labels of some languages do not start with the title, so these labels are tried
-        // only if no label starts with the title.
-        for (boolean afterColon : new boolean[]{false, true}) {
-            for (Map.Entry<String, Integer> entry : labels) {
-                String label = entry.getKey();
-                String title = findTitleOfLabel(label, texts, afterColon);
-                if (title != null) {
-                    return new String[]{label, title};
-                }
-            }
-        }
-        return null;
-    }
-
-    @NonNull
-    private static List<Map.Entry<String, Integer>> getLabels(List<String> candidates) {
-        Map<String, Integer> containedCounts = new HashMap<>();
-        for (String text : candidates) {
-            final int length = text.length();
-            int containedCount = 0;
-            for (String other : candidates) {
-                if (other.length() < length && text.contains(other)) {
-                    containedCount++;
-                }
-            }
-            if (containedCount > 0) {
-                containedCounts.put(text, containedCount);
-            }
-        }
-
-        List<Map.Entry<String, Integer>> labels = new ArrayList<>(containedCounts.entrySet());
-        labels.sort((a, b) -> {
-            final int countComparison = Integer.compare(b.getValue(), a.getValue());
-            return countComparison != 0
-                    ? countComparison
-                    : Integer.compare(b.getKey().length(), a.getKey().length());
-        });
-        return labels;
     }
 
     /**

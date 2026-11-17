@@ -211,14 +211,6 @@ public final class FeedEngagementCountsPatch {
         return likeIcon;
     }
 
-    private static String formatPercent(float fraction) {
-        if (percentFormat == null) {
-            percentFormat = NumberFormat.getPercentInstance();
-            percentFormat.setMaximumFractionDigits(0);
-        }
-        return percentFormat.format(fraction);
-    }
-
     /**
      * Called by {@link FeedVideoCardsPatch} on the main thread after a card or a thumbnail is laid out.
      *
@@ -531,7 +523,11 @@ public final class FeedEngagementCountsPatch {
             final float fraction = data.getLikePercentage();
             if (LIKE_RATIO && votes > 0 && fraction >= 0 && fraction <= 1) {
                 likeFraction = fraction;
-                videoRatioText = formatPercent(fraction);
+                if (percentFormat == null) {
+                    percentFormat = NumberFormat.getPercentInstance();
+                    percentFormat.setMaximumFractionDigits(0);
+                }
+                videoRatioText = percentFormat.format(fraction);
             } else {
                 likeFraction = -1;
                 videoRatioText = null;
@@ -964,7 +960,93 @@ public final class FeedEngagementCountsPatch {
                 return;
             }
             if (row) {
-                drawRow(canvas, loading);
+                // Draws the row next to the view count: a divider, the like icon and the like count,
+                // and a vertical like bar with the like ratio.
+                drawRow: {
+                    Rect bounds = getBounds();
+                    // Same corners as the view count badge, which this row continues on the joined side.
+                    final float radius = px(CORNER_RADIUS_DP);
+                    final float leftRadius = joined && !joinedAtRight ? 0 : radius;
+                    final float rightRadius = joined && joinedAtRight ? 0 : radius;
+                    radii[0] = radii[1] = leftRadius;
+                    radii[2] = radii[3] = rightRadius;
+                    radii[4] = radii[5] = rightRadius;
+                    radii[6] = radii[7] = leftRadius;
+                    rect.set(bounds);
+                    backgroundPath.reset();
+                    backgroundPath.addRoundRect(rect, radii, Path.Direction.CW);
+                    canvas.drawPath(backgroundPath, backgroundPaint);
+
+                    final float textSize = rowPaint.getTextSize();
+                    final float centerY = bounds.exactCenterY();
+                    final int gap = px(GAP_DP);
+                    if (joined) {
+                        final float dividerX = bounds.left + rowDividerX;
+                        final float dividerHalf = bounds.height() * ROW_DIVIDER_OF_HEIGHT / 2;
+                        dividerPaint.setAlpha(Math.round((DIVIDER_COLOR >>> 24) * alpha / 255f));
+                        canvas.drawLine(dividerX, centerY - dividerHalf, dividerX, centerY + dividerHalf, dividerPaint);
+                    }
+                    float x = bounds.left + rowContentLeft;
+
+                    if (countText != null || (loading && LIKE_COUNT)) {
+                        final int iconSize = Math.round(textSize * ROW_ICON_OF_TEXT);
+                        Drawable icon = getLikeIcon();
+                        if (icon != null) {
+                            final int top = Math.round(centerY - iconSize / 2f);
+                            icon.setBounds(Math.round(x), top, Math.round(x) + iconSize, top + iconSize);
+                            // Shared by all badges, and shown with the loading spinner, so it does not fade in.
+                            icon.setAlpha(255);
+                            icon.draw(canvas);
+                        }
+                        x += iconSize + gap;
+                    }
+
+                    if (loading) {
+                        final float spinnerSize = textSize * ROW_BAR_OF_TEXT;
+                        rect.set(x, centerY - spinnerSize / 2, x + spinnerSize, centerY + spinnerSize / 2);
+                        FeedVideoCardsPatch.drawSpinner(canvas, rect, spinnerPaint);
+                        // Drawn again, so the spinner turns.
+                        invalidateSelf();
+                        break drawRow;
+                    }
+
+                    rowPaint.setAlpha(alpha);
+                    Paint.FontMetrics metrics = rowPaint.getFontMetrics();
+                    final float baseline = centerY - (metrics.ascent + metrics.descent) / 2;
+                    if (countText != null) {
+                        canvas.drawText(countText, x, baseline, rowPaint);
+                        x += rowPaint.measureText(countText);
+                    }
+
+                    if (ratioText != null) {
+                        if (countText != null) {
+                            x += px(ROW_GROUP_GAP_DP);
+                        }
+
+                        // A vertical bar, with the likes in green from the bottom and the dislikes in red at the top.
+                        final float barWidth = px(ROW_BAR_WIDTH_DP);
+                        final float barHeight = textSize * ROW_BAR_OF_TEXT;
+                        final float barTop = centerY - barHeight / 2;
+                        final float barBottom = centerY + barHeight / 2;
+                        final float barRadius = barWidth / 2;
+                        final float split = barBottom - barHeight * likeFraction;
+                        rect.set(x, barTop, x + barWidth, barBottom);
+                        barPaint.setColor(DISLIKE_BAR_COLOR);
+                        barPaint.setAlpha(alpha);
+                        canvas.drawRoundRect(rect, barRadius, barRadius, barPaint);
+                        if (split < barBottom) {
+                            canvas.save();
+                            canvas.clipRect(x, split, x + barWidth, barBottom);
+                            barPaint.setColor(LIKE_BAR_COLOR);
+                            barPaint.setAlpha(alpha);
+                            canvas.drawRoundRect(rect, barRadius, barRadius, barPaint);
+                            canvas.restore();
+                        }
+                        x += barWidth + gap;
+
+                        canvas.drawText(ratioText, x, baseline, rowPaint);
+                    }
+                }
                 return;
             }
             Rect bounds = getBounds();
@@ -1086,95 +1168,6 @@ public final class FeedEngagementCountsPatch {
 
                 Paint.FontMetrics metrics = ratioPaint.getFontMetrics();
                 canvas.drawText(ratioText, centerX, y - metrics.ascent, ratioPaint);
-            }
-        }
-
-        /**
-         * Draws the row next to the view count: a divider, the like icon and the like count,
-         * and a vertical like bar with the like ratio.
-         */
-        private void drawRow(Canvas canvas, boolean loading) {
-            Rect bounds = getBounds();
-            // Same corners as the view count badge, which this row continues on the joined side.
-            final float radius = px(CORNER_RADIUS_DP);
-            final float leftRadius = joined && !joinedAtRight ? 0 : radius;
-            final float rightRadius = joined && joinedAtRight ? 0 : radius;
-            radii[0] = radii[1] = leftRadius;
-            radii[2] = radii[3] = rightRadius;
-            radii[4] = radii[5] = rightRadius;
-            radii[6] = radii[7] = leftRadius;
-            rect.set(bounds);
-            backgroundPath.reset();
-            backgroundPath.addRoundRect(rect, radii, Path.Direction.CW);
-            canvas.drawPath(backgroundPath, backgroundPaint);
-
-            final float textSize = rowPaint.getTextSize();
-            final float centerY = bounds.exactCenterY();
-            final int gap = px(GAP_DP);
-            if (joined) {
-                final float dividerX = bounds.left + rowDividerX;
-                final float dividerHalf = bounds.height() * ROW_DIVIDER_OF_HEIGHT / 2;
-                dividerPaint.setAlpha(Math.round((DIVIDER_COLOR >>> 24) * alpha / 255f));
-                canvas.drawLine(dividerX, centerY - dividerHalf, dividerX, centerY + dividerHalf, dividerPaint);
-            }
-            float x = bounds.left + rowContentLeft;
-
-            if (countText != null || (loading && LIKE_COUNT)) {
-                final int iconSize = Math.round(textSize * ROW_ICON_OF_TEXT);
-                Drawable icon = getLikeIcon();
-                if (icon != null) {
-                    final int top = Math.round(centerY - iconSize / 2f);
-                    icon.setBounds(Math.round(x), top, Math.round(x) + iconSize, top + iconSize);
-                    // Shared by all badges, and shown with the loading spinner, so it does not fade in.
-                    icon.setAlpha(255);
-                    icon.draw(canvas);
-                }
-                x += iconSize + gap;
-            }
-
-            if (loading) {
-                final float spinnerSize = textSize * ROW_BAR_OF_TEXT;
-                rect.set(x, centerY - spinnerSize / 2, x + spinnerSize, centerY + spinnerSize / 2);
-                FeedVideoCardsPatch.drawSpinner(canvas, rect, spinnerPaint);
-                // Drawn again, so the spinner turns.
-                invalidateSelf();
-                return;
-            }
-
-            rowPaint.setAlpha(alpha);
-            Paint.FontMetrics metrics = rowPaint.getFontMetrics();
-            final float baseline = centerY - (metrics.ascent + metrics.descent) / 2;
-            if (countText != null) {
-                canvas.drawText(countText, x, baseline, rowPaint);
-                x += rowPaint.measureText(countText);
-            }
-
-            if (ratioText != null) {
-                if (countText != null) {
-                    x += px(ROW_GROUP_GAP_DP);
-                }
-                // A vertical bar, with the likes in green from the bottom and the dislikes in red at the top.
-                final float barWidth = px(ROW_BAR_WIDTH_DP);
-                final float barHeight = textSize * ROW_BAR_OF_TEXT;
-                final float barTop = centerY - barHeight / 2;
-                final float barBottom = centerY + barHeight / 2;
-                final float barRadius = barWidth / 2;
-                final float split = barBottom - barHeight * likeFraction;
-                rect.set(x, barTop, x + barWidth, barBottom);
-                barPaint.setColor(DISLIKE_BAR_COLOR);
-                barPaint.setAlpha(alpha);
-                canvas.drawRoundRect(rect, barRadius, barRadius, barPaint);
-                if (split < barBottom) {
-                    canvas.save();
-                    canvas.clipRect(x, split, x + barWidth, barBottom);
-                    barPaint.setColor(LIKE_BAR_COLOR);
-                    barPaint.setAlpha(alpha);
-                    canvas.drawRoundRect(rect, barRadius, barRadius, barPaint);
-                    canvas.restore();
-                }
-                x += barWidth + gap;
-
-                canvas.drawText(ratioText, x, baseline, rowPaint);
             }
         }
 

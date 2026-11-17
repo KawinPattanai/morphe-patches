@@ -120,103 +120,112 @@ public class PreferredCaptionLanguagePatch {
      */
     public static CaptionTrackInterface getPreferredCaptionTrack(
             SubtitleManagerInterface subtitleManager, @Nullable CaptionTrackInterface originalTrack) {
-        CaptionTrackInterface selected = choosePreferredCaptionTrack(subtitleManager, originalTrack);
+        CaptionTrackInterface selected;
+        choosePreferredCaptionTrack: {
+            try {
+                // CC off guard: Preserve explicitly disabled caption option.
+                if (isExplicitlyDisabled(originalTrack)) {
+                    selected = originalTrack;
+                    break choosePreferredCaptionTrack;
+                }
+
+                if (CaptionTracks.dualCaptionEnabled() && !userSelectedTrack.get()) {
+                    // The native default is not an explicit source choice. Only an existing
+                    // translation needs its exact original resolved to retain the requested target.
+                    final boolean isTranslation = originalTrack instanceof AutoTranslateCaptionsPatch.CaptionTrackInterface input
+                            && AutoTranslateCaptionsPatch.isTranslationTrack(input);
+                    CaptionTrackInterface source = blockTranslationSource(subtitleManager, isTranslation ? originalTrack : null);
+                    if (source != null) {
+                        if (isTranslation
+                                && "off".equalsIgnoreCase(Settings.PREFERRED_CAPTION_LANGUAGE.get())
+                                && source instanceof AutoTranslateCaptionsPatch.CaptionTrackInterface original
+                                && !CaptionTracks.requestOutput(original, originalTrack.patch_getLanguageCode())) {
+                            selected = originalTrack;
+                            break choosePreferredCaptionTrack;
+                        }
+                        selected = recordProgrammaticSelection(source);
+                        break choosePreferredCaptionTrack;
+                    }
+                }
+                String prefLang = Settings.PREFERRED_CAPTION_LANGUAGE.get();
+                Logger.printDebug(() -> "getPreferredCaptionTrack orig: " + originalTrack + " prefLang: " + prefLang);
+
+                if ("off".equalsIgnoreCase(prefLang)) {
+                    selected = originalTrack;
+                    break choosePreferredCaptionTrack;
+                }
+
+                if (userSelectedTrack.get()) {
+                    Logger.printDebug(() -> "User manually selected caption track, preserving: " + originalTrack);
+                    selected = originalTrack;
+                    break choosePreferredCaptionTrack;
+                }
+
+                String targetLang = normalizeLanguageCode("default".equalsIgnoreCase(prefLang)
+                        ? getAppLanguage()
+                        : prefLang);
+                if (targetLang.isEmpty()) {
+                    selected = originalTrack;
+                    break choosePreferredCaptionTrack;
+                }
+
+                // Priority 1: Direct tracks (provider subtitle, or native language subtitle).
+                CaptionTrackInterface nativeTrack = null;
+
+                List<CaptionTrackInterface> directTracks = subtitleManager.patch_getDirectCaptionTracks();
+                if (directTracks != null) {
+                    for (CaptionTrackInterface track : directTracks) {
+                        String lang = track.patch_getLanguageCode();
+
+                        if (AUTO_TRANSLATE_OPTION.equals(lang)) {
+                            continue;
+                        }
+
+                        if (DISABLE_OPTION.equals(lang) || !matchesLanguage(lang, targetLang)) {
+                            continue;
+                        }
+
+                        if (track.patch_getVssId().startsWith(".")) {
+                            // Creator / provider subtitle in target language has the highest priority.
+                            Logger.printDebug(() -> "Selected priority 1 (provider subtitle): " + track);
+                            selected = recordProgrammaticSelection(track);
+                            break choosePreferredCaptionTrack;
+                        }
+
+                        if (nativeTrack == null) {
+                            // Native language track (video audio is in target language).
+                            nativeTrack = track;
+                        }
+                    }
+                }
+
+                if (nativeTrack != null) {
+                    CaptionTrackInterface selectedTrack = nativeTrack;
+                    Logger.printDebug(() -> "Selected priority 1b (native target language track): " + selectedTrack);
+                    selected = recordProgrammaticSelection(nativeTrack);
+                    break choosePreferredCaptionTrack;
+                }
+
+                // Priority 2: Existing translation, then a validated current-audio source fallback.
+                // A missing menu row does not mean the backend cannot translate the source.
+                CaptionTrackInterface translated = findAutoTranslatedTrack(directTracks,
+                        subtitleManager.patch_getAutoTranslateCaptionTracks(),
+                        subtitleManager.patch_getCaptionTranslationSource(), targetLang, Requester.getAppLocale());
+                if (translated != null) {
+                    selected = recordProgrammaticSelection(translated);
+                    break choosePreferredCaptionTrack;
+                }
+
+                // Priority 3: Fallback to the original YouTube selection.
+                Logger.printDebug(() -> "Falling back to original track: " + originalTrack);
+                selected = recordProgrammaticSelection(originalTrack);
+            } catch (Exception ex) {
+                Logger.printException(() -> "getPreferredCaptionTrack failure", ex);
+                selected = originalTrack;
+            }
+        }
         rememberSelection(subtitleManager, selected);
         return selected;
-    }
-
-    private static CaptionTrackInterface choosePreferredCaptionTrack(
-            SubtitleManagerInterface subtitleManager, @Nullable CaptionTrackInterface originalTrack) {
-        try {
-            // CC off guard: Preserve explicitly disabled caption option.
-            if (isExplicitlyDisabled(originalTrack)) {
-                return originalTrack;
-            }
-
-            if (CaptionTracks.dualCaptionEnabled() && !userSelectedTrack.get()) {
-                // The native default is not an explicit source choice. Only an existing
-                // translation needs its exact original resolved to retain the requested target.
-                final boolean isTranslation = originalTrack instanceof AutoTranslateCaptionsPatch.CaptionTrackInterface input
-                        && AutoTranslateCaptionsPatch.isTranslationTrack(input);
-                CaptionTrackInterface source = blockTranslationSource(subtitleManager, isTranslation ? originalTrack : null);
-                if (source != null) {
-                    if (isTranslation
-                            && "off".equalsIgnoreCase(Settings.PREFERRED_CAPTION_LANGUAGE.get())
-                            && source instanceof AutoTranslateCaptionsPatch.CaptionTrackInterface original
-                            && !CaptionTracks.requestOutput(original, originalTrack.patch_getLanguageCode())) {
-                        return originalTrack;
-                    }
-                    return recordProgrammaticSelection(source);
-                }
-            }
-            String prefLang = Settings.PREFERRED_CAPTION_LANGUAGE.get();
-            Logger.printDebug(() -> "getPreferredCaptionTrack orig: " + originalTrack + " prefLang: " + prefLang);
-
-            if ("off".equalsIgnoreCase(prefLang)) {
-                return originalTrack;
-            }
-
-            if (userSelectedTrack.get()) {
-                Logger.printDebug(() -> "User manually selected caption track, preserving: " + originalTrack);
-                return originalTrack;
-            }
-
-            String targetLang = normalizeLanguageCode("default".equalsIgnoreCase(prefLang)
-                    ? getAppLanguage()
-                    : prefLang);
-            if (targetLang.isEmpty()) {
-                return originalTrack;
-            }
-
-            // Priority 1: Direct tracks (provider subtitle, or native language subtitle).
-            CaptionTrackInterface nativeTrack = null;
-
-            List<CaptionTrackInterface> directTracks = subtitleManager.patch_getDirectCaptionTracks();
-            if (directTracks != null) {
-                for (CaptionTrackInterface track : directTracks) {
-                    String lang = track.patch_getLanguageCode();
-
-                    if (AUTO_TRANSLATE_OPTION.equals(lang)) {
-                        continue;
-                    }
-
-                    if (DISABLE_OPTION.equals(lang) || !matchesLanguage(lang, targetLang)) {
-                        continue;
-                    }
-
-                    if (track.patch_getVssId().startsWith(".")) {
-                        // Creator / provider subtitle in target language has the highest priority.
-                        Logger.printDebug(() -> "Selected priority 1 (provider subtitle): " + track);
-                        return recordProgrammaticSelection(track);
-                    }
-
-                    if (nativeTrack == null) {
-                        // Native language track (video audio is in target language).
-                        nativeTrack = track;
-                    }
-                }
-            }
-
-            if (nativeTrack != null) {
-                CaptionTrackInterface selectedTrack = nativeTrack;
-                Logger.printDebug(() -> "Selected priority 1b (native target language track): " + selectedTrack);
-                return recordProgrammaticSelection(nativeTrack);
-            }
-
-            // Priority 2: Existing translation, then a validated current-audio source fallback.
-            // A missing menu row does not mean the backend cannot translate the source.
-            CaptionTrackInterface translated = findAutoTranslatedTrack(directTracks,
-                    subtitleManager.patch_getAutoTranslateCaptionTracks(),
-                    subtitleManager.patch_getCaptionTranslationSource(), targetLang, Requester.getAppLocale());
-            if (translated != null) return recordProgrammaticSelection(translated);
-
-            // Priority 3: Fallback to the original YouTube selection.
-            Logger.printDebug(() -> "Falling back to original track: " + originalTrack);
-            return recordProgrammaticSelection(originalTrack);
-        } catch (Exception ex) {
-            Logger.printException(() -> "getPreferredCaptionTrack failure", ex);
-            return originalTrack;
-        }
     }
 
     @Nullable
@@ -284,7 +293,28 @@ public class PreferredCaptionLanguagePatch {
                     return track;
                 }
                 CaptionTracks.clearRequestedOutput();
-                if (isSameTrack(track, lastProgrammaticTrackLang, lastProgrammaticTrackVss)) {
+                boolean isSameTrack;
+                isSameTrack: {
+                    String targetLang = lastProgrammaticTrackLang;
+                    String targetVss = lastProgrammaticTrackVss;
+                    if (track == null) {
+                        isSameTrack = false;
+                        break isSameTrack;
+                    }
+                    String vss = track.patch_getVssId();
+                    final boolean hasTargetVss = targetVss != null && !targetVss.isEmpty();
+
+                    if (hasTargetVss && targetVss.equals(vss)) {
+                        isSameTrack = true;
+                        break isSameTrack;
+                    }
+
+                    // Language match is only sufficient if one of the tracks has no vss id.
+                    isSameTrack = targetLang != null && !targetLang.isEmpty()
+                            && targetLang.equalsIgnoreCase(track.patch_getLanguageCode())
+                            && (!hasTargetVss || vss.isEmpty());
+                }
+                if (isSameTrack) {
                     Logger.printDebug(() -> "Ignoring PREFERRED_TRACK as it matches programmatic selection");
                     return track;
                 }
@@ -451,22 +481,6 @@ public class PreferredCaptionLanguagePatch {
             lastProgrammaticTrackVss = null;
         }
         return track;
-    }
-
-    private static boolean isSameTrack(@Nullable CaptionTrackInterface track,
-                                       @Nullable String targetLang, @Nullable String targetVss) {
-        if (track == null) return false;
-        String vss = track.patch_getVssId();
-        final boolean hasTargetVss = targetVss != null && !targetVss.isEmpty();
-
-        if (hasTargetVss && targetVss.equals(vss)) {
-            return true;
-        }
-
-        // Language match is only sufficient if one of the tracks has no vss id.
-        return targetLang != null && !targetLang.isEmpty()
-                && targetLang.equalsIgnoreCase(track.patch_getLanguageCode())
-                && (!hasTargetVss || vss.isEmpty());
     }
 
     private static boolean matchesLanguage(@Nullable String trackLang, String targetLang) {

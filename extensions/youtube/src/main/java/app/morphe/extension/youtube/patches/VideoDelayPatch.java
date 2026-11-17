@@ -47,8 +47,14 @@ public class VideoDelayPatch {
             return positionUs;
         }
 
-        if (Settings.VIDEO_DELAY_BLUETOOTH_ONLY.get() && !isBluetoothAudioConnected()) {
-            return positionUs;
+        if (Settings.VIDEO_DELAY_BLUETOOTH_ONLY.get()) {
+            if (!deviceCallbackRegistered) {
+                registerDeviceCallback();
+            }
+            boolean isBluetoothAudioConnected = bluetoothAudioConnected;
+            if (!isBluetoothAudioConnected) {
+                return positionUs;
+            }
         }
 
         if (lastLoggedDelayMs != delayMs) {
@@ -57,13 +63,6 @@ public class VideoDelayPatch {
         }
 
         return positionUs - delayMs * 1000L;
-    }
-
-    private static boolean isBluetoothAudioConnected() {
-        if (!deviceCallbackRegistered) {
-            registerDeviceCallback();
-        }
-        return bluetoothAudioConnected;
     }
 
     private static synchronized void registerDeviceCallback() {

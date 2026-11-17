@@ -224,7 +224,15 @@ public class SwipeControlsHostActivity extends Activity {
         Logger.printDebug(() -> "initializing swipe controls controllers");
         config = new SwipeControlsConfigurationProvider();
         keys = new VolumeKeysController(this);
-        audio = createAudioController();
+        // Creates the audio volume controller.
+        createAudioController: {
+            if (!config.isVolumeControlEnabled()) {
+                audio = null;
+                break createAudioController;
+            }
+            AudioVolumeController controller = new AudioVolumeController(this);
+            audio = controller.isAvailable() ? controller : null;
+        }
         screen = config.isBrightnessControlEnabled() ? new ScreenBrightnessController(this) : null;
 
         // create overlay
@@ -316,18 +324,6 @@ public class SwipeControlsHostActivity extends Activity {
             // If saving and restoring brightness is disabled, simply keep the default brightness
             screen.restoreDefaultBrightness();
         }
-    }
-
-    /**
-     * Creates the audio volume controller.
-     */
-    @Nullable
-    private AudioVolumeController createAudioController() {
-        if (!config.isVolumeControlEnabled()) {
-            return null;
-        }
-        AudioVolumeController controller = new AudioVolumeController(this);
-        return controller.isAvailable() ? controller : null;
     }
 
     /**

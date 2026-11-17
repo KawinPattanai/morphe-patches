@@ -355,7 +355,27 @@ public class ThemeColorPatch {
                 ThemeColorOverlay.applyTo(context, dark, changeForeground);
             }
 
-            resolveThemeColors(context);
+            // Resolves the color of both selected colors, and hands them to Morphe, which uses the
+            // color of the app for its own dialogs and settings.
+            // A context carries the resource variant of one theme only, so each color is resolved with
+            // a configuration of the theme it belongs to and read back with
+            // themeColor(boolean).
+            if (!(themeColorsResolved || !Utils.isContextSet())) {
+                themeColorsResolved = true;
+
+                // Morphe draws its own text and icons, and follows what the app uses for its foreground.
+                ThemeUtils.setChangeForegroundColor(SharedYouTubeSettings.THEME_COLOR_CHANGE_FOREGROUND.get());
+
+                // An app without a light theme has no light colors to replace.
+                if (colorResourceNames(true).length > 0) {
+                    darkThemeColor = selectedThemeColor(context, true);
+                    ThemeUtils.setThemeDarkColor(darkThemeColor);
+                }
+                if (colorResourceNames(false).length > 0) {
+                    lightThemeColor = selectedThemeColor(context, false);
+                    ThemeUtils.setThemeLightColor(lightThemeColor);
+                }
+            }
 
             return context;
         } catch (Exception ex) {
@@ -447,34 +467,6 @@ public class ThemeColorPatch {
         Logger.printDebug(() -> "Theme dark: " + darkConfigValue + " light: " + lightConfigValue);
 
         updateOverlay(context, dark, light);
-    }
-
-    /**
-     * Resolves the color of both selected colors, and hands them to Morphe, which uses the
-     * color of the app for its own dialogs and settings.
-     * <p>
-     * A context carries the resource variant of one theme only, so each color is resolved with
-     * a configuration of the theme it belongs to and read back with
-     * {@link #themeColor(boolean)}.
-     */
-    private static void resolveThemeColors(Context context) {
-        if (themeColorsResolved || !Utils.isContextSet()) {
-            return;
-        }
-        themeColorsResolved = true;
-
-        // Morphe draws its own text and icons, and follows what the app uses for its foreground.
-        ThemeUtils.setChangeForegroundColor(SharedYouTubeSettings.THEME_COLOR_CHANGE_FOREGROUND.get());
-
-        // An app without a light theme has no light colors to replace.
-        if (colorResourceNames(true).length > 0) {
-            darkThemeColor = selectedThemeColor(context, true);
-            ThemeUtils.setThemeDarkColor(darkThemeColor);
-        }
-        if (colorResourceNames(false).length > 0) {
-            lightThemeColor = selectedThemeColor(context, false);
-            ThemeUtils.setThemeLightColor(lightThemeColor);
-        }
     }
 
     /**
@@ -837,7 +829,10 @@ public class ThemeColorPatch {
             for (int c = 0; c < 4; c++) {
                 for (int h = 0; h < 8; h++) {
                     float[] paletteLab = oklchToOklab(lLevels[l], PALETTE_C_LEVELS[c], PALETTE_H_LEVELS[h]);
-                    final float dist = oklabDistance(targetLab, paletteLab);
+                    final float dl = targetLab[0] - paletteLab[0];
+                    final float da = targetLab[1] - paletteLab[1];
+                    final float db = targetLab[2] - paletteLab[2];
+                    final float dist = (float) Math.sqrt(dl * dl + da * da + db * db);
                     if (dist < minDistance) {
                         minDistance = dist;
                         bestIndex = (l << 5) | (c << 3) | h;
@@ -884,13 +879,6 @@ public class ThemeColorPatch {
         };
     }
 
-    private static float oklabDistance(float[] lab1, float[] lab2) {
-        final float dl = lab1[0] - lab2[0];
-        final float da = lab1[1] - lab2[1];
-        final float db = lab1[2] - lab2[2];
-        return (float) Math.sqrt(dl * dl + da * da + db * db);
-    }
-
 
     /**
      * Registers, updates or removes the overlay of both themes.
@@ -926,39 +914,31 @@ public class ThemeColorPatch {
 
             // The system deletes an overlay of the app when the app is installed again, so it is
             // registered on every start and not only after the user picks another color.
+            // The color the user picked, mapped to every color resource of a theme.
+            final int color = customColor(customColorSetting);
+            Map<String, Integer> colors = new LinkedHashMap<>();
+
+            for (String resourceName : resourceNames) {
+                if (resourceName.isEmpty()) {
+                    continue;
+                }
+
+                int finalColor = color;
+                final int opacityIndex = resourceName.indexOf("_opacity_");
+                if (opacityIndex >= 0) {
+                    String alphaHex = resourceName.substring(opacityIndex + 9);
+                    final int alpha = Integer.parseInt(alphaHex, 16);
+                    finalColor = (color & 0x00FFFFFF) | (alpha << 24);
+                }
+
+                colors.put(resourceName, finalColor);
+            }
             ThemeColorOverlay.register(context, dark,
-                    overlayColors(resourceNames, customColorSetting));
+                    colors);
         } catch (Exception ex) {
             // Overlays are a part of the system and a manufacturer can change how they behave.
             Logger.printException(() -> "Could not update the overlay of the app", ex);
         }
-    }
-
-    /**
-     * The color the user picked, mapped to every color resource of a theme.
-     */
-    private static Map<String, Integer> overlayColors(String[] resourceNames,
-                                                      StringSetting customColorSetting) {
-        final int color = customColor(customColorSetting);
-        Map<String, Integer> colors = new LinkedHashMap<>();
-
-        for (String resourceName : resourceNames) {
-            if (resourceName.isEmpty()) {
-                continue;
-            }
-
-            int finalColor = color;
-            final int opacityIndex = resourceName.indexOf("_opacity_");
-            if (opacityIndex >= 0) {
-                String alphaHex = resourceName.substring(opacityIndex + 9);
-                final int alpha = Integer.parseInt(alphaHex, 16);
-                finalColor = (color & 0x00FFFFFF) | (alpha << 24);
-            }
-
-            colors.put(resourceName, finalColor);
-        }
-
-        return colors;
     }
 
     /**

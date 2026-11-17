@@ -96,7 +96,17 @@ public final class SwipeZonesController {
      * Rectangle of the area that is effectively usable for swipe controls.
      */
     public Rectangle getEffectiveSwipeRect() {
-        maybeAttachPlayerBoundsListener();
+        // Tries to attach a listener to the player_view and update the player rectangle.
+        // Once a listener is attached, this function does nothing.
+        if (playerRect == null) {
+            View sizeAdjustableOverlay = host.findViewById(sizeAdjustableOverlayId);
+            if (sizeAdjustableOverlay != null) {
+                onPlayerViewLayout(sizeAdjustableOverlay);
+                sizeAdjustableOverlay.addOnLayoutChangeListener(
+                        (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                                onPlayerViewLayout(sizeAdjustableOverlay));
+            }
+        }
         Rectangle p = playerRect != null ? playerRect : fallbackScreenRect.get();
         return new Rectangle(
                 p.x + dp20,
@@ -146,21 +156,6 @@ public final class SwipeZonesController {
                 eRect.width,
                 zoneHeight
         );
-    }
-
-    /**
-     * Tries to attach a listener to the player_view and update the player rectangle.
-     * Once a listener is attached, this function does nothing.
-     */
-    private void maybeAttachPlayerBoundsListener() {
-        if (playerRect != null) return;
-        View sizeAdjustableOverlay = host.findViewById(sizeAdjustableOverlayId);
-        if (sizeAdjustableOverlay != null) {
-            onPlayerViewLayout(sizeAdjustableOverlay);
-            sizeAdjustableOverlay.addOnLayoutChangeListener(
-                    (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
-                            onPlayerViewLayout(sizeAdjustableOverlay));
-        }
     }
 
     /**

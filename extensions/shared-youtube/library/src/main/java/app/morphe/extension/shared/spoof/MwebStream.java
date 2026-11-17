@@ -202,7 +202,18 @@ public final class MwebStream {
         ArrayList<HttpHeader> appHeaders = request.patch_getHeaders();
         if (appHeaders != null) {
             for (HttpHeader header : appHeaders) {
-                if (!isReplacedHeader(((MediaHttpHeader) header).patch_getName())) {
+                boolean isReplacedHeader;
+                isReplacedHeader: {
+                    String name = ((MediaHttpHeader) header).patch_getName();
+                    for (String replaced : REPLACED_HEADERS) {
+                        if (replaced.equalsIgnoreCase(name)) {
+                            isReplacedHeader = true;
+                            break isReplacedHeader;
+                        }
+                    }
+                    isReplacedHeader = false;
+                }
+                if (!isReplacedHeader) {
                     headers.add(header);
                 }
             }
@@ -211,15 +222,6 @@ public final class MwebStream {
         headers.add(new HttpHeader("Origin", MwebSignIn.ORIGIN));
         headers.add(new HttpHeader("Referer", MwebSignIn.ORIGIN + "/"));
         return headers;
-    }
-
-    private static boolean isReplacedHeader(@Nullable String name) {
-        for (String replaced : REPLACED_HEADERS) {
-            if (replaced.equalsIgnoreCase(name)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -276,7 +278,19 @@ public final class MwebStream {
             onFailure("SABR error");
         } else if (partType == PART_MEDIA_HEADER) {
             try {
-                String mediaVideoId = readMediaVideoId(part);
+                String mediaVideoId;
+                readMediaVideoId: {
+                    CodedInputStream input = CodedInputStream.newInstance(part);
+                    for (int tag; (tag = input.readTag()) != 0; ) {
+                        if (WireFormat.getTagFieldNumber(tag) == MEDIA_HEADER_VIDEO_ID_FIELD
+                                && WireFormat.getTagWireType(tag) == WireFormat.WIRETYPE_LENGTH_DELIMITED) {
+                            mediaVideoId = input.readString();
+                            break readMediaVideoId;
+                        }
+                        input.skipField(tag);
+                    }
+                    mediaVideoId = null;
+                }
                 if (mediaVideoId != null && !mediaVideoId.isEmpty() && !mediaVideoId.equals(videoId)) {
                     // An ad the server puts in the streams of the video.
                     Logger.printDebug(() -> "Mobile Web media of another video: " + mediaVideoId
@@ -287,18 +301,5 @@ public final class MwebStream {
                 Logger.printInfo(() -> "Could not read media header", ex);
             }
         }
-    }
-
-    @Nullable
-    private static String readMediaVideoId(byte[] part) throws IOException {
-        CodedInputStream input = CodedInputStream.newInstance(part);
-        for (int tag; (tag = input.readTag()) != 0; ) {
-            if (WireFormat.getTagFieldNumber(tag) == MEDIA_HEADER_VIDEO_ID_FIELD
-                    && WireFormat.getTagWireType(tag) == WireFormat.WIRETYPE_LENGTH_DELIMITED) {
-                return input.readString();
-            }
-            input.skipField(tag);
-        }
-        return null;
     }
 }

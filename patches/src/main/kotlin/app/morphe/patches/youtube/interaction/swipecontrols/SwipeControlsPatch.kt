@@ -224,104 +224,98 @@ val swipeControlsPatch = patch(
             )
         }
 
-        addSeekbarScrubber()
-    }
-}
-
-/**
- * Let's swipe to seek scrub the time bar, the same way slide to seek does,
- * by adding [EXTENSION_SCRUBBER_INTERFACE] to the touch handler of slide to seek.
- */
-private fun addSeekbarScrubber() {
-    // Handler -> slide to seek controller -> scrub state -> time bar.
-    val (controllerField, scrubStateField, timeBarField) = listOf(0, 1, 3).map { index ->
-        SlideSeekbarGetViewControllerFingerprint.instructionMatches[index]
-            .getInstruction<ReferenceInstruction>().getReference<FieldReference>()!!
-    }
-    val timeBarType = timeBarField.type
-
-    // The scrub state reads the scrubber position into its point, relative to the time bar bounds in its rect.
-    val scrubStateClass = SeekbarUpdatePointFingerprint.classDef
-    if (scrubStateField.type != scrubStateClass.type) {
-        throw PatchException("Unexpected scrub state class: ${scrubStateField.type}")
-    }
-    val (pointField, rectField) = listOf(0, 2).map { index ->
-        SeekbarUpdatePointFingerprint.instructionMatches[index]
-            .getInstruction<ReferenceInstruction>().getReference<FieldReference>()!!
-    }
-    val updatePointMethod = SeekbarUpdatePointFingerprint.method
-
-    val (getBoundsMethod, startUpdatePointMethod, getScrubTimeMethod) =
-        SlideSeekbarStartScrubFingerprint.instructionMatches.map {
-            it.getInstruction<ReferenceInstruction>().getReference<MethodReference>()!!
+        // Let's swipe to seek scrub the time bar, the same way slide to seek does,
+        // by adding [EXTENSION_SCRUBBER_INTERFACE] to the touch handler of slide to seek.
+        // Handler -> slide to seek controller -> scrub state -> time bar.
+        val (controllerField, scrubStateField, timeBarField) = listOf(0, 1, 3).map { index ->
+            SlideSeekbarGetViewControllerFingerprint.instructionMatches[index]
+                .getInstruction<ReferenceInstruction>().getReference<FieldReference>()!!
         }
-    if (startUpdatePointMethod.definingClass != scrubStateClass.type
-        || startUpdatePointMethod.name != updatePointMethod.name
-        || getScrubTimeMethod.definingClass != timeBarType
-    ) {
-        throw PatchException("Unexpected scrub start: $startUpdatePointMethod $getScrubTimeMethod")
-    }
+        val timeBarType = timeBarField.type
 
-    val (startScrubMethod, moveScrubMethod, completeScrubMethod) = listOf(
-        TimeBarStartScrubFingerprint,
-        TimeBarMoveScrubFingerprint,
-        TimeBarCompleteScrubFingerprint
-    ).map { fingerprint ->
-        if (timeBarType !in fingerprint.classDef.interfaces) {
-            throw PatchException("${fingerprint.classDef.type} does not implement $timeBarType")
+        // The scrub state reads the scrubber position into its point, relative to the time bar bounds in its rect.
+        val scrubStateClass = SeekbarUpdatePointFingerprint.classDef
+        if (scrubStateField.type != scrubStateClass.type) {
+            throw PatchException("Unexpected scrub state class: ${scrubStateField.type}")
         }
-        "$timeBarType->${fingerprint.method.name}(I)V"
-    }
+        val (pointField, rectField) = listOf(0, 2).map { index ->
+            SeekbarUpdatePointFingerprint.instructionMatches[index]
+                .getInstruction<ReferenceInstruction>().getReference<FieldReference>()!!
+        }
+        val updatePointMethod = SeekbarUpdatePointFingerprint.method
 
-    SlideSeekbarHandlerConstructorFingerprint.method.apply {
-        addInstruction(
-            indexOfFirstInstructionReversedOrThrow(Opcode.RETURN_VOID),
-            "invoke-static/range { p0 .. p0 }, $EXTENSION_SEEK_CLASS->setScrubber($EXTENSION_SCRUBBER_INTERFACE)V"
-        )
-    }
+        val (getBoundsMethod, startUpdatePointMethod, getScrubTimeMethod) =
+            SlideSeekbarStartScrubFingerprint.instructionMatches.map {
+                it.getInstruction<ReferenceInstruction>().getReference<MethodReference>()!!
+            }
+        if (startUpdatePointMethod.definingClass != scrubStateClass.type
+            || startUpdatePointMethod.name != updatePointMethod.name
+            || getScrubTimeMethod.definingClass != timeBarType
+        ) {
+            throw PatchException("Unexpected scrub start: $startUpdatePointMethod $getScrubTimeMethod")
+        }
 
-    SlideSeekbarHandlerConstructorFingerprint.classDef.apply {
-        val getTimeBar = """
-            iget-object v0, p0, $controllerField
-            iget-object v0, v0, $scrubStateField
-            iget-object v0, v0, $timeBarField
-        """
+        val (startScrubMethod, moveScrubMethod, completeScrubMethod) = listOf(
+            TimeBarStartScrubFingerprint,
+            TimeBarMoveScrubFingerprint,
+            TimeBarCompleteScrubFingerprint
+        ).map { fingerprint ->
+            if (timeBarType !in fingerprint.classDef.interfaces) {
+                throw PatchException("${fingerprint.classDef.type} does not implement $timeBarType")
+            }
+            "$timeBarType->${fingerprint.method.name}(I)V"
+        }
 
-        addPatchInterface(
-            EXTENSION_SCRUBBER_INTERFACE,
-            "patch_startScrub",
-            """
+        SlideSeekbarHandlerConstructorFingerprint.method.apply {
+            addInstruction(
+                indexOfFirstInstructionReversedOrThrow(Opcode.RETURN_VOID),
+                "invoke-static/range { p0 .. p0 }, $EXTENSION_SEEK_CLASS->setScrubber($EXTENSION_SCRUBBER_INTERFACE)V"
+            )
+        }
+
+        SlideSeekbarHandlerConstructorFingerprint.classDef.apply {
+            val getTimeBar = """
                 iget-object v0, p0, $controllerField
                 iget-object v0, v0, $scrubStateField
-                iget-object v1, v0, $timeBarField
-                iget-object v2, v0, $rectField
-                invoke-interface { v1, v2 }, $getBoundsMethod
-                invoke-virtual { v0 }, $updatePointMethod
-                iget-object v2, v0, $pointField
-                iget v2, v2, Landroid/graphics/Point;->x:I
-                invoke-interface { v1, v2 }, $startScrubMethod
-                return v2
+                iget-object v0, v0, $timeBarField
             """
-        )
-        addPatchInterface(
-            EXTENSION_SCRUBBER_INTERFACE,
-            "patch_moveScrub",
-            """
-                $getTimeBar
-                invoke-interface { v0, p1 }, $moveScrubMethod
-                invoke-interface { v0 }, $getScrubTimeMethod
-                move-result-wide v0
-                return-wide v0
-            """
-        )
-        addPatchInterface(
-            EXTENSION_SCRUBBER_INTERFACE,
-            "patch_completeScrub",
-            """
-                $getTimeBar
-                invoke-interface { v0, p1 }, $completeScrubMethod
-                return-void
-            """
-        )
+
+            addPatchInterface(
+                EXTENSION_SCRUBBER_INTERFACE,
+                "patch_startScrub",
+                """
+                    iget-object v0, p0, $controllerField
+                    iget-object v0, v0, $scrubStateField
+                    iget-object v1, v0, $timeBarField
+                    iget-object v2, v0, $rectField
+                    invoke-interface { v1, v2 }, $getBoundsMethod
+                    invoke-virtual { v0 }, $updatePointMethod
+                    iget-object v2, v0, $pointField
+                    iget v2, v2, Landroid/graphics/Point;->x:I
+                    invoke-interface { v1, v2 }, $startScrubMethod
+                    return v2
+                """
+            )
+            addPatchInterface(
+                EXTENSION_SCRUBBER_INTERFACE,
+                "patch_moveScrub",
+                """
+                    $getTimeBar
+                    invoke-interface { v0, p1 }, $moveScrubMethod
+                    invoke-interface { v0 }, $getScrubTimeMethod
+                    move-result-wide v0
+                    return-wide v0
+                """
+            )
+            addPatchInterface(
+                EXTENSION_SCRUBBER_INTERFACE,
+                "patch_completeScrub",
+                """
+                    $getTimeBar
+                    invoke-interface { v0, p1 }, $completeScrubMethod
+                    return-void
+                """
+            )
+        }
     }
 }

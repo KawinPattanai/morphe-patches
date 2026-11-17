@@ -89,10 +89,6 @@ public class DisableVideoCodecsPatch {
             return original;
         }
 
-        return unionHdrTypes(original);
-    }
-
-    private static int[] unionHdrTypes(int[] original) {
         if (original.length == 0) {
             return HDR_TYPES.clone();
         }

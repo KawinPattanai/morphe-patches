@@ -68,30 +68,26 @@ public class LinkHandlingPreference extends Preference {
             String originalPackage = key.substring(key.indexOf(':') + 1);
             String patchedPackage = context.getPackageName();
 
-            showStep1Dialog(context, originalPackage, patchedPackage);
+            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                    context,
+                    str("morphe_link_handling_step1_title"),
+                    str("morphe_link_handling_step1_message"),
+                    null,
+                    str("morphe_link_handling_open"),
+                    () -> {
+                        openAppLinkSettings(context, originalPackage);
+                        showStep2Dialog(context, patchedPackage);
+                    },
+                    null,
+                    null,
+                    null,
+                    true
+            );
+
+            dialogPair.first.show();
         } catch (Exception ex) {
             Logger.printException(() -> "onClick failure", ex);
         }
-    }
-
-    private static void showStep1Dialog(Context context, String originalPackage, String patchedPackage) {
-        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                context,
-                str("morphe_link_handling_step1_title"),
-                str("morphe_link_handling_step1_message"),
-                null,
-                str("morphe_link_handling_open"),
-                () -> {
-                    openAppLinkSettings(context, originalPackage);
-                    showStep2Dialog(context, patchedPackage);
-                },
-                null,
-                null,
-                null,
-                true
-        );
-
-        dialogPair.first.show();
     }
 
     private static void showStep2Dialog(Context context, String patchedPackage) {

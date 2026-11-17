@@ -192,7 +192,62 @@ final class TTSEngine {
 
     /** Synthesizes {@code text} via Edge TTS at natural speed. Must be called off the main thread. */
     byte[] prefetch(String text, String voice, String lang) throws Exception {
-        return synthesizeEdge(text, voice, lang);
+        Utils.verifyOffMainThread();
+        synchronized (synthesisLock) {
+            IOException lastEx = null;
+            for (int attempt = 1; attempt <= 2; attempt++) {
+                try {
+                    SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+                    sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+                    String timestamp = sdf.format(new Date());
+                    String requestId = uuidHex();
+                    String speakLang = lang;
+                    if (speakLang == null || speakLang.isEmpty()) {
+                        // The locale portion of the voice name, e.g. "uk-UA-OstapNeural" -> "uk-UA".
+                        final int third = voice.indexOf('-', voice.indexOf('-') + 1);
+                        speakLang = third > 0 ? voice.substring(0, third) : "en-US";
+                    }
+                    String ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'"
+                            + " xml:lang='" + speakLang + "'>"
+                            + "<voice name='" + voice + "'>" + escapeXml(text) + "</voice></speak>";
+
+                    // Ensure we have a valid connection.
+                    ensureConnected();
+
+                    final boolean needsConfig = !configSent;
+                    if (needsConfig) configSent = true;
+
+                    // speech.config only needs to be sent once per connection.
+                    if (needsConfig) {
+                        sendText(persistentOut, "Path: speech.config\r\n"
+                                + "Content-Type: application/json; charset=utf-8\r\n"
+                                + "X-Timestamp: " + timestamp + "\r\n\r\n"
+                                + "{\"context\":{\"synthesis\":{\"audio\":{"
+                                + "\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\","
+                                + "\"wordBoundaryEnabled\":\"false\"},"
+                                + "\"outputFormat\":\"" + AUDIO_FORMAT + "\"}}}}");
+                    }
+
+                    sendText(persistentOut, "Path: ssml\r\n"
+                            + "X-RequestId: " + requestId + "\r\n"
+                            + "X-Timestamp: " + timestamp + "\r\n"
+                            + "Content-Type: application/ssml+xml\r\n\r\n" + ssml);
+
+                    // Collect audio frames until the server signals turn.end.
+                    ByteArrayOutputStream audioOut = new ByteArrayOutputStream();
+                    collectAudio(persistentIn, audioOut);
+                    if (audioOut.size() == 0) throw new IOException("Edge TTS returned no audio");
+
+                    lastSynthesisEndMs = System.currentTimeMillis();
+                    return audioOut.toByteArray();
+                } catch (IOException ex) {
+                    closeSocket();
+                    lastEx = ex;
+                    Logger.printDebug(() -> "TTS synthesis failed, retrying... ", ex);
+                }
+            }
+            throw lastEx;
+        }
     }
 
     /**
@@ -239,7 +294,103 @@ final class TTSEngine {
         Utils.runOnBackgroundThread(() -> {
             try {
                 // playMp3 blocks until completion or error.
-                playMp3(mp3, volume, rate, startTimeMs, id);
+                Utils.verifyOffMainThread();
+                CountDownLatch latch = new CountDownLatch(1);
+                MediaPlayer mp = new MediaPlayer();
+
+                Utils.runOnMainThread(() -> {
+                    if (stopped || id != playbackId) {
+                        mp.release();
+                        latch.countDown(); // Prevent await block
+                        return;
+                    }
+                    playLatch = latch;
+                    currentPlayer = mp;
+
+                    try {
+                        mp.setAudioAttributes(new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build());
+                        mp.setVolume(volume, volume);
+                        // Attach the boost as soon as the session is available so the first frames are not
+                        // played at native loudness. Failure is non-fatal: the device falls back to 1.0 gain.
+                        try {
+                            LoudnessEnhancer enhancer = new LoudnessEnhancer(mp.getAudioSessionId());
+                            enhancer.setTargetGain(TTS_GAIN_MILLIBELS);
+                            enhancer.setEnabled(true);
+                            currentEnhancer = enhancer;
+                        } catch (Exception ex) {
+                            Logger.printDebug(() -> "LoudnessEnhancer attach failed", ex);
+                        }
+                        mp.setDataSource(new MediaDataSource() {
+                            @Override
+                            public int readAt(long position, byte[] buffer, int offset, int size) {
+                                if (position >= mp3.length) return -1;
+                                final int pos   = (int) position;
+                                final int count = Math.min(size, mp3.length - pos);
+                                System.arraycopy(mp3, pos, buffer, offset, count);
+                                return count;
+                            }
+
+                            @Override
+                            public long getSize() {
+                                return mp3.length;
+                            }
+
+                            @Override
+                            public void close() {}
+                        });
+                        mp.setOnCompletionListener(m -> latch.countDown());
+                        mp.setOnErrorListener((m, what, extra) -> {
+                            Logger.printDebug(() -> "MediaPlayer error what: " + what + " extra: " + extra);
+                            latch.countDown();
+                            return true;
+                        });
+
+                        mp.prepare();
+                        if (rate != 1.0f) {
+                            mp.setPlaybackParams(new PlaybackParams().setSpeed(rate));
+                        }
+                        if (stopped || id != playbackId) {
+                            latch.countDown();
+                            return;
+                        }
+                        if (startTimeMs > 0) {
+                            mp.seekTo((int) startTimeMs);
+                        }
+                        mp.start();
+                    } catch (Exception ex) {
+                        Logger.printDebug(() -> "MediaPlayer setup failed", ex);
+                        latch.countDown();
+                    }
+                });
+
+                // Block until playback finishes or is canceled. A timeout can't bound playback time
+                // because the user can pause the video indefinitely.
+                latch.await();
+
+                Utils.runOnMainThread(() -> {
+                    if (playLatch == latch) {
+                        playLatch = null;
+                    }
+
+                    // Release only if stop() hasn't already done so.
+                    if (currentPlayer == mp) {
+                        try {
+                            mp.stop();
+                        } catch (Exception ex) {
+                            Logger.printDebug(() -> "MediaPlayer stop failed", ex);
+                        }
+                        releaseEnhancerInternal();
+                        try {
+                            mp.release();
+                        } catch (Exception ex) {
+                            Logger.printDebug(() -> "MediaPlayer release failed", ex);
+                        }
+                        currentPlayer = null;
+                    }
+                });
             } catch (Exception ex) {
                 Utils.runOnMainThread(() -> {
                     if (!stopped && id == playbackId) {
@@ -470,67 +621,6 @@ final class TTSEngine {
         }
     }
 
-    private byte[] synthesizeEdge(String text, String voice, String lang) throws Exception {
-        Utils.verifyOffMainThread();
-        synchronized (synthesisLock) {
-            IOException lastEx = null;
-            for (int attempt = 1; attempt <= 2; attempt++) {
-                try {
-                    String timestamp = edgeTimestamp();
-                    String requestId = uuidHex();
-                    String ssml = buildSsml(text, voice, lang);
-
-                    // Ensure we have a valid connection.
-                    ensureConnected();
-
-                    final boolean needsConfig = !configSent;
-                    if (needsConfig) configSent = true;
-
-                    // speech.config only needs to be sent once per connection.
-                    if (needsConfig) {
-                        sendText(persistentOut, "Path: speech.config\r\n"
-                                + "Content-Type: application/json; charset=utf-8\r\n"
-                                + "X-Timestamp: " + timestamp + "\r\n\r\n"
-                                + "{\"context\":{\"synthesis\":{\"audio\":{"
-                                + "\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\","
-                                + "\"wordBoundaryEnabled\":\"false\"},"
-                                + "\"outputFormat\":\"" + AUDIO_FORMAT + "\"}}}}");
-                    }
-
-                    sendText(persistentOut, "Path: ssml\r\n"
-                            + "X-RequestId: " + requestId + "\r\n"
-                            + "X-Timestamp: " + timestamp + "\r\n"
-                            + "Content-Type: application/ssml+xml\r\n\r\n" + ssml);
-
-                    // Collect audio frames until the server signals turn.end.
-                    ByteArrayOutputStream audioOut = new ByteArrayOutputStream();
-                    collectAudio(persistentIn, audioOut);
-                    if (audioOut.size() == 0) throw new IOException("Edge TTS returned no audio");
-
-                    lastSynthesisEndMs = System.currentTimeMillis();
-                    return audioOut.toByteArray();
-                } catch (IOException ex) {
-                    closeSocket();
-                    lastEx = ex;
-                    Logger.printDebug(() -> "TTS synthesis failed, retrying... ", ex);
-                }
-            }
-            throw lastEx;
-        }
-    }
-
-    private String buildSsml(String text, String voice, String lang) {
-        String speakLang = lang;
-        if (speakLang == null || speakLang.isEmpty()) {
-            // The locale portion of the voice name, e.g. "uk-UA-OstapNeural" -> "uk-UA".
-            final int third = voice.indexOf('-', voice.indexOf('-') + 1);
-            speakLang = third > 0 ? voice.substring(0, third) : "en-US";
-        }
-        return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'"
-                + " xml:lang='" + speakLang + "'>"
-                + "<voice name='" + voice + "'>" + escapeXml(text) + "</voice></speak>";
-    }
-
     /**
      * Opens a new TLS connection and performs the WebSocket upgrade handshake.
      */
@@ -557,7 +647,24 @@ final class TTSEngine {
             socket.setSoTimeout(READ_TIMEOUT_MS);
             socket.startHandshake();
             InputStream in = socket.getInputStream();
-            sendHttpUpgrade(socket, path);
+            String key  = Base64.encodeToString(randomBytes(16), Base64.NO_WRAP);
+            String muid = uuidHex().toUpperCase(Locale.US);
+            String req = "GET " + path + " HTTP/1.1\r\n"
+                    + "Host: " + WS_HOST + "\r\n"
+                    + "Pragma: no-cache\r\n"
+                    + "Cache-Control: no-cache\r\n"
+                    + "Upgrade: websocket\r\n"
+                    + "Connection: Upgrade\r\n"
+                    + "Sec-WebSocket-Key: " + key + "\r\n"
+                    + "Sec-WebSocket-Version: 13\r\n"
+                    + "Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold\r\n"
+                    + "Accept-Language: en-US,en;q=0.9\r\n"
+                    + "User-Agent: " + EdgeTtsConfig.USER_AGENT + "\r\n"
+                    + "Cookie: muid=" + muid + "\r\n"
+                    + "\r\n";
+            OutputStream out = socket.getOutputStream();
+            out.write(req.getBytes(StandardCharsets.US_ASCII));
+            out.flush();
             readHttpUpgrade(in);
             persistentSocket = socket;
             persistentOut    = socket.getOutputStream();
@@ -582,27 +689,6 @@ final class TTSEngine {
             persistentOut    = null;
             configSent       = false;
         }
-    }
-
-    private void sendHttpUpgrade(SSLSocket socket, String path) throws IOException {
-        String key  = Base64.encodeToString(randomBytes(16), Base64.NO_WRAP);
-        String muid = uuidHex().toUpperCase(Locale.US);
-        String req = "GET " + path + " HTTP/1.1\r\n"
-                + "Host: " + WS_HOST + "\r\n"
-                + "Pragma: no-cache\r\n"
-                + "Cache-Control: no-cache\r\n"
-                + "Upgrade: websocket\r\n"
-                + "Connection: Upgrade\r\n"
-                + "Sec-WebSocket-Key: " + key + "\r\n"
-                + "Sec-WebSocket-Version: 13\r\n"
-                + "Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold\r\n"
-                + "Accept-Language: en-US,en;q=0.9\r\n"
-                + "User-Agent: " + EdgeTtsConfig.USER_AGENT + "\r\n"
-                + "Cookie: muid=" + muid + "\r\n"
-                + "\r\n";
-        OutputStream out = socket.getOutputStream();
-        out.write(req.getBytes(StandardCharsets.US_ASCII));
-        out.flush();
     }
 
     private void readHttpUpgrade(InputStream in) throws IOException {
@@ -701,111 +787,6 @@ final class TTSEngine {
             if (n < 0) throw new IOException("Unexpected end of stream");
             off += n;
         }
-    }
-
-    private void playMp3(byte[] mp3, float volume, float rate, long startTimeMs, long id) throws Exception {
-        Utils.verifyOffMainThread();
-        CountDownLatch latch = new CountDownLatch(1);
-        MediaPlayer mp = new MediaPlayer();
-
-        Utils.runOnMainThread(() -> {
-            if (stopped || id != playbackId) {
-                mp.release();
-                latch.countDown(); // Prevent await block
-                return;
-            }
-            playLatch = latch;
-            currentPlayer = mp;
-
-            try {
-                mp.setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build());
-                mp.setVolume(volume, volume);
-                // Attach the boost as soon as the session is available so the first frames are not
-                // played at native loudness. Failure is non-fatal: the device falls back to 1.0 gain.
-                try {
-                    LoudnessEnhancer enhancer = new LoudnessEnhancer(mp.getAudioSessionId());
-                    enhancer.setTargetGain(TTS_GAIN_MILLIBELS);
-                    enhancer.setEnabled(true);
-                    currentEnhancer = enhancer;
-                } catch (Exception ex) {
-                    Logger.printDebug(() -> "LoudnessEnhancer attach failed", ex);
-                }
-                mp.setDataSource(new MediaDataSource() {
-                    @Override
-                    public int readAt(long position, byte[] buffer, int offset, int size) {
-                        if (position >= mp3.length) return -1;
-                        final int pos   = (int) position;
-                        final int count = Math.min(size, mp3.length - pos);
-                        System.arraycopy(mp3, pos, buffer, offset, count);
-                        return count;
-                    }
-
-                    @Override
-                    public long getSize() {
-                        return mp3.length;
-                    }
-
-                    @Override
-                    public void close() {}
-                });
-                mp.setOnCompletionListener(m -> latch.countDown());
-                mp.setOnErrorListener((m, what, extra) -> {
-                    Logger.printDebug(() -> "MediaPlayer error what: " + what + " extra: " + extra);
-                    latch.countDown();
-                    return true;
-                });
-
-                mp.prepare();
-                if (rate != 1.0f) {
-                    mp.setPlaybackParams(new PlaybackParams().setSpeed(rate));
-                }
-                if (stopped || id != playbackId) {
-                    latch.countDown();
-                    return;
-                }
-                if (startTimeMs > 0) {
-                    mp.seekTo((int) startTimeMs);
-                }
-                mp.start();
-            } catch (Exception ex) {
-                Logger.printDebug(() -> "MediaPlayer setup failed", ex);
-                latch.countDown();
-            }
-        });
-
-        // Block until playback finishes or is canceled. A timeout can't bound playback time
-        // because the user can pause the video indefinitely.
-        latch.await();
-
-        Utils.runOnMainThread(() -> {
-            if (playLatch == latch) {
-                playLatch = null;
-            }
-            // Release only if stop() hasn't already done so.
-            if (currentPlayer == mp) {
-                try {
-                    mp.stop();
-                } catch (Exception ex) {
-                    Logger.printDebug(() -> "MediaPlayer stop failed", ex);
-                }
-                releaseEnhancerInternal();
-                try {
-                    mp.release();
-                } catch (Exception ex) {
-                    Logger.printDebug(() -> "MediaPlayer release failed", ex);
-                }
-                currentPlayer = null;
-            }
-        });
-    }
-
-    private static String edgeTimestamp() {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
-        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-        return sdf.format(new Date());
     }
 
     private static String uuidHex() {

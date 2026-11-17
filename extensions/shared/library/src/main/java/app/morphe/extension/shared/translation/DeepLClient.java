@@ -70,51 +70,58 @@ public final class DeepLClient {
         }
         JSONObject body = new JSONObject();
         body.put("text", textArray);
-        body.put("target_lang", toDeepLLanguage(targetLanguage));
+        // Portuguese and Chinese, and uses its own codes for the variants.
+        String deepLLanguage;
+        toDeepLLanguage: {
+            String clean = targetLanguage.trim().toUpperCase(Locale.ROOT);
+            if (clean.equals("EN") || clean.startsWith("EN-")) {
+                deepLLanguage = "EN-US";
+                break toDeepLLanguage;
+            }
+            switch (clean) {
+                case "PT", "PT-BR" -> {
+                    deepLLanguage = "PT-BR";
+                    break toDeepLLanguage;
+                }
+                case "PT-PT" -> {
+                    deepLLanguage = "PT-PT";
+                    break toDeepLLanguage;
+                }
+                case "ZH", "ZH-CN", "ZH-HANS", "ZH-SG" -> {
+                    deepLLanguage = "ZH-HANS";
+                    break toDeepLLanguage;
+                }
+                case "ZH-TW", "ZH-HK", "ZH-HANT" -> {
+                    deepLLanguage = "ZH-HANT";
+                    break toDeepLLanguage;
+                }
+                case "IN", "ID" -> {
+                    deepLLanguage = "ID";
+                    break toDeepLLanguage;
+                }
+                case "IW", "HE" -> {
+                    deepLLanguage = "HE";
+                    break toDeepLLanguage;
+                }
+                case "JI", "YI" -> {
+                    deepLLanguage = "YI";
+                    break toDeepLLanguage;
+                }
+                case "NO" -> {
+                    deepLLanguage = "NB";
+                    break toDeepLLanguage;
+                }
+            }
+
+            // Other languages use the plain two-letter code, such as JA, KO or DE.
+            int hyphen = clean.indexOf('-');
+            deepLLanguage = hyphen > 0 ? clean.substring(0, hyphen) : clean;
+        }
+        body.put("target_lang", deepLLanguage);
 
         String url = apiKey.endsWith(FREE_API_KEY_SUFFIX) ? API_FREE_URL : API_PRO_URL;
         String response = TextTranslator.post(url, "application/json; charset=utf-8",
                 body.toString(), "Authorization", "DeepL-Auth-Key " + apiKey, "DeepL");
         return new JSONObject(response).getJSONArray("translations");
-    }
-
-    /**
-     * @return The DeepL target language. DeepL refuses the codes without a variant for English,
-     *         Portuguese and Chinese, and uses its own codes for the variants.
-     */
-    private static String toDeepLLanguage(String language) {
-        String clean = language.trim().toUpperCase(Locale.ROOT);
-        if (clean.equals("EN") || clean.startsWith("EN-")) {
-            return "EN-US";
-        }
-        switch (clean) {
-            case "PT", "PT-BR" -> {
-                return "PT-BR";
-            }
-            case "PT-PT" -> {
-                return "PT-PT";
-            }
-            case "ZH", "ZH-CN", "ZH-HANS", "ZH-SG" -> {
-                return "ZH-HANS";
-            }
-            case "ZH-TW", "ZH-HK", "ZH-HANT" -> {
-                return "ZH-HANT";
-            }
-            case "IN", "ID" -> {
-                return "ID";
-            }
-            case "IW", "HE" -> {
-                return "HE";
-            }
-            case "JI", "YI" -> {
-                return "YI";
-            }
-            case "NO" -> {
-                return "NB";
-            }
-        }
-        // Other languages use the plain two-letter code, such as JA, KO or DE.
-        int hyphen = clean.indexOf('-');
-        return hyphen > 0 ? clean.substring(0, hyphen) : clean;
     }
 }

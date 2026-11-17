@@ -57,30 +57,26 @@ public final class PlayerControlsVisibilityObserver {
     }
 
     /**
-     * find and attach the player_control_play_pause_replay_button_touch_area view if needed
-     */
-    private void maybeAttach() {
-        // The controlButtonView is already set to a valid reference of a view.
-        View attached = controlButtonView.get();
-        if (attached != null && attached.getParent() != null) return;
-
-        // find parent, then player_control_play_pause_replay_button_touch_area view
-        // this is needed because there may be two views where id=R.id.player_control_play_pause_replay_button_touch_area
-        // because why should google confine themselves to their own guidelines...
-        ViewGroup parent = activity.findViewById(controlsButtonGroupId);
-        if (parent != null) {
-            View view = parent.findViewById(controlButtonId);
-            if (view != null) {
-                controlButtonView = new WeakReference<>(view);
-            }
-        }
-    }
-
-    /**
      * current visibility int of the controls_layout view
      */
     public int getPlayerControlsVisibility() {
-        maybeAttach();
+        // find and attach the player_control_play_pause_replay_button_touch_area view if needed
+        maybeAttach: {
+            // The controlButtonView is already set to a valid reference of a view.
+            View attached = controlButtonView.get();
+            if (attached != null && attached.getParent() != null) break maybeAttach;
+
+            // find parent, then player_control_play_pause_replay_button_touch_area view
+            // this is needed because there may be two views where id=R.id.player_control_play_pause_replay_button_touch_area
+            // because why should google confine themselves to their own guidelines...
+            ViewGroup parent = activity.findViewById(controlsButtonGroupId);
+            if (parent != null) {
+                View view = parent.findViewById(controlButtonId);
+                if (view != null) {
+                    controlButtonView = new WeakReference<>(view);
+                }
+            }
+        }
         View view = controlButtonView.get();
         return view == null ? View.GONE : view.getVisibility();
     }

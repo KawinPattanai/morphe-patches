@@ -221,7 +221,39 @@ public final class LiveChatTranslatePatch {
          */
         @Override
         public boolean canRelayoutHost(View host) {
-            return host.isShown() && isInLiveChat(host);
+            if (!host.isShown()) {
+                return false;
+            }
+
+            // If the view is inside the live chat. Must be called on the main thread.
+            View current = host;
+            while (current != null) {
+                boolean isLiveChatId;
+                isLiveChatId: {
+                    final int id = current.getId();
+                    if (id == View.NO_ID) {
+                        isLiveChatId = false;
+                        break isLiveChatId;
+                    }
+                    Boolean isLiveChat = liveChatIds.get(id);
+                    if (isLiveChat == null) {
+                        try {
+                            isLiveChat = current.getResources().getResourceEntryName(id).contains(LIVE_CHAT);
+                        } catch (Resources.NotFoundException ex) {
+                            // Generated view ids are not resources.
+                            Logger.printDebug(() -> "View id is not a resource: " + id);
+                            isLiveChat = false;
+                        }
+                        liveChatIds.put(id, isLiveChat);
+                    }
+                    isLiveChatId = isLiveChat;
+                }
+                if (isLiveChatId) {
+                    return true;
+                }
+                current = current.getParent() instanceof View parent ? parent : null;
+            }
+            return false;
         }
     }
 
@@ -331,7 +363,25 @@ public final class LiveChatTranslatePatch {
 
         try {
             StringBuilder path = contextInterface.patch_getPathBuilder();
-            if (path == null || !isMessagePath(path)) {
+            if (path == null) {
+                return text;
+            }
+            boolean isMessagePath;
+            isMessagePath: {
+                final int index = path.indexOf(LIVE_CHAT);
+                if (index < 0 || index > LIVE_CHAT_MAX_PATH_INDEX) {
+                    isMessagePath = false;
+                    break isMessagePath;
+                }
+                for (String skipped : SKIPPED_PATHS) {
+                    if (path.indexOf(skipped) >= 0) {
+                        isMessagePath = false;
+                        break isMessagePath;
+                    }
+                }
+                isMessagePath = path.indexOf(SUPER_CHAT_ITEM) < 0 || path.indexOf(ATTRIBUTED_TEXT) < 0;
+            }
+            if (!isMessagePath) {
                 return text;
             }
 
@@ -351,19 +401,6 @@ public final class LiveChatTranslatePatch {
             Logger.printException(() -> "onLithoTextLoaded failure", ex);
             return text;
         }
-    }
-
-    private static boolean isMessagePath(StringBuilder path) {
-        final int index = path.indexOf(LIVE_CHAT);
-        if (index < 0 || index > LIVE_CHAT_MAX_PATH_INDEX) {
-            return false;
-        }
-        for (String skipped : SKIPPED_PATHS) {
-            if (path.indexOf(skipped) >= 0) {
-                return false;
-            }
-        }
-        return path.indexOf(SUPER_CHAT_ITEM) < 0 || path.indexOf(ATTRIBUTED_TEXT) < 0;
     }
 
     private static boolean isResolvedPending(CharSequence text) {
@@ -399,7 +436,33 @@ public final class LiveChatTranslatePatch {
                 return text;
             }
             message = extractMessage(text, messageStart);
-            if (!shouldTranslate(message, messageStart > 0)) {
+            boolean shouldTranslate;
+            shouldTranslate: {
+                boolean isKnownMessage = messageStart > 0;
+                if (message.isEmpty() || !hasLetter(message)) {
+                    shouldTranslate = false;
+                    break shouldTranslate;
+                }
+
+                final int maxLength = Settings.LIVE_CHAT_TRANSLATE_MAX_LENGTH.get();
+                if (maxLength < Settings.LIVE_CHAT_TRANSLATE_MAX_LENGTH_NO_LIMIT && message.length() > maxLength) {
+                    shouldTranslate = false;
+                    break shouldTranslate;
+                }
+                if (message.startsWith("http") && message.indexOf(' ') < 0) {
+                    shouldTranslate = false;
+                    break shouldTranslate;
+                }
+                if (isKnownMessage || message.length() >= MIN_TEXT_LENGTH) {
+                    shouldTranslate = true;
+                    break shouldTranslate;
+                }
+
+                // Without a known message the row might be an author name. A single letter is only a word
+                // on its own in languages such as Chinese, and not when it is a Latin letter.
+                shouldTranslate = message.charAt(0) >= 0x80;
+            }
+            if (!shouldTranslate) {
                 return addCopyButton(text, message);
             }
         } else {
@@ -427,26 +490,63 @@ public final class LiveChatTranslatePatch {
         if (translation.equals(NOT_TRANSLATED)) {
             return addCopyButton(originalText, message);
         }
-        return buildTranslatedRow(originalText, messageStart, message, translation, configHash);
-    }
 
-    private static boolean shouldTranslate(String message, boolean isKnownMessage) {
-        if (message.isEmpty() || !hasLetter(message)) {
-            return false;
+        // their spans, and the spans are copied after the text is added, as appending parts of
+        // a text with its spans cuts the spans that draw custom emojis.
+        final String original = originalText.toString();
+        final int length = original.length();
+        final TranslationStyle style = Settings.LIVE_CHAT_TRANSLATE_STYLE.get();
+
+        SpannableStringBuilder row = new SpannableStringBuilder();
+        final int translationStart;
+        final int translationEnd;
+        if (style == TranslationStyle.TRANSLATED_ONLY) {
+            row.append(original, 0, messageStart);
+            translationStart = row.length();
+            row.append(translation);
+            translationEnd = row.length();
+            copySpans(originalText, 0, messageStart, row, 0);
+        } else if (style == TranslationStyle.TRANSLATED_AND_ORIGINAL) {
+            row.append(original, 0, messageStart).append(' ');
+            translationStart = row.length();
+            row.append('(').append(translation).append(')');
+            translationEnd = row.length();
+            row.append(' ');
+            final int originalMessageStart = row.length();
+            row.append(original, messageStart, length);
+            copySpans(originalText, 0, messageStart, row, 0);
+            copySpans(originalText, messageStart, length, row, originalMessageStart);
+        } else {
+            row.append(original).append(' ');
+            translationStart = row.length();
+            row.append('(').append(translation).append(')');
+            translationEnd = row.length();
+            copySpans(originalText, 0, length, row, 0);
         }
-        final int maxLength = Settings.LIVE_CHAT_TRANSLATE_MAX_LENGTH.get();
-        if (maxLength < Settings.LIVE_CHAT_TRANSLATE_MAX_LENGTH_NO_LIMIT && message.length() > maxLength) {
-            return false;
+
+        if (Settings.LIVE_CHAT_TRANSLATE_USE_COLOR.get()) {
+            int translationColor;
+            try {
+                translationColor = Color.parseColor(Settings.LIVE_CHAT_TRANSLATE_COLOR.get());
+            } catch (IllegalArgumentException ex) {
+                Logger.printException(() -> "Invalid translation color", ex);
+                Settings.LIVE_CHAT_TRANSLATE_COLOR.resetToDefault();
+                translationColor = Color.parseColor(Settings.LIVE_CHAT_TRANSLATE_COLOR.defaultValue);
+            }
+            row.setSpan(new ForegroundColorSpan(translationColor), translationStart, translationEnd,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
-        if (message.startsWith("http") && message.indexOf(' ') < 0) {
-            return false;
+        if (Settings.LIVE_CHAT_TRANSLATE_BOLD.get()) {
+            row.setSpan(new TypefaceSpan("sans-serif-bold"), translationStart, translationEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            row.setSpan(new StyleSpan(Typeface.BOLD), translationStart, translationEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
-        if (isKnownMessage || message.length() >= MIN_TEXT_LENGTH) {
-            return true;
+        if (Settings.LIVE_CHAT_TRANSLATE_COPY_BUTTON.get()) {
+            appendCopyButton(row, message);
         }
-        // Without a known message the row might be an author name. A single letter is only a word
-        // on its own in languages such as Chinese, and not when it is a Latin letter.
-        return message.charAt(0) >= 0x80;
+        row.setSpan(new TranslatedChatSpan(originalText, messageStart, message, configHash),
+                0, row.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        // A builder is a scratch buffer, and Litho can clear it or use it again.
+        return new SpannableString(row);
     }
 
     private static boolean hasLetter(String text) {
@@ -622,54 +722,6 @@ public final class LiveChatTranslatePatch {
     // region Building rows
 
     /**
-     * @return The row with the translation in the configured style. The author and the badges keep
-     *         their spans, and the spans are copied after the text is added, as appending parts of
-     *         a text with its spans cuts the spans that draw custom emojis.
-     */
-    private static CharSequence buildTranslatedRow(CharSequence originalText, int messageStart, String message,
-                                                   String translation, int configHash) {
-        final String original = originalText.toString();
-        final int length = original.length();
-        final TranslationStyle style = Settings.LIVE_CHAT_TRANSLATE_STYLE.get();
-
-        SpannableStringBuilder row = new SpannableStringBuilder();
-        final int translationStart;
-        final int translationEnd;
-        if (style == TranslationStyle.TRANSLATED_ONLY) {
-            row.append(original, 0, messageStart);
-            translationStart = row.length();
-            row.append(translation);
-            translationEnd = row.length();
-            copySpans(originalText, 0, messageStart, row, 0);
-        } else if (style == TranslationStyle.TRANSLATED_AND_ORIGINAL) {
-            row.append(original, 0, messageStart).append(' ');
-            translationStart = row.length();
-            row.append('(').append(translation).append(')');
-            translationEnd = row.length();
-            row.append(' ');
-            final int originalMessageStart = row.length();
-            row.append(original, messageStart, length);
-            copySpans(originalText, 0, messageStart, row, 0);
-            copySpans(originalText, messageStart, length, row, originalMessageStart);
-        } else {
-            row.append(original).append(' ');
-            translationStart = row.length();
-            row.append('(').append(translation).append(')');
-            translationEnd = row.length();
-            copySpans(originalText, 0, length, row, 0);
-        }
-
-        applyTranslationStyle(row, translationStart, translationEnd);
-        if (Settings.LIVE_CHAT_TRANSLATE_COPY_BUTTON.get()) {
-            appendCopyButton(row, message);
-        }
-        row.setSpan(new TranslatedChatSpan(originalText, messageStart, message, configHash),
-                0, row.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        // A builder is a scratch buffer, and Litho can clear it or use it again.
-        return new SpannableString(row);
-    }
-
-    /**
      * Copies the spans of the source range to the destination, clipped to the range.
      */
     private static void copySpans(CharSequence source, int sourceStart, int sourceEnd,
@@ -684,27 +736,6 @@ public final class LiveChatTranslatePatch {
                 final int offset = destinationStart - sourceStart;
                 destination.setSpan(span, start + offset, end + offset, spanned.getSpanFlags(span));
             }
-        }
-    }
-
-    private static void applyTranslationStyle(SpannableStringBuilder row, int start, int end) {
-        if (Settings.LIVE_CHAT_TRANSLATE_USE_COLOR.get()) {
-            row.setSpan(new ForegroundColorSpan(getTranslationColor()), start, end,
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-        if (Settings.LIVE_CHAT_TRANSLATE_BOLD.get()) {
-            row.setSpan(new TypefaceSpan("sans-serif-bold"), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            row.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-    }
-
-    private static int getTranslationColor() {
-        try {
-            return Color.parseColor(Settings.LIVE_CHAT_TRANSLATE_COLOR.get());
-        } catch (IllegalArgumentException ex) {
-            Logger.printException(() -> "Invalid translation color", ex);
-            Settings.LIVE_CHAT_TRANSLATE_COLOR.resetToDefault();
-            return Color.parseColor(Settings.LIVE_CHAT_TRANSLATE_COLOR.defaultValue);
         }
     }
 
@@ -727,11 +758,6 @@ public final class LiveChatTranslatePatch {
         final int start = row.length();
         row.append(COPY_ICON_PLACEHOLDER);
         final int end = row.length();
-        row.setSpan(new ImageSpan(getCopyIcon(), ImageSpan.ALIGN_CENTER), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        row.setSpan(new CopyMessageSpan(message), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-    }
-
-    private static Drawable getCopyIcon() {
         Drawable icon = copyIcon;
         if (icon == null) {
             icon = Objects.requireNonNull(ResourceUtils.getDrawable(COPY_ICON)).mutate();
@@ -740,40 +766,8 @@ public final class LiveChatTranslatePatch {
             icon.setBounds(0, 0, size, size);
             copyIcon = icon;
         }
-        return icon;
-    }
-
-    /**
-     * @return If the view is inside the live chat. Must be called on the main thread.
-     */
-    private static boolean isInLiveChat(View view) {
-        View current = view;
-        while (current != null) {
-            if (isLiveChatId(current)) {
-                return true;
-            }
-            current = current.getParent() instanceof View parent ? parent : null;
-        }
-        return false;
-    }
-
-    private static boolean isLiveChatId(View view) {
-        final int id = view.getId();
-        if (id == View.NO_ID) {
-            return false;
-        }
-        Boolean isLiveChat = liveChatIds.get(id);
-        if (isLiveChat == null) {
-            try {
-                isLiveChat = view.getResources().getResourceEntryName(id).contains(LIVE_CHAT);
-            } catch (Resources.NotFoundException ex) {
-                // Generated view ids are not resources.
-                Logger.printDebug(() -> "View id is not a resource: " + id);
-                isLiveChat = false;
-            }
-            liveChatIds.put(id, isLiveChat);
-        }
-        return isLiveChat;
+        row.setSpan(new ImageSpan(icon, ImageSpan.ALIGN_CENTER), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        row.setSpan(new CopyMessageSpan(message), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
 
     // endregion
@@ -800,7 +794,24 @@ public final class LiveChatTranslatePatch {
             for (PendingChatSpan span : LithoRelayoutPatch.findShownSpans(PendingChatSpan.class)) {
                 if (!span.isResolved()) {
                     rowsWaiting = true;
-                    requestTranslation(span);
+                    if (!(System.currentTimeMillis() < retryAfterFailureTime || !pendingLookups.add(span.key))) {
+                        // A row that failed is not stored, so it stays pending and is asked for again by the next
+                        // scan. That is what makes a rate limited endpoint recover on its own instead of leaving
+                        // every row of that moment untranslated for the rest of the session.
+                        try {
+                            executor.execute(() -> {
+                                try {
+                                    fetchTranslation(span.message, span.language, span.key);
+                                } finally {
+                                    pendingLookups.remove(span.key);
+                                }
+                            });
+                        } catch (RejectedExecutionException ex) {
+                            // Requested again by the next scan if the row is still on screen.
+                            Logger.printDebug(() -> "Translation queue is full");
+                            pendingLookups.remove(span.key);
+                        }
+                    }
                 }
             }
             if (rowsWaiting) {
@@ -811,28 +822,6 @@ public final class LiveChatTranslatePatch {
             }
         } catch (Exception ex) {
             Logger.printException(() -> "runVisibleScan failure", ex);
-        }
-    }
-
-    private static void requestTranslation(PendingChatSpan span) {
-        if (System.currentTimeMillis() < retryAfterFailureTime || !pendingLookups.add(span.key)) {
-            return;
-        }
-        // A row that failed is not stored, so it stays pending and is asked for again by the next
-        // scan. That is what makes a rate limited endpoint recover on its own instead of leaving
-        // every row of that moment untranslated for the rest of the session.
-        try {
-            executor.execute(() -> {
-                try {
-                    fetchTranslation(span.message, span.language, span.key);
-                } finally {
-                    pendingLookups.remove(span.key);
-                }
-            });
-        } catch (RejectedExecutionException ex) {
-            // Requested again by the next scan if the row is still on screen.
-            Logger.printDebug(() -> "Translation queue is full");
-            pendingLookups.remove(span.key);
         }
     }
 
@@ -856,7 +845,18 @@ public final class LiveChatTranslatePatch {
         } catch (Exception ex) {
             // The shared translator retries on its own, which suits a patch that asks once.
             // This one keeps asking, so a rate limit backs off for longer.
-            final boolean rateLimited = isRateLimited(ex);
+            boolean rateLimited;
+            isRateLimited: {
+                for (Throwable t = ex; t != null; t = t.getCause()) {
+                    if (t instanceof TextTranslator.TranslationHttpException httpException
+                            && httpException.statusCode == Requester.HTTP_STATUS_CODE_TOO_MANY_REQUESTS) {
+                        rateLimited = true;
+                        break isRateLimited;
+                    }
+                }
+                rateLimited = false;
+            }
+
             final long now = System.currentTimeMillis();
             synchronized (requestLock) {
                 if (now >= retryAfterFailureTime) {
@@ -869,17 +869,6 @@ public final class LiveChatTranslatePatch {
 
             Logger.printInfo(() -> "Could not translate the chat message to: " + language, ex);
         }
-    }
-
-    /** @return If the failure was a rate limit. */
-    private static boolean isRateLimited(@Nullable Throwable throwable) {
-        for (Throwable t = throwable; t != null; t = t.getCause()) {
-            if (t instanceof TextTranslator.TranslationHttpException httpException
-                    && httpException.statusCode == Requester.HTTP_STATUS_CODE_TOO_MANY_REQUESTS) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static TextTranslator.Translation translate(String message, String language) throws Exception {

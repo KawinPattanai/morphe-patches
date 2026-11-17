@@ -80,7 +80,69 @@ final class OriginalDescription {
             Logger.printDebug(() -> "Description body not found");
             return false;
         }
-        List<String> originalTexts = splitAtAttachments(segments, originalDescription);
+
+        // is not found in the original description.
+        List<String> originalTexts;
+        splitAtAttachments: {
+            List<String> texts = new ArrayList<>();
+            int textStart = 0;
+            boolean previousIsText = false;
+
+            for (ProtoNode segment : segments) {
+                List<ProtoNode> segmentFields = segment.children;
+                if (ProtoNode.field(segmentFields, SEGMENT_TEXT_FIELD) != null) {
+                    if (previousIsText) {
+                        originalTexts = null;
+                        break splitAtAttachments;
+                    }
+                    previousIsText = true;
+                    continue;
+                }
+
+                // The link is the first link that includes a text of the attachment
+                // as a part of the link, such as the handle or the channel id of a channel card.
+                int linkStart = originalDescription.length();
+                int linkEnd = -1;
+                for (ProtoNode node : ProtoNode.textNodes(segmentFields)) {
+                    String text = node.getText();
+                    final int textLength = text.length();
+                    for (int index = originalDescription.indexOf(text, textStart); index >= 0 && index < linkStart;
+                         index = originalDescription.indexOf(text, index + 1)) {
+                        final int end = index + textLength;
+                        final int start = tokenStart(originalDescription, index, textStart);
+                        // The text is a whole part of a link, such as a path segment or a query value.
+                        if (index > start
+                                && originalDescription.lastIndexOf('/', index - 1) >= start
+                                && !isNameCharacter(originalDescription.codePointBefore(index))
+                                && (end == originalDescription.length() || !isNameCharacter(originalDescription.codePointAt(end)))) {
+                            linkStart = start;
+                            linkEnd = tokenEnd(originalDescription, end);
+                            break;
+                        }
+                    }
+                }
+                int[] link = linkEnd < 0 ? null : new int[]{linkStart, linkEnd};
+                if (link == null) {
+                    originalTexts = null;
+                    break splitAtAttachments;
+                }
+                if (previousIsText) {
+                    // Attachments are shown on their own line.
+                    int textEnd = link[0];
+                    if (textEnd > textStart && originalDescription.charAt(textEnd - 1) == '\n') {
+                        textEnd--;
+                    }
+                    texts.add(originalDescription.substring(textStart, textEnd));
+                }
+                textStart = link[1];
+                previousIsText = false;
+            }
+
+            if (previousIsText) {
+                texts.add(originalDescription.substring(textStart));
+            }
+            originalTexts = texts;
+        }
         if (originalTexts == null) {
             // The shown description is not a translation of the original description,
             // such as a description localized by the uploader with other attachments.
@@ -167,78 +229,6 @@ final class OriginalDescription {
         return null;
     }
 
-    /**
-     * @return The original texts of the text segments, or null if an attachment
-     *         is not found in the original description.
-     */
-    @Nullable
-    private static List<String> splitAtAttachments(List<ProtoNode> segments, String description) {
-        List<String> texts = new ArrayList<>();
-        int textStart = 0;
-        boolean previousIsText = false;
-
-        for (ProtoNode segment : segments) {
-            List<ProtoNode> segmentFields = segment.children;
-            if (ProtoNode.field(segmentFields, SEGMENT_TEXT_FIELD) != null) {
-                if (previousIsText) {
-                    return null;
-                }
-                previousIsText = true;
-                continue;
-            }
-
-            int[] link = findAttachmentLink(segmentFields, description, textStart);
-            if (link == null) {
-                return null;
-            }
-            if (previousIsText) {
-                // Attachments are shown on their own line.
-                int textEnd = link[0];
-                if (textEnd > textStart && description.charAt(textEnd - 1) == '\n') {
-                    textEnd--;
-                }
-                texts.add(description.substring(textStart, textEnd));
-            }
-            textStart = link[1];
-            previousIsText = false;
-        }
-
-        if (previousIsText) {
-            texts.add(description.substring(textStart));
-        }
-        return texts;
-    }
-
-    /**
-     * @return The range of the link of the attachment, or null if not found.
-     *         The link is the first link that includes a text of the attachment
-     *         as a part of the link, such as the handle or the channel id of a channel card.
-     */
-    @Nullable
-    private static int[] findAttachmentLink(List<ProtoNode> attachment, String description, int from) {
-        int linkStart = description.length();
-        int linkEnd = -1;
-        for (ProtoNode node : ProtoNode.textNodes(attachment)) {
-            String text = node.getText();
-            final int textLength = text.length();
-            for (int index = description.indexOf(text, from); index >= 0 && index < linkStart;
-                 index = description.indexOf(text, index + 1)) {
-                final int end = index + textLength;
-                final int start = tokenStart(description, index, from);
-                // The text is a whole part of a link, such as a path segment or a query value.
-                if (index > start
-                        && description.lastIndexOf('/', index - 1) >= start
-                        && !isNameCharacter(description.codePointBefore(index))
-                        && (end == description.length() || !isNameCharacter(description.codePointAt(end)))) {
-                    linkStart = start;
-                    linkEnd = tokenEnd(description, end);
-                    break;
-                }
-            }
-        }
-        return linkEnd < 0 ? null : new int[]{linkStart, linkEnd};
-    }
-
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private static boolean isNameCharacter(int codePoint) {
         return RestoreOriginalTitlesPatch.isWordCodePoint(codePoint) || codePoint == '_' || codePoint == '-' || codePoint == '.';
@@ -301,7 +291,36 @@ final class OriginalDescription {
 
         for (Anchor anchor : anchors) {
             for (ProtoNode run : anchor.runs) {
-                moveRun(run, anchor, anchors, translatedLength, restoredLength);
+                // Moves the run to the same text in the restored text, or removes it if the text is not found.
+                moveRun: {
+                    int start = -1;
+                    int length = anchor.end - anchor.start;
+                    for (Anchor other : anchors) {
+                        if (other.restoredStart >= 0 && anchor.start >= other.start && anchor.end <= other.end) {
+                            start = other.restoredStart + anchor.start - other.start;
+                            break;
+                        }
+                    }
+                    if (start < 0 && length == translatedLength) {
+                        start = 0;
+                        length = restoredLength;
+                    }
+                    List<ProtoNode> runFields = run.children;
+                    List<ProtoNode> rangeMessage = runFields == null ? null : findRangeMessage(runFields);
+                    ProtoNode startNode = rangeMessage == null ? null : ProtoNode.field(rangeMessage, RANGE_START_FIELD);
+                    if (start < 0 || startNode == null) {
+                        run.remove();
+                        break moveRun;
+                    }
+
+                    ProtoNode lengthNode = ProtoNode.field(rangeMessage, RANGE_LENGTH_FIELD);
+                    if (!Long.valueOf(start).equals(startNode.getVarint())) {
+                        startNode.setVarint(start);
+                    }
+                    if (lengthNode != null && !Long.valueOf(length).equals(lengthNode.getVarint())) {
+                        lengthNode.setVarint(length);
+                    }
+                }
             }
         }
         content.setText(restored.toString());
@@ -419,40 +438,6 @@ final class OriginalDescription {
             urls.add(url);
         }
         return urls;
-    }
-
-    /**
-     * Moves the run to the same text in the restored text, or removes it if the text is not found.
-     */
-    private static void moveRun(ProtoNode run, Anchor anchor, List<Anchor> anchors,
-                                int translatedLength, int restoredLength) {
-        int start = -1;
-        int length = anchor.end - anchor.start;
-        for (Anchor other : anchors) {
-            if (other.restoredStart >= 0 && anchor.start >= other.start && anchor.end <= other.end) {
-                start = other.restoredStart + anchor.start - other.start;
-                break;
-            }
-        }
-        if (start < 0 && length == translatedLength) {
-            start = 0;
-            length = restoredLength;
-        }
-        List<ProtoNode> runFields = run.children;
-        List<ProtoNode> rangeMessage = runFields == null ? null : findRangeMessage(runFields);
-        ProtoNode startNode = rangeMessage == null ? null : ProtoNode.field(rangeMessage, RANGE_START_FIELD);
-        if (start < 0 || startNode == null) {
-            run.remove();
-            return;
-        }
-
-        ProtoNode lengthNode = ProtoNode.field(rangeMessage, RANGE_LENGTH_FIELD);
-        if (!Long.valueOf(start).equals(startNode.getVarint())) {
-            startNode.setVarint(start);
-        }
-        if (lengthNode != null && !Long.valueOf(length).equals(lengthNode.getVarint())) {
-            lengthNode.setVarint(length);
-        }
     }
 
     @Nullable

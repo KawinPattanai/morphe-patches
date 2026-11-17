@@ -147,215 +147,207 @@ final class YouTubeChatSource implements Runnable {
             if (state.commentsContinuation == null) {
                 Logger.printDebug(() -> "No public live/replay continuation found for " + videoId);
             } else {
-                runTimedComments(state);
+                // Keeps passing on the timed comments near the video time.
+                // After a seek, the comments around the new time are passed on again.
+                runTimedComments: {
+                    Logger.printDebug(() -> "Timed comments source selected for " + videoId);
+                    TimedCommentFeed timedComments = new TimedCommentFeed(state);
+                    long lastVideoTimeMs = -1;
+
+                    while (!stopped) {
+                        boolean loaded = timedComments.loadNextPage();
+                        if (stopped) {
+                            break runTimedComments;
+                        }
+
+                        long videoTimeMs = listener.getVideoTimeMs();
+                        if (videoTimeMs >= 0) {
+                            // The controller clears the shown comments after a long seek forward,
+                            // and a seek back plays comments that were already passed on.
+                            long timeChangeMs = videoTimeMs - lastVideoTimeMs;
+                            if (lastVideoTimeMs >= 0 && (timeChangeMs < -TIMED_COMMENTS_SEEK_BACK_THRESHOLD_MS
+                                    || timeChangeMs > REPLAY_SEEK_THRESHOLD_MS)) {
+                                timedComments.reset();
+                                listener.onReplayReset(videoId);
+                            }
+                            lastVideoTimeMs = videoTimeMs;
+
+                            List<NiconicoComment> nearby = timedComments.takeNearby(videoTimeMs);
+                            if (!nearby.isEmpty()) {
+                                listener.onComments(videoId, nearby, 0);
+                            }
+                        }
+                        if (!loaded) {
+                            sleep(REPLAY_LOOP_DELAY_MS);
+                        }
+                    }
+                }
             }
         } else if (state.replay) {
-            runReplay(state);
+            runReplay: {
+                Logger.printDebug(() -> "Replay-chat source selected for " + videoId);
+                Continuation initialContinuation = state.continuation;
+                Continuation continuation = initialContinuation;
+                long loadedUntilMs = -1;
+                long windowStartMs = 0;
+                long lastVideoTimeMs = -1;
+                boolean hasFetched = false;
+                boolean done = false;
+                int consecutiveFailures = 0;
+                TimedCommentFeed timedComments = new TimedCommentFeed(state);
+
+                while (!stopped) {
+                    long videoTimeMs = listener.getVideoTimeMs();
+                    if (videoTimeMs < 0) {
+                        sleep(REPLAY_LOOP_DELAY_MS);
+                        continue;
+                    }
+
+                    boolean seeked = hasFetched
+                            && lastVideoTimeMs >= 0
+                            && Math.abs(videoTimeMs - lastVideoTimeMs) > REPLAY_SEEK_THRESHOLD_MS;
+                    boolean beforeWindow = hasFetched && videoTimeMs < windowStartMs;
+                    // Such as where the chat is quiet.
+                    boolean pastLoadedChat = hasFetched && videoTimeMs > loadedUntilMs + REPLAY_SEEK_THRESHOLD_MS;
+                    if (seeked || beforeWindow || pastLoadedChat) {
+                        continuation = initialContinuation;
+                        windowStartMs = Math.max(0, videoTimeMs - REPLAY_START_MARGIN_MS);
+                        loadedUntilMs = windowStartMs;
+                        hasFetched = false;
+                        done = false;
+                        consecutiveFailures = 0;
+                        // The shown comments still fit when playback only ran past the loaded chat.
+                        if (seeked || beforeWindow) {
+                            seenIds.clear();
+                            seenIdOrder.clear();
+                            timedComments.reset();
+                            listener.onReplayReset(videoId);
+                        }
+                        Logger.printDebug(() -> "Replay-chat window reset at " + videoTimeMs + " ms");
+                    }
+                    if (loadedUntilMs < 0) {
+                        windowStartMs = Math.max(0, videoTimeMs - REPLAY_START_MARGIN_MS);
+                        loadedUntilMs = windowStartMs;
+                    }
+                    lastVideoTimeMs = videoTimeMs;
+
+                    long targetMs = videoTimeMs + REPLAY_LOOKAHEAD_MS;
+                    int fetches = 0;
+                    while (!stopped
+                            && !done
+                            && continuation != null
+                            && loadedUntilMs < targetMs
+                            && fetches < REPLAY_MAX_FETCHES_PER_UPDATE) {
+                        fetches++;
+                        long playerOffsetMs = Math.max(
+                                0,
+                                hasFetched ? loadedUntilMs - REPLAY_START_MARGIN_MS : windowStartMs
+                        );
+                        String previousContinuation = continuation.value;
+                        long previousLoadedUntilMs = loadedUntilMs;
+                        try {
+                            ChatPage page = fetchReplayChatPage(
+                                    state,
+                                    continuation.value,
+                                    playerOffsetMs
+                            );
+                            consecutiveFailures = 0;
+                            hasFetched = true;
+
+                            List<NiconicoComment> comments = deduplicate(page.comments);
+                            if (!comments.isEmpty() && !stopped) {
+                                listener.onComments(videoId, comments, 0);
+                                Logger.printDebug(() -> "Received " + comments.size() + " replay-chat comments");
+                            }
+                            if (page.maxVideoOffsetMs >= 0) {
+                                loadedUntilMs = Math.max(loadedUntilMs, page.maxVideoOffsetMs);
+                            }
+
+                            continuation = page.continuation;
+                            if (continuation == null
+                                    || (previousContinuation.equals(continuation.value)
+                                    && loadedUntilMs <= previousLoadedUntilMs)) {
+                                done = true;
+                            }
+                            if (page.comments.isEmpty() && page.maxVideoOffsetMs < 0) {
+                                break;
+                            }
+                        } catch (Exception exception) {
+                            if (stopped) {
+                                break runReplay;
+                            }
+                            consecutiveFailures++;
+                            String message = "Replay-chat request failed ("
+                                    + consecutiveFailures + "/" + MAX_CONSECUTIVE_FAILURES + ")";
+                            Logger.printInfo(() -> message, exception);
+                            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                                done = true;
+                            } else {
+                                sleepBeforeRetry(consecutiveFailures);
+                            }
+                            break;
+                        }
+                    }
+
+                    // One page each update, so a long update is not taken for a seek.
+                    timedComments.loadNextPage();
+                    List<NiconicoComment> timedNearby = timedComments.takeNearby(videoTimeMs);
+                    if (!timedNearby.isEmpty() && !stopped) {
+                        listener.onComments(videoId, timedNearby, 0);
+                    }
+                    sleep(REPLAY_LOOP_DELAY_MS);
+                }
+            }
         } else {
-            runLive(state);
-        }
-    }
+            runLive: {
+                boolean firstPage = true;
+                int consecutiveFailures = 0;
+                Continuation continuation = state.continuation;
+                while (!stopped && continuation != null) {
+                    try {
+                        ChatPage page = fetchChatPage(state, continuation.value);
+                        consecutiveFailures = 0;
 
-    private void runLive(PageState state) {
-        boolean firstPage = true;
-        int consecutiveFailures = 0;
-        Continuation continuation = state.continuation;
-        while (!stopped && continuation != null) {
-            try {
-                ChatPage page = fetchChatPage(state, continuation.value);
-                consecutiveFailures = 0;
+                        List<NiconicoComment> comments = deduplicate(page.comments);
+                        if (firstPage && comments.size() > INITIAL_DISPLAY_LIMIT) {
+                            comments = new ArrayList<>(
+                                    comments.subList(comments.size() - INITIAL_DISPLAY_LIMIT, comments.size())
+                            );
+                        }
+                        firstPage = false;
 
-                List<NiconicoComment> comments = deduplicate(page.comments);
-                if (firstPage && comments.size() > INITIAL_DISPLAY_LIMIT) {
-                    comments = new ArrayList<>(
-                            comments.subList(comments.size() - INITIAL_DISPLAY_LIMIT, comments.size())
-                    );
-                }
-                firstPage = false;
+                        Continuation nextContinuation = page.continuation;
+                        if (!comments.isEmpty() && !stopped) {
+                            long spreadWindowMs = getLivePollDelayMs(
+                                    nextContinuation == null
+                                            ? DEFAULT_CONTINUATION_TIMEOUT_MS
+                                            : nextContinuation.timeoutMs
+                            );
+                            listener.onComments(videoId, comments, spreadWindowMs);
+                            int commentCount = comments.size();
+                            Logger.printDebug(() -> "Received " + commentCount + " live-chat comments");
+                        }
 
-                Continuation nextContinuation = page.continuation;
-                if (!comments.isEmpty() && !stopped) {
-                    long spreadWindowMs = getLivePollDelayMs(
-                            nextContinuation == null
-                                    ? DEFAULT_CONTINUATION_TIMEOUT_MS
-                                    : nextContinuation.timeoutMs
-                    );
-                    listener.onComments(videoId, comments, spreadWindowMs);
-                    int commentCount = comments.size();
-                    Logger.printDebug(() -> "Received " + commentCount + " live-chat comments");
-                }
-
-                continuation = nextContinuation;
-                if (continuation == null) {
-                    Logger.printDebug(() -> "Live-chat continuation ended for " + videoId);
-                    break;
-                }
-                sleep(getLivePollDelayMs(continuation.timeoutMs));
-            } catch (Exception exception) {
-                if (stopped) {
-                    return;
-                }
-                consecutiveFailures++;
-                String message = "Live-chat request failed ("
-                        + consecutiveFailures + "/" + MAX_CONSECUTIVE_FAILURES + ")";
-                Logger.printInfo(() -> message, exception);
-                if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                    break;
-                }
-                sleepBeforeRetry(consecutiveFailures);
-            }
-        }
-    }
-
-    private void runReplay(PageState state) {
-        Logger.printDebug(() -> "Replay-chat source selected for " + videoId);
-        Continuation initialContinuation = state.continuation;
-        Continuation continuation = initialContinuation;
-        long loadedUntilMs = -1;
-        long windowStartMs = 0;
-        long lastVideoTimeMs = -1;
-        boolean hasFetched = false;
-        boolean done = false;
-        int consecutiveFailures = 0;
-        TimedCommentFeed timedComments = new TimedCommentFeed(state);
-
-        while (!stopped) {
-            long videoTimeMs = listener.getVideoTimeMs();
-            if (videoTimeMs < 0) {
-                sleep(REPLAY_LOOP_DELAY_MS);
-                continue;
-            }
-
-            boolean seeked = hasFetched
-                    && lastVideoTimeMs >= 0
-                    && Math.abs(videoTimeMs - lastVideoTimeMs) > REPLAY_SEEK_THRESHOLD_MS;
-            boolean beforeWindow = hasFetched && videoTimeMs < windowStartMs;
-            // Such as where the chat is quiet.
-            boolean pastLoadedChat = hasFetched && videoTimeMs > loadedUntilMs + REPLAY_SEEK_THRESHOLD_MS;
-            if (seeked || beforeWindow || pastLoadedChat) {
-                continuation = initialContinuation;
-                windowStartMs = Math.max(0, videoTimeMs - REPLAY_START_MARGIN_MS);
-                loadedUntilMs = windowStartMs;
-                hasFetched = false;
-                done = false;
-                consecutiveFailures = 0;
-                // The shown comments still fit when playback only ran past the loaded chat.
-                if (seeked || beforeWindow) {
-                    seenIds.clear();
-                    seenIdOrder.clear();
-                    timedComments.reset();
-                    listener.onReplayReset(videoId);
-                }
-                Logger.printDebug(() -> "Replay-chat window reset at " + videoTimeMs + " ms");
-            }
-            if (loadedUntilMs < 0) {
-                windowStartMs = Math.max(0, videoTimeMs - REPLAY_START_MARGIN_MS);
-                loadedUntilMs = windowStartMs;
-            }
-            lastVideoTimeMs = videoTimeMs;
-
-            long targetMs = videoTimeMs + REPLAY_LOOKAHEAD_MS;
-            int fetches = 0;
-            while (!stopped
-                    && !done
-                    && continuation != null
-                    && loadedUntilMs < targetMs
-                    && fetches < REPLAY_MAX_FETCHES_PER_UPDATE) {
-                fetches++;
-                long playerOffsetMs = Math.max(
-                        0,
-                        hasFetched ? loadedUntilMs - REPLAY_START_MARGIN_MS : windowStartMs
-                );
-                String previousContinuation = continuation.value;
-                long previousLoadedUntilMs = loadedUntilMs;
-                try {
-                    ChatPage page = fetchReplayChatPage(
-                            state,
-                            continuation.value,
-                            playerOffsetMs
-                    );
-                    consecutiveFailures = 0;
-                    hasFetched = true;
-
-                    List<NiconicoComment> comments = deduplicate(page.comments);
-                    if (!comments.isEmpty() && !stopped) {
-                        listener.onComments(videoId, comments, 0);
-                        Logger.printDebug(() -> "Received " + comments.size() + " replay-chat comments");
-                    }
-                    if (page.maxVideoOffsetMs >= 0) {
-                        loadedUntilMs = Math.max(loadedUntilMs, page.maxVideoOffsetMs);
-                    }
-
-                    continuation = page.continuation;
-                    if (continuation == null
-                            || (previousContinuation.equals(continuation.value)
-                            && loadedUntilMs <= previousLoadedUntilMs)) {
-                        done = true;
-                    }
-                    if (page.comments.isEmpty() && page.maxVideoOffsetMs < 0) {
-                        break;
-                    }
-                } catch (Exception exception) {
-                    if (stopped) {
-                        return;
-                    }
-                    consecutiveFailures++;
-                    String message = "Replay-chat request failed ("
-                            + consecutiveFailures + "/" + MAX_CONSECUTIVE_FAILURES + ")";
-                    Logger.printInfo(() -> message, exception);
-                    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                        done = true;
-                    } else {
+                        continuation = nextContinuation;
+                        if (continuation == null) {
+                            Logger.printDebug(() -> "Live-chat continuation ended for " + videoId);
+                            break;
+                        }
+                        sleep(getLivePollDelayMs(continuation.timeoutMs));
+                    } catch (Exception exception) {
+                        if (stopped) {
+                            break runLive;
+                        }
+                        consecutiveFailures++;
+                        String message = "Live-chat request failed ("
+                                + consecutiveFailures + "/" + MAX_CONSECUTIVE_FAILURES + ")";
+                        Logger.printInfo(() -> message, exception);
+                        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                            break;
+                        }
                         sleepBeforeRetry(consecutiveFailures);
                     }
-                    break;
                 }
-            }
-
-            // One page each update, so a long update is not taken for a seek.
-            timedComments.loadNextPage();
-            List<NiconicoComment> timedNearby = timedComments.takeNearby(videoTimeMs);
-            if (!timedNearby.isEmpty() && !stopped) {
-                listener.onComments(videoId, timedNearby, 0);
-            }
-            sleep(REPLAY_LOOP_DELAY_MS);
-        }
-    }
-
-    /**
-     * Keeps passing on the timed comments near the video time.
-     * After a seek, the comments around the new time are passed on again.
-     */
-    private void runTimedComments(PageState state) {
-        Logger.printDebug(() -> "Timed comments source selected for " + videoId);
-        TimedCommentFeed timedComments = new TimedCommentFeed(state);
-        long lastVideoTimeMs = -1;
-
-        while (!stopped) {
-            boolean loaded = timedComments.loadNextPage();
-            if (stopped) {
-                return;
-            }
-
-            long videoTimeMs = listener.getVideoTimeMs();
-            if (videoTimeMs >= 0) {
-                // The controller clears the shown comments after a long seek forward,
-                // and a seek back plays comments that were already passed on.
-                long timeChangeMs = videoTimeMs - lastVideoTimeMs;
-                if (lastVideoTimeMs >= 0 && (timeChangeMs < -TIMED_COMMENTS_SEEK_BACK_THRESHOLD_MS
-                        || timeChangeMs > REPLAY_SEEK_THRESHOLD_MS)) {
-                    timedComments.reset();
-                    listener.onReplayReset(videoId);
-                }
-                lastVideoTimeMs = videoTimeMs;
-
-                List<NiconicoComment> nearby = timedComments.takeNearby(videoTimeMs);
-                if (!nearby.isEmpty()) {
-                    listener.onComments(videoId, nearby, 0);
-                }
-            }
-            if (!loaded) {
-                sleep(REPLAY_LOOP_DELAY_MS);
             }
         }
     }
@@ -395,7 +387,12 @@ final class YouTubeChatSource implements Runnable {
                 return false;
             }
             try {
-                TimedComments.Page page = fetchCommentsPage(state, continuation);
+                JSONObject response = postInnertube(
+                        state,
+                        "next",
+                        new JSONObject().put("continuation", continuation)
+                );
+                TimedComments.Page page = TimedComments.parsePage(response, state.videoLengthMs);
                 consecutiveFailures = 0;
                 pages++;
                 pagesWithoutTimedComments = page.comments.isEmpty() ? pagesWithoutTimedComments + 1 : 0;
@@ -445,16 +442,6 @@ final class YouTubeChatSource implements Runnable {
         void reset() {
             passedOnIds.clear();
         }
-    }
-
-    private TimedComments.Page fetchCommentsPage(PageState state, String continuation)
-            throws IOException, JSONException {
-        JSONObject response = postInnertube(
-                state,
-                "next",
-                new JSONObject().put("continuation", continuation)
-        );
-        return TimedComments.parsePage(response, state.videoLengthMs);
     }
 
     private PageState fetchPageState() throws IOException, JSONException {
@@ -515,13 +502,25 @@ final class YouTubeChatSource implements Runnable {
                 "playerSeekContinuationData",
                 "liveChatReplayContinuationData"
         );
-        if (replayContinuation == null && isEndedLiveBroadcast(playerResponse)) {
-            replayContinuation = findContinuation(
-                    initialData,
-                    "playerSeekContinuationData",
-                    "liveChatReplayContinuationData",
-                    "reloadContinuationData"
-            );
+        if (replayContinuation == null) {
+            JSONObject microformat = playerResponse == null
+                    ? null
+                    : playerResponse.optJSONObject("microformat");
+            JSONObject playerMicroformat = microformat == null
+                    ? null
+                    : microformat.optJSONObject("playerMicroformatRenderer");
+            JSONObject liveDetails = playerMicroformat == null
+                    ? null
+                    : playerMicroformat.optJSONObject("liveBroadcastDetails");
+            boolean isEndedLiveBroadcast = liveDetails != null && !liveDetails.optString("endTimestamp", "").isEmpty();
+            if (isEndedLiveBroadcast) {
+                replayContinuation = findContinuation(
+                        initialData,
+                        "playerSeekContinuationData",
+                        "liveChatReplayContinuationData",
+                        "reloadContinuationData"
+                );
+            }
         }
 
         Continuation continuation = null;
@@ -594,7 +593,29 @@ final class YouTubeChatSource implements Runnable {
             return null;
         }
 
-        JSONArray items = getReplayFilterItems(initialData);
+        JSONObject liveChat = getLiveChatContinuation(initialData);
+        if (liveChat == null) {
+            liveChat = getObjectPath(
+                    initialData,
+                    "contents",
+                    "twoColumnWatchNextResults",
+                    "conversationBar",
+                    "liveChatRenderer"
+            );
+        }
+        JSONObject header = liveChat == null
+                ? null
+                : liveChat.optJSONObject("header");
+        JSONObject headerRenderer = header == null
+                ? null
+                : header.optJSONObject("liveChatHeaderRenderer");
+        JSONObject viewSelector = headerRenderer == null
+                ? null
+                : headerRenderer.optJSONObject("viewSelector");
+        JSONObject menu = viewSelector == null
+                ? null
+                : viewSelector.optJSONObject("sortFilterSubMenuRenderer");
+        JSONArray items = menu == null ? null : menu.optJSONArray("subMenuItems");
         if (items == null) {
             return null;
         }
@@ -709,7 +730,8 @@ final class YouTubeChatSource implements Runnable {
                 state.clientVersion,
                 getVisitorData(state.context)
         );
-        return new JSONObject(stripJsonPrefix(responseText));
+        int start = responseText.indexOf('{');
+        return new JSONObject(start > 0 ? responseText.substring(start) : responseText);
     }
 
     private String request(
@@ -864,32 +886,6 @@ final class YouTubeChatSource implements Runnable {
         return value;
     }
 
-    private static JSONArray getReplayFilterItems(JSONObject data) {
-        JSONObject liveChat = getLiveChatContinuation(data);
-        if (liveChat == null) {
-            liveChat = getObjectPath(
-                    data,
-                    "contents",
-                    "twoColumnWatchNextResults",
-                    "conversationBar",
-                    "liveChatRenderer"
-            );
-        }
-        JSONObject header = liveChat == null
-                ? null
-                : liveChat.optJSONObject("header");
-        JSONObject headerRenderer = header == null
-                ? null
-                : header.optJSONObject("liveChatHeaderRenderer");
-        JSONObject viewSelector = headerRenderer == null
-                ? null
-                : headerRenderer.optJSONObject("viewSelector");
-        JSONObject menu = viewSelector == null
-                ? null
-                : viewSelector.optJSONObject("sortFilterSubMenuRenderer");
-        return menu == null ? null : menu.optJSONArray("subMenuItems");
-    }
-
     private static String getFilterItemText(JSONObject item) {
         return extractRendererText(item.opt("title"))
                 + " " + extractRendererText(item.opt("accessibility"))
@@ -934,19 +930,6 @@ final class YouTubeChatSource implements Runnable {
         return liveDetails.optString("endTimestamp", "").isEmpty()
                 ? VideoType.LIVE_PREMIERE
                 : VideoType.ENDED_PREMIERE;
-    }
-
-    private static boolean isEndedLiveBroadcast(JSONObject playerResponse) {
-        JSONObject microformat = playerResponse == null
-                ? null
-                : playerResponse.optJSONObject("microformat");
-        JSONObject playerMicroformat = microformat == null
-                ? null
-                : microformat.optJSONObject("playerMicroformatRenderer");
-        JSONObject liveDetails = playerMicroformat == null
-                ? null
-                : playerMicroformat.optJSONObject("liveBroadcastDetails");
-        return liveDetails != null && !liveDetails.optString("endTimestamp", "").isEmpty();
     }
 
     private static JSONObject getLiveChatContinuation(JSONObject response) {
@@ -1054,7 +1037,17 @@ final class YouTubeChatSource implements Runnable {
                         ? null
                         : innerAction.optJSONObject("addChatItemAction");
                 JSONObject item = addAction == null ? null : addAction.optJSONObject("item");
-                if (isBeforeReplayStart(item)) {
+                boolean isBeforeReplayStart;
+                isBeforeReplayStart: {
+                    JSONObject renderer = getCommentRenderer(item);
+                    if (renderer == null) {
+                        isBeforeReplayStart = false;
+                        break isBeforeReplayStart;
+                    }
+                    String timestampText = extractText(renderer.optJSONObject("timestampText")).trim();
+                    isBeforeReplayStart = timestampText.startsWith("-") || timestampText.startsWith("−");
+                }
+                if (isBeforeReplayStart) {
                     continue;
                 }
                 NiconicoComment comment = parseComment(item, rawOffsetMs);
@@ -1064,15 +1057,6 @@ final class YouTubeChatSource implements Runnable {
             }
         }
         return new ReplayParseResult(comments, maxVideoOffsetMs);
-    }
-
-    private static boolean isBeforeReplayStart(JSONObject item) {
-        JSONObject renderer = getCommentRenderer(item);
-        if (renderer == null) {
-            return false;
-        }
-        String timestampText = extractText(renderer.optJSONObject("timestampText")).trim();
-        return timestampText.startsWith("-") || timestampText.startsWith("−");
     }
 
     private static NiconicoComment parseComment(JSONObject item, long videoOffsetMs) {
@@ -1093,7 +1077,22 @@ final class YouTubeChatSource implements Runnable {
         }
 
         boolean isMembership = membership != null || hasMembershipBadge(renderer);
-        int backgroundColor = getPaidMessageBackgroundColor(paid);
+        int backgroundColor;
+        getPaidMessageBackgroundColor: {
+            if (paid == null) {
+                backgroundColor = 0;
+                break getPaidMessageBackgroundColor;
+            }
+            String key = paid.has("bodyBackgroundColor")
+                    ? "bodyBackgroundColor"
+                    : "headerBackgroundColor";
+            if (!paid.has(key)) {
+                backgroundColor = 0;
+                break getPaidMessageBackgroundColor;
+            }
+            long color = paid.optLong(key);
+            backgroundColor = (97 << 24) | ((int) color & 0x00ffffff);
+        }
         return new NiconicoComment(
                 renderer.optString("id", ""),
                 message.text,
@@ -1220,28 +1219,9 @@ final class YouTubeChatSource implements Runnable {
         return false;
     }
 
-    private static int getPaidMessageBackgroundColor(JSONObject paidRenderer) {
-        if (paidRenderer == null) {
-            return 0;
-        }
-        String key = paidRenderer.has("bodyBackgroundColor")
-                ? "bodyBackgroundColor"
-                : "headerBackgroundColor";
-        if (!paidRenderer.has(key)) {
-            return 0;
-        }
-        long color = paidRenderer.optLong(key);
-        return (97 << 24) | ((int) color & 0x00ffffff);
-    }
-
     private static String getVisitorData(JSONObject context) {
         JSONObject client = context.optJSONObject("client");
         return client == null ? "" : client.optString("visitorData", "");
-    }
-
-    private static String stripJsonPrefix(String value) {
-        int start = value.indexOf('{');
-        return start > 0 ? value.substring(start) : value;
     }
 
     static long getLivePollDelayMs(long value) {

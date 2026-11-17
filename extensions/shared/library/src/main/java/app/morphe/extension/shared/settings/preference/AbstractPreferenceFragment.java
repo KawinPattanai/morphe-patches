@@ -297,7 +297,9 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
                     if (findPreference(key) instanceof SettingPreference preference) {
                         preference.updateFromSetting();
                     }
-                    updateUIAvailability();
+
+                    // Updates Preferences availability only using the status of the settings.
+                    updatePreferenceScreen(getPreferenceScreen(), false);
                 } catch (Exception ex) {
                     Logger.printException(() -> "OnSharedPreferenceChangeListener failure", ex);
                 }
@@ -332,20 +334,6 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
     }
 
     /**
-     * Updates all Preferences values and their availability using the current values in {@link Setting}.
-     */
-    protected void updateUIToSettingValues() {
-        updatePreferenceScreen(getPreferenceScreen(), true);
-    }
-
-    /**
-     * Updates Preferences availability only using the status of {@link Setting}.
-     */
-    protected void updateUIAvailability() {
-        updatePreferenceScreen(getPreferenceScreen(), false);
-    }
-
-    /**
      * Syncs all UI Preferences to any {@link Setting} they represent.
      *
      * @param updateValues If the preferences show the values of the settings again,
@@ -368,14 +356,10 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
                 String key = pref.getKey();
                 Setting<?> setting = Setting.getSettingFromPath(key);
                 if (setting != null) {
-                    updatePreferenceAvailability(pref, setting);
+                    pref.setEnabled(setting.isAvailable());
                 }
             }
         }
-    }
-
-    protected void updatePreferenceAvailability(Preference pref, Setting<?> setting) {
-        pref.setEnabled(setting.isAvailable());
     }
 
     /**
@@ -671,7 +655,21 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
         String text = null;
         try (InputStream in = getContext().getContentResolver().openInputStream(uri)) {
             if (in != null) {
-                text = readImportText(in);
+                readImportText: {
+                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[IMPORT_BUFFER_BYTES];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        if (bytes.size() + read > MAX_IMPORT_TEXT_BYTES) {
+                            Logger.printInfo(() -> "Import file is too large");
+                            text = null;
+                            break readImportText;
+                        }
+                        bytes.write(buffer, 0, read);
+                    }
+
+                    text = bytes.toString(StandardCharsets.UTF_8.name());
+                }
             }
         } catch (Exception ex) {
             Logger.printException(() -> "readTextFromUri failure", ex);
@@ -679,48 +677,6 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
 
         pendingTextImportResult.accept(text);
         pendingTextImportResult = null;
-    }
-
-    /**
-     * @return The text of the stream, or null if it is larger than {@link #MAX_IMPORT_TEXT_BYTES}.
-     */
-    @Nullable
-    @SuppressWarnings("CharsetObjectCanBeUsed")
-    private static String readImportText(InputStream in) throws IOException {
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        byte[] buffer = new byte[IMPORT_BUFFER_BYTES];
-        int read;
-        while ((read = in.read(buffer)) != -1) {
-            if (bytes.size() + read > MAX_IMPORT_TEXT_BYTES) {
-                Logger.printInfo(() -> "Import file is too large");
-                return null;
-            }
-            bytes.write(buffer, 0, read);
-        }
-
-        return bytes.toString(StandardCharsets.UTF_8.name());
-    }
-
-    private void exportToClipboard(String logsToExport) {
-        try {
-            if (!Logger.isDebugEnabled()) {
-                Utils.showToastShort(str("morphe_debug_logs_disabled"));
-                return;
-            }
-
-            if (logsToExport == null || logsToExport.isBlank()) {
-                Utils.showToastShort(str("morphe_debug_logs_none_found"));
-                return;
-            }
-
-            Utils.showToastShort(str("morphe_debug_logs_copied_to_clipboard"));
-            Utils.setClipboard(logsToExport);
-
-        } catch (Exception ex) {
-            String errorMessage = String.format(str("morphe_debug_logs_failed_to_export"), ex.getMessage());
-            Utils.showToastLong(errorMessage);
-            Logger.printDebug(() -> errorMessage, ex);
-        }
     }
 
     private void exportToFile(Collection<String> logsToExport) {
@@ -874,7 +830,28 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
                     null,
                     null,
                     str("morphe_settings_import_copy"),
-                    () -> exportToClipboard(logAdapter.getFilteredLogsString()),
+                    () -> {
+                        String logsToExport = logAdapter.getFilteredLogsString();
+                        try {
+                            if (!Logger.isDebugEnabled()) {
+                                Utils.showToastShort(str("morphe_debug_logs_disabled"));
+                                return;
+                            }
+
+                            if (logsToExport == null || logsToExport.isBlank()) {
+                                Utils.showToastShort(str("morphe_debug_logs_none_found"));
+                                return;
+                            }
+
+                            Utils.showToastShort(str("morphe_debug_logs_copied_to_clipboard"));
+                            Utils.setClipboard(logsToExport);
+
+                        } catch (Exception ex) {
+                            String errorMessage = String.format(str("morphe_debug_logs_failed_to_export"), ex.getMessage());
+                            Utils.showToastLong(errorMessage);
+                            Logger.printDebug(() -> errorMessage, ex);
+                        }
+                    },
                     () -> {},
                     str("morphe_debug_export_logs_clear"),
                     () -> {
@@ -1031,7 +1008,8 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
             // otherwise the syncing of Setting -> UI
             // causes a callback to the listener even though nothing changed.
             initialize();
-            updateUIToSettingValues();
+            // Updates all Preferences values and their availability using the current values of the settings.
+            updatePreferenceScreen(getPreferenceScreen(), true);
 
             preferenceManager.getSharedPreferences().registerOnSharedPreferenceChangeListener(listener);
         } catch (Exception ex) {
@@ -1068,8 +1046,15 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
         Sort groupSort = Sort.fromKey(group.getKey(), Sort.UNSORTED);
         List<Pair<String, Preference>> preferences = new ArrayList<>();
 
-        // Get cached Collator for locale-aware string comparison.
-        Collator collator = getCollator();
+        // Cached Collator for locale-aware string comparison, created again when the locale changed.
+        Locale currentLocale = BaseSettings.MORPHE_LANGUAGE.get().getLocale();
+
+        if (cachedCollator == null || !currentLocale.equals(cachedCollatorLocale)) {
+            cachedCollatorLocale = currentLocale;
+            cachedCollator = Collator.getInstance(currentLocale);
+            cachedCollator.setStrength(Collator.SECONDARY); // Case-insensitive, diacritic-insensitive.
+        }
+        Collator collator = cachedCollator;
 
         for (int i = 0, prefCount = group.getPreferenceCount(); i < prefCount; i++) {
             Preference preference = group.getPreference(i);
@@ -1168,20 +1153,5 @@ public abstract class AbstractPreferenceFragment extends PreferenceFragment {
             }
             return defaultSort;
         }
-    }
-
-    /**
-     * Returns a cached Collator for the current locale, or creates a new one if locale changed.
-     */
-    private static Collator getCollator() {
-        Locale currentLocale = BaseSettings.MORPHE_LANGUAGE.get().getLocale();
-
-        if (cachedCollator == null || !currentLocale.equals(cachedCollatorLocale)) {
-            cachedCollatorLocale = currentLocale;
-            cachedCollator = Collator.getInstance(currentLocale);
-            cachedCollator.setStrength(Collator.SECONDARY); // Case-insensitive, diacritic-insensitive.
-        }
-
-        return cachedCollator;
     }
 }

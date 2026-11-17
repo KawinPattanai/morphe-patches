@@ -55,40 +55,17 @@ public class JsEngineChallengeProvider extends JsRuntimeChalBaseJCP {
     @Override
     protected Script builtinSource(ScriptType scriptType) {
         if (scriptType == ScriptType.LIB) {
-            Script npmScript = npmSource(scriptType);
+            Script npmScript;
+            try {
+                String code = ScriptUtils.loadScript(npmLibFilenames, "Failed to read js challenge solver lib script");
+                npmScript = new Script(scriptType, ScriptVariant.V8_NPM, ScriptSource.BUILTIN, SCRIPT_VERSION, code);
+            } catch (ScriptUtils.ScriptLoaderError e) {
+                Logger.printException(() -> "Failed to read npm source", e);
+                npmScript = null;
+            }
             if (npmScript != null) return npmScript;
         }
         return super.builtinSource(scriptType);
-    }
-
-    private Script npmSource(ScriptType scriptType) {
-        try {
-            String code = ScriptUtils.loadScript(npmLibFilenames, "Failed to read js challenge solver lib script");
-            return new Script(scriptType, ScriptVariant.V8_NPM, ScriptSource.BUILTIN, SCRIPT_VERSION, code);
-        } catch (ScriptUtils.ScriptLoaderError e) {
-            Logger.printException(() -> "Failed to read npm source", e);
-            return null;
-        }
-    }
-
-    private void ensureIsolate() throws Exception {
-        if (jsSandbox == null) {
-            jsSandbox = JavaScriptSandbox.createConnectedInstanceAsync(
-                    Utils.getContext().getApplicationContext()
-            ).get();
-        }
-        if (jsIsolate == null) {
-            // If Android System WebView 110+ (released February 2023) is installed, set the maximum heap memory.
-            // This can avoid OOM issues.
-            if (jsSandbox.isFeatureSupported(JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE)) {
-                IsolateStartupParameters params = new IsolateStartupParameters();
-                // Since the size of the Player JS is around 3MB, a maximum heap memory of 128MB is sufficient.
-                params.setMaxHeapSizeBytes(128 * 1024 * 1024); // 128MB
-                jsIsolate = jsSandbox.createIsolate(params);
-            } else { // ~ Android System WebView 109
-                jsIsolate = jsSandbox.createIsolate();
-            }
-        }
     }
 
     @Override
@@ -100,7 +77,23 @@ public class JsEngineChallengeProvider extends JsRuntimeChalBaseJCP {
     private String runJS(String stdin, boolean warmup) throws JsChallengeProviderError {
         try {
             String results = jsExecutor.submit(() -> {
-                ensureIsolate();
+                if (jsSandbox == null) {
+                    jsSandbox = JavaScriptSandbox.createConnectedInstanceAsync(
+                            Utils.getContext().getApplicationContext()
+                    ).get();
+                }
+                if (jsIsolate == null) {
+                    // If Android System WebView 110+ (released February 2023) is installed, set the maximum heap memory.
+                    // This can avoid OOM issues.
+                    if (jsSandbox.isFeatureSupported(JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE)) {
+                        IsolateStartupParameters params = new IsolateStartupParameters();
+                        // Since the size of the Player JS is around 3MB, a maximum heap memory of 128MB is sufficient.
+                        params.setMaxHeapSizeBytes(128 * 1024 * 1024); // 128MB
+                        jsIsolate = jsSandbox.createIsolate(params);
+                    } else { // ~ Android System WebView 109
+                        jsIsolate = jsSandbox.createIsolate();
+                    }
+                }
 
                 String result = jsIsolate.evaluateJavaScriptAsync(stdin).get();
                 executeCount++;

@@ -141,22 +141,7 @@ public abstract class BaseSearchResultItem {
         PreferenceSearchItem(Preference pref, String navPath, List<String> navKeys) {
             super(navPath, navKeys, determineType(pref));
             this.preference = pref;
-            this.searchableText = buildSearchableText(pref);
-        }
-
-        private static ViewType determineType(Preference pref) {
-            if (pref instanceof SwitchPreference) return ViewType.SWITCH;
-            if (pref instanceof ListPreference) return ViewType.LIST;
-            if (pref instanceof ColorPickerPreference) return ViewType.COLOR_PICKER;
-            if (pref instanceof URLLinkPreference) return ViewType.URL_LINK;
-            if ("no_results_placeholder".equals(pref.getKey())) return ViewType.NO_RESULTS;
-            return ViewType.REGULAR;
-        }
-
-        /**
-         * Built once so that results do not shuffle while a preference changes under the user.
-         */
-        private String buildSearchableText(Preference pref) {
+            // Built once so that results do not shuffle while a preference changes under the user.
             StringBuilder searchBuilder = new StringBuilder();
             String key = pref.getKey();
             String normalizedKey = "";
@@ -185,8 +170,16 @@ public abstract class BaseSearchResultItem {
 
             // Include navigation path in searchable text.
             appendText(searchBuilder, navigationPath);
+            this.searchableText = searchBuilder.toString();
+        }
 
-            return searchBuilder.toString();
+        private static ViewType determineType(Preference pref) {
+            if (pref instanceof SwitchPreference) return ViewType.SWITCH;
+            if (pref instanceof ListPreference) return ViewType.LIST;
+            if (pref instanceof ColorPickerPreference) return ViewType.COLOR_PICKER;
+            if (pref instanceof URLLinkPreference) return ViewType.URL_LINK;
+            if ("no_results_placeholder".equals(pref.getKey())) return ViewType.NO_RESULTS;
+            return ViewType.REGULAR;
         }
 
         /**
@@ -216,28 +209,27 @@ public abstract class BaseSearchResultItem {
         }
 
         CharSequence getDisplaySummary(@Nullable Pattern queryPattern) {
-            return highlightSearchQuery(getLiveSummary(), queryPattern);
-        }
-
-        /**
-         * A list shows its selected entry rather than its static summary, matching how the
-         * preference renders on its own screen.
-         */
-        private CharSequence getLiveSummary() {
-            if (preference instanceof ListPreference listPref) {
-                String value = listPref.getValue();
-                CharSequence[] entries = listPref.getEntries();
-                CharSequence[] entryValues = listPref.getEntryValues();
-                if (value != null && entries != null && entryValues != null) {
-                    for (int i = 0, length = Math.min(entries.length, entryValues.length); i < length; i++) {
-                        if (value.equals(entryValues[i].toString()) && entries[i] != null) {
-                            return entries[i];
+            // A list shows its selected entry rather than its static summary, matching how the
+            // preference renders on its own screen.
+            CharSequence liveSummary;
+            getLiveSummary: {
+                if (preference instanceof ListPreference listPref) {
+                    String value = listPref.getValue();
+                    CharSequence[] entries = listPref.getEntries();
+                    CharSequence[] entryValues = listPref.getEntryValues();
+                    if (value != null && entries != null && entryValues != null) {
+                        for (int i = 0, length = Math.min(entries.length, entryValues.length); i < length; i++) {
+                            if (value.equals(entryValues[i].toString()) && entries[i] != null) {
+                                liveSummary = entries[i];
+                                break getLiveSummary;
+                            }
                         }
                     }
                 }
+                CharSequence summary = preference.getSummary();
+                liveSummary = summary != null ? summary : "";
             }
-            CharSequence summary = preference.getSummary();
-            return summary != null ? summary : "";
+            return highlightSearchQuery(liveSummary, queryPattern);
         }
 
         /**

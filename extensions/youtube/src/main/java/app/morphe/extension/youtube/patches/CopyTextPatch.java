@@ -267,13 +267,81 @@ public final class CopyTextPatch {
                 longClickViewRef = new WeakReference<>(null);
             }
 
-            if (!findCopyableText(host)) {
+            boolean copyableText;
+            findCopyableText: {
+                TextContent textContent = host.getTextContent();
+                if (textContent == null) {
+                    copyableText = false;
+                    break findCopyableText;
+                }
+
+                String shown = shownTitle;
+                // Restore original titles replaces the shown title when its text hook runs after this one.
+                String title = COPY_VIDEO_TITLE ? VideoInformation.getVideoTitle().trim() : "";
+
+                for (CharSequence text : textContent.getTextItems()) {
+                    if (text == null) {
+                        continue;
+                    }
+                    String itemText = text.toString().trim();
+                    if (itemText.isEmpty()) {
+                        continue;
+                    }
+                    if (COPY_VIDEO_TITLE) {
+                        String fullTitle = isShownText(itemText, shown) ? shown
+                                : isShownText(itemText, title) ? title
+                                : null;
+                        if (fullTitle != null) {
+                            setTouchedText(fullTitle, "morphe_copy_video_title_success", false);
+                            copyableText = true;
+                            break findCopyableText;
+                        }
+                    }
+                    if (COPY_COMMENTS) {
+                        // The full comment of the text, which can be a collapsed comment.
+                        String comment;
+                        synchronized (commentTexts) {
+                            comment = findShownText(itemText, commentTexts.keySet());
+                        }
+                        if (comment != null) {
+                            setTouchedText(comment, "morphe_copy_comments_success", false);
+                            copyableText = true;
+                            break findCopyableText;
+                        }
+                    }
+                    if (SELECT_TEXT) {
+                        String selectable = findSelectableText(itemText);
+                        if (selectable != null) {
+                            setTouchedText(selectable, "", true);
+                            copyableText = true;
+                            break findCopyableText;
+                        }
+                    }
+                }
+                copyableText = false;
+            }
+            if (!copyableText) {
                 return;
             }
 
             // The text is drawn by a host that is not clickable itself,
             // and the tap is handled by a parent.
-            View clickableView = findClickableView(host);
+            View clickableView;
+            findClickableView: {
+                View view = host;
+                while (true) {
+                    if (view.isClickable()) {
+                        clickableView = view;
+                        break findClickableView;
+                    }
+                    ViewParent parent = view.getParent();
+                    if (!(parent instanceof ComponentHost)) {
+                        clickableView = null;
+                        break findClickableView;
+                    }
+                    view = (View) parent;
+                }
+            }
             if (clickableView == null && touchedTextSelectable) {
                 // A description is not clickable, except its links.
                 clickableView = host;
@@ -287,55 +355,6 @@ public final class CopyTextPatch {
         } catch (Exception ex) {
             Logger.printException(() -> "onComponentHostTouch failure", ex);
         }
-    }
-
-    private static boolean findCopyableText(ComponentHost host) {
-        TextContent textContent = host.getTextContent();
-        if (textContent == null) {
-            return false;
-        }
-
-        String shown = shownTitle;
-        // Restore original titles replaces the shown title when its text hook runs after this one.
-        String title = COPY_VIDEO_TITLE ? VideoInformation.getVideoTitle().trim() : "";
-
-        for (CharSequence text : textContent.getTextItems()) {
-            if (text == null) {
-                continue;
-            }
-            String itemText = text.toString().trim();
-            if (itemText.isEmpty()) {
-                continue;
-            }
-            if (COPY_VIDEO_TITLE) {
-                String fullTitle = isShownText(itemText, shown) ? shown
-                        : isShownText(itemText, title) ? title
-                        : null;
-                if (fullTitle != null) {
-                    setTouchedText(fullTitle, "morphe_copy_video_title_success", false);
-                    return true;
-                }
-            }
-            if (COPY_COMMENTS) {
-                // The full comment of the text, which can be a collapsed comment.
-                String comment;
-                synchronized (commentTexts) {
-                    comment = findShownText(itemText, commentTexts.keySet());
-                }
-                if (comment != null) {
-                    setTouchedText(comment, "morphe_copy_comments_success", false);
-                    return true;
-                }
-            }
-            if (SELECT_TEXT) {
-                String selectable = findSelectableText(itemText);
-                if (selectable != null) {
-                    setTouchedText(selectable, "", true);
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private static void setTouchedText(String text, String toastKey, boolean selectable) {
@@ -458,19 +477,5 @@ public final class CopyTextPatch {
             length++;
         }
         return length;
-    }
-
-    @Nullable
-    private static View findClickableView(View view) {
-        while (true) {
-            if (view.isClickable()) {
-                return view;
-            }
-            ViewParent parent = view.getParent();
-            if (!(parent instanceof ComponentHost)) {
-                return null;
-            }
-            view = (View) parent;
-        }
     }
 }

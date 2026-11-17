@@ -57,38 +57,37 @@ public final class VisitorIdRequester {
             2 * ClientType.values().length);
 
     static {
-        loadVisitorIds();
-    }
+        loadVisitorIds: {
+            String clientIds = SharedYouTubeSettings.SPOOF_VIDEO_STREAMS_CLIENT_IDS.get();
+            if (clientIds.isEmpty()) {
+                break loadVisitorIds;
+            }
+            try {
+                JSONObject json = new JSONObject(clientIds);
+                synchronized (cache) {
+                    for (ClientType clientType : ClientType.values()) {
+                        JSONObject visitorJson = json.optJSONObject(clientType.name());
+                        if (visitorJson != null) {
+                            VisitorData visitor = new VisitorData(
+                                    visitorJson.getString("visitorId"),
+                                    visitorJson.getLong("fetchedTime")
+                            );
+                            final boolean isNotExpired = visitor.isNotExpired();
+                            if (isNotExpired) {
+                                cache.put(clientType, visitor);
+                            }
 
-    private static void loadVisitorIds() {
-        String clientIds = SharedYouTubeSettings.SPOOF_VIDEO_STREAMS_CLIENT_IDS.get();
-        if (clientIds.isEmpty()) {
-            return;
-        }
-        try {
-            JSONObject json = new JSONObject(clientIds);
-            synchronized (cache) {
-                for (ClientType clientType : ClientType.values()) {
-                    JSONObject visitorJson = json.optJSONObject(clientType.name());
-                    if (visitorJson != null) {
-                        VisitorData visitor = new VisitorData(
-                                visitorJson.getString("visitorId"),
-                                visitorJson.getLong("fetchedTime")
-                        );
-                        final boolean isNotExpired = visitor.isNotExpired();
-                        if (isNotExpired) {
-                            cache.put(clientType, visitor);
+                            // Don't log visitor id and use UTC timezone to not leak device timezone.
+                            Logger.printDebug(() -> (isNotExpired ? "Loaded visitorId" : "Ignoring expired")
+                                    + " clientType: " + clientType
+                                    + " fetchedTime: " + visitor.getFetchedTimeFormatted());
                         }
-                        // Don't log visitor id and use UTC timezone to not leak device timezone.
-                        Logger.printDebug(() -> (isNotExpired ? "Loaded visitorId" : "Ignoring expired")
-                                + " clientType: " + clientType
-                                + " fetchedTime: " + visitor.getFetchedTimeFormatted());
                     }
                 }
+            } catch (JSONException ex) {
+                Logger.printException(() -> "Failed to load visitor IDs from saved data", ex);
+                SharedYouTubeSettings.SPOOF_VIDEO_STREAMS_CLIENT_IDS.resetToDefault();
             }
-        } catch (JSONException ex) {
-            Logger.printException(() -> "Failed to load visitor IDs from saved data", ex);
-            SharedYouTubeSettings.SPOOF_VIDEO_STREAMS_CLIENT_IDS.resetToDefault();
         }
     }
 

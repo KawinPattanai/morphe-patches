@@ -381,7 +381,21 @@ final class CaptionSession {
     synchronized Snapshot snapshot(long time, boolean paused) {
         if (!active) return null;
 
-        int found = indexOfCue(time);
+        int found;
+        indexOfCue: {
+            int low = 0, high = source.size() - 1;
+            while (low <= high) {
+                int mid = (low + high) >>> 1;
+                StableCaptionBlockPolicy.Block cue = source.get(mid);
+                if (time < cue.start) high = mid - 1;
+                else if (time >= cue.end) low = mid + 1;
+                else {
+                    found = mid;
+                    break indexOfCue;
+                }
+            }
+            found = -1;
+        }
         if (found < 0) {
             lastIndex = -1;
             displayed = null;
@@ -425,17 +439,5 @@ final class CaptionSession {
         lastIndex = found;
         lastDisplayTime = time;
         return displayed;
-    }
-
-    private int indexOfCue(long time) {
-        int low = 0, high = source.size() - 1;
-        while (low <= high) {
-            int mid = (low + high) >>> 1;
-            StableCaptionBlockPolicy.Block cue = source.get(mid);
-            if (time < cue.start) high = mid - 1;
-            else if (time >= cue.end) low = mid + 1;
-            else return mid;
-        }
-        return -1;
     }
 }

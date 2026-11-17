@@ -556,39 +556,37 @@ final class NiconicoCommentsOverlayView extends View {
         EmojiImageCache.Entry<Bitmap> state = emojiImageCache.beginLoad(imageUrl, neededEmojiUrls);
         if (state == null) return null;
         final int generation = emojiGeneration.get();
-        EMOJI_EXECUTOR.execute(() -> loadEmojiImage(imageUrl, state, generation));
-        return state;
-    }
-
-    private void loadEmojiImage(String imageUrl, EmojiImageCache.Entry<Bitmap> state, int generation) {
-        if (generation != emojiGeneration.get()) return;
-        HttpURLConnection connection = null;
-        Bitmap bitmap = null;
-        try {
-            connection = Requester.openConnection(imageUrl);
-            connection.setConnectTimeout(EMOJI_CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(EMOJI_READ_TIMEOUT_MS);
-            connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent", EMOJI_USER_AGENT);
-            if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
-                try (InputStream input = connection.getInputStream()) {
-                    bitmap = BitmapFactory.decodeStream(input);
+        EMOJI_EXECUTOR.execute(() -> {
+            if (generation != emojiGeneration.get()) return;
+            HttpURLConnection connection = null;
+            Bitmap bitmap = null;
+            try {
+                connection = Requester.openConnection(imageUrl);
+                connection.setConnectTimeout(EMOJI_CONNECT_TIMEOUT_MS);
+                connection.setReadTimeout(EMOJI_READ_TIMEOUT_MS);
+                connection.setInstanceFollowRedirects(true);
+                connection.setRequestProperty("User-Agent", EMOJI_USER_AGENT);
+                if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
+                    try (InputStream input = connection.getInputStream()) {
+                        bitmap = BitmapFactory.decodeStream(input);
+                    }
+                }
+            } catch (Exception ex) {
+                Logger.printInfo(() -> "Could not load emoji: " + imageUrl, ex);
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
                 }
             }
-        } catch (Exception ex) {
-            Logger.printInfo(() -> "Could not load emoji: " + imageUrl, ex);
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
-        }
+            Bitmap loadedBitmap = bitmap;
 
-        Bitmap loadedBitmap = bitmap;
-        post(() -> {
-            if (generation == emojiGeneration.get() && emojiImageCache.complete(imageUrl, state, loadedBitmap)) {
-                requestNextFrame();
-            }
+            post(() -> {
+                if (generation == emojiGeneration.get() && emojiImageCache.complete(imageUrl, state, loadedBitmap)) {
+                    requestNextFrame();
+                }
+            });
         });
+        return state;
     }
 
     private void requestNextFrame() {

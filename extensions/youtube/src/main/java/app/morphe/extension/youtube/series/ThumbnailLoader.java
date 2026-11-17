@@ -80,22 +80,20 @@ final class ThumbnailLoader {
             } finally {
                 // Always remove the waiting views, otherwise this thumbnail is never loaded again.
                 final Bitmap result = bitmap;
-                Utils.runOnMainThread(() -> showLoaded(videoId, result));
+                Utils.runOnMainThread(() -> {
+                    List<WeakReference<ImageView>> targets = waiting.remove(videoId);
+                    if (result == null || targets == null) return;
+
+                    for (WeakReference<ImageView> viewRef : targets) {
+                        ImageView target = viewRef.get();
+                        // The view may have been reused for a different video.
+                        if (target != null && videoId.equals(target.getTag())) {
+                            target.setImageBitmap(result);
+                        }
+                    }
+                });
             }
         });
-    }
-
-    private static void showLoaded(String videoId, @Nullable Bitmap bitmap) {
-        List<WeakReference<ImageView>> targets = waiting.remove(videoId);
-        if (bitmap == null || targets == null) return;
-
-        for (WeakReference<ImageView> viewRef : targets) {
-            ImageView target = viewRef.get();
-            // The view may have been reused for a different video.
-            if (target != null && videoId.equals(target.getTag())) {
-                target.setImageBitmap(bitmap);
-            }
-        }
     }
 
     /**

@@ -167,7 +167,205 @@ public class FeatureFlagsManagerPreference extends Preference {
 
     {
         setOnPreferenceClickListener(pref -> {
-            showFlagsManagerDialog();
+            // Shows the main dialog for managing feature flags.
+            showFlagsManagerDialog: {
+                if (!Logger.isDebugEnabled()) {
+                    Utils.showToastShort(str("morphe_debug_logs_disabled"));
+                    break showFlagsManagerDialog;
+                }
+
+                Context context = getContext();
+
+                // A search in progress replaces the manager until it is finished or canceled.
+                FeatureFlagsBisect bisect = FeatureFlagsBisect.isActive() ? FeatureFlagsBisect.load() : null;
+                if (bisect != null) {
+                    // Shows the three answers of a binary search in progress.
+                    Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                            context,
+                            str("morphe_debug_feature_flags_manager_bisect_title"),
+                            str("morphe_debug_feature_flags_manager_bisect_status",
+                                    bisect.getStep(), bisect.getRemainingCount(), bisect.getTestingCount()),
+                            null,
+                            null,
+                            null,
+                            () -> {},
+                            null,
+                            null,
+                            false
+                    );
+
+                    Dialog dialog = dialogPair.first;
+                    LinearLayout mainLayout = dialogPair.second;
+
+                    LinearLayout buttons = new LinearLayout(context);
+                    buttons.setOrientation(LinearLayout.VERTICAL);
+                    buttons.addView(createBisectButton(context, dialog,
+                            "morphe_debug_feature_flags_manager_bisect_present", true,
+                            () -> answerBisect(context, bisect, true)));
+                    buttons.addView(createBisectButton(context, dialog,
+                            "morphe_debug_feature_flags_manager_bisect_absent", false,
+                            () -> answerBisect(context, bisect, false)));
+                    buttons.addView(createBisectButton(context, dialog,
+                            "morphe_debug_feature_flags_manager_bisect_cancel", false,
+                            () -> {
+                                bisect.cancel();
+                                Utils.showToastShort(str("morphe_debug_feature_flags_manager_bisect_canceled"));
+                                AbstractPreferenceFragment.showRestartDialog(context);
+                            }));
+
+                    // Insert the answers before the dialog button row.
+                    mainLayout.addView(buttons, mainLayout.getChildCount() - 1,
+                            new LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                    dialog.show();
+                    break showFlagsManagerDialog;
+                }
+
+                if (!loadFlagStates()) {
+                    // It's impossible to reach the settings menu without reaching at least one flag.
+                    // So if there's no flags, then that means the user has just enabled debugging
+                    // but has not restarted the app yet.
+                    Utils.showToastShort(str("morphe_debug_feature_flags_manager_toast_no_flags"));
+                    break showFlagsManagerDialog;
+                }
+
+                filter = FlagFilter.ACTIVE;
+                chips.clear();
+
+                Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                        context,
+                        getTitle() != null ? getTitle().toString() : "",
+                        null,
+                        null,
+                        str("morphe_settings_save"),
+                        this::saveFlags,
+                        () -> {},
+                        str("morphe_settings_reset"),
+                        this::resetFlags,
+                        true
+                );
+
+                Dialog dialog = dialogPair.first;
+                LinearLayout mainLayout = dialogPair.second;
+                LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
+
+                // Insert content before the dialog button row.
+                // Creates the dialog content: search box, filter chips, flag list and the bottom buttons.
+                LinearLayout contentLayout = new LinearLayout(context);
+                contentLayout.setOrientation(LinearLayout.VERTICAL);
+
+                adapter = new FlagAdapter(context);
+                listView = createListView(context);
+
+                searchBox = createSearchBox(context);
+                contentLayout.addView(searchBox);
+                contentLayout.addView(createFilterChips(context));
+                contentLayout.addView(listView, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                // Creates the bottom bar, which shows the state buttons while flags are selected
+                // and the global actions otherwise.
+                LinearLayout bar = new LinearLayout(context);
+                bar.setOrientation(LinearLayout.VERTICAL);
+
+                actionButtons = new LinearLayout(context);
+                actionButtons.setOrientation(LinearLayout.HORIZONTAL);
+                actionButtons.setGravity(Gravity.CENTER);
+                actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_SELECT_ALL, () -> {
+                    for (int i = 0, count = adapter.getCount(); i < count; i++) {
+                        listView.setItemChecked(i, true);
+                    }
+                    updateBottomBar();
+                }));
+                actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_COPY_ALL, this::copyFlags));
+                actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_IMPORT_EXPORT,
+                        () -> showImportExportDialog(context)));
+                actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_BISECT,
+                        () -> {
+                            // Explains the binary search, then starts it.
+                            // Only an active flag can cause a behavior that is present, and blocking a flag
+                            // the app already has off would only add steps to the search.
+                            List<Long> candidates = new ArrayList<>();
+                            for (Map.Entry<Long, FlagState> entry : flagStates.entrySet()) {
+                                if (FlagFilter.ACTIVE.matches(entry.getValue(), loggedFlagStates.get(entry.getKey()))) {
+                                    candidates.add(entry.getKey());
+                                }
+                            }
+
+                            if (candidates.isEmpty()) {
+                                CustomDialog.create(
+                                        context,
+                                        str("morphe_debug_feature_flags_manager_bisect_title"),
+                                        str("morphe_debug_feature_flags_manager_bisect_no_candidates"),
+                                        null,
+                                        null,
+                                        null,
+                                        () -> {},
+                                        null,
+                                        null,
+                                        false
+                                ).first.show();
+                                return;
+                            }
+
+                            CustomDialog.create(
+                                    context,
+                                    str("morphe_debug_feature_flags_manager_bisect_title"),
+                                    str("morphe_debug_feature_flags_manager_bisect_start_message", candidates.size()),
+                                    null,
+                                    str("morphe_debug_feature_flags_manager_bisect_start_button"),
+                                    () -> {
+                                        // The search blocks flags on top of what is saved, so save the current list first.
+                                        persistFlagStates();
+                                        FeatureFlagsBisect.start(candidates);
+                                        dialog.dismiss();
+                                        AbstractPreferenceFragment.showRestartDialog(context);
+                                    },
+                                    () -> {},
+                                    null,
+                                    null,
+                                    false
+                            ).first.show();
+                        }));
+
+                selectionButtons = new LinearLayout(context);
+                selectionButtons.setOrientation(LinearLayout.HORIZONTAL);
+                selectionButtons.setGravity(Gravity.CENTER);
+
+                deselectButton = createIconButton(context, DRAWABLE_MORPHE_SETTINGS_DESELECT_ALL, () -> {
+                    listView.clearChoices();
+                    adapter.notifyDataSetChanged();
+                    updateBottomBar();
+                });
+
+                bar.addView(actionButtons);
+                bar.addView(selectionButtons);
+                contentLayout.addView(bar);
+
+                adapter.refresh();
+                updateChips();
+                updateBottomBar();
+
+                // Take the initial focus so the search box does not open the keyboard.
+                contentLayout.setFocusableInTouchMode(true);
+                contentLayout.requestFocus();
+                mainLayout.addView(contentLayout, mainLayout.getChildCount() - 1, contentParams);
+
+                dialog.show();
+
+                Window window = dialog.getWindow();
+                if (window != null) {
+                    WindowManager.LayoutParams params = window.getAttributes();
+                    params.height = WindowManager.LayoutParams.MATCH_PARENT;
+                    window.setAttributes(params);
+
+                    // Keep the buttons reachable while the keyboard is open, and do not
+                    // open the keyboard until the search box is tapped.
+                    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+                            | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                }
+            }
             return true;
         });
     }
@@ -186,72 +384,6 @@ public class FeatureFlagsManagerPreference extends Preference {
 
     public FeatureFlagsManagerPreference(Context context) {
         super(context);
-    }
-
-    /**
-     * Shows the main dialog for managing feature flags.
-     */
-    private void showFlagsManagerDialog() {
-        if (!Logger.isDebugEnabled()) {
-            Utils.showToastShort(str("morphe_debug_logs_disabled"));
-            return;
-        }
-
-        Context context = getContext();
-
-        // A search in progress replaces the manager until it is finished or canceled.
-        FeatureFlagsBisect bisect = FeatureFlagsBisect.isActive() ? FeatureFlagsBisect.load() : null;
-        if (bisect != null) {
-            showBisectDialog(context, bisect);
-            return;
-        }
-
-        if (!loadFlagStates()) {
-            // It's impossible to reach the settings menu without reaching at least one flag.
-            // So if there's no flags, then that means the user has just enabled debugging
-            // but has not restarted the app yet.
-            Utils.showToastShort(str("morphe_debug_feature_flags_manager_toast_no_flags"));
-            return;
-        }
-
-        filter = FlagFilter.ACTIVE;
-        chips.clear();
-
-        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                context,
-                getTitle() != null ? getTitle().toString() : "",
-                null,
-                null,
-                str("morphe_settings_save"),
-                this::saveFlags,
-                () -> {},
-                str("morphe_settings_reset"),
-                this::resetFlags,
-                true
-        );
-
-        Dialog dialog = dialogPair.first;
-        LinearLayout mainLayout = dialogPair.second;
-        LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
-
-        // Insert content before the dialog button row.
-        View contentView = createContentView(context, dialog);
-        mainLayout.addView(contentView, mainLayout.getChildCount() - 1, contentParams);
-
-        dialog.show();
-
-        Window window = dialog.getWindow();
-        if (window != null) {
-            WindowManager.LayoutParams params = window.getAttributes();
-            params.height = WindowManager.LayoutParams.MATCH_PARENT;
-            window.setAttributes(params);
-
-            // Keep the buttons reachable while the keyboard is open, and do not
-            // open the keyboard until the search box is tapped.
-            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
-                    | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        }
     }
 
     /**
@@ -292,34 +424,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         }
 
         return !loggedFlags.isEmpty();
-    }
-
-    /**
-     * Creates the dialog content: search box, filter chips, flag list and the bottom buttons.
-     */
-    private View createContentView(Context context, Dialog dialog) {
-        LinearLayout contentLayout = new LinearLayout(context);
-        contentLayout.setOrientation(LinearLayout.VERTICAL);
-
-        adapter = new FlagAdapter(context);
-        listView = createListView(context);
-
-        searchBox = createSearchBox(context);
-        contentLayout.addView(searchBox);
-        contentLayout.addView(createFilterChips(context));
-        contentLayout.addView(listView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        contentLayout.addView(createBottomBar(context, dialog));
-
-        adapter.refresh();
-        updateChips();
-        updateBottomBar();
-
-        // Take the initial focus so the search box does not open the keyboard.
-        contentLayout.setFocusableInTouchMode(true);
-        contentLayout.requestFocus();
-
-        return contentLayout;
     }
 
     /**
@@ -485,45 +589,6 @@ public class FeatureFlagsManagerPreference extends Preference {
     }
 
     /**
-     * Creates the bottom bar, which shows the state buttons while flags are selected
-     * and the global actions otherwise.
-     */
-    private View createBottomBar(Context context, Dialog dialog) {
-        LinearLayout bar = new LinearLayout(context);
-        bar.setOrientation(LinearLayout.VERTICAL);
-
-        actionButtons = new LinearLayout(context);
-        actionButtons.setOrientation(LinearLayout.HORIZONTAL);
-        actionButtons.setGravity(Gravity.CENTER);
-        actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_SELECT_ALL, () -> {
-            for (int i = 0, count = adapter.getCount(); i < count; i++) {
-                listView.setItemChecked(i, true);
-            }
-            updateBottomBar();
-        }));
-        actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_COPY_ALL, this::copyFlags));
-        actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_IMPORT_EXPORT,
-                () -> showImportExportDialog(context)));
-        actionButtons.addView(createIconButton(context, DRAWABLE_MORPHE_SETTINGS_BISECT,
-                () -> showBisectStartDialog(context, dialog)));
-
-        selectionButtons = new LinearLayout(context);
-        selectionButtons.setOrientation(LinearLayout.HORIZONTAL);
-        selectionButtons.setGravity(Gravity.CENTER);
-
-        deselectButton = createIconButton(context, DRAWABLE_MORPHE_SETTINGS_DESELECT_ALL, () -> {
-            listView.clearChoices();
-            adapter.notifyDataSetChanged();
-            updateBottomBar();
-        });
-
-        bar.addView(actionButtons);
-        bar.addView(selectionButtons);
-
-        return bar;
-    }
-
-    /**
      * Shows the state buttons only while flags are selected.
      */
     private void updateBottomBar() {
@@ -554,7 +619,16 @@ public class FeatureFlagsManagerPreference extends Preference {
      */
     private Button createStateButton(Context context, String stringKey, FlagState state) {
         Button button = CustomDialog.createButton(context, null, str(stringKey),
-                () -> applyStateToSelection(state), false, false);
+                () -> {
+                    for (Long flag : getSelectedFlags()) {
+                        flagStates.put(flag, state);
+                    }
+
+                    listView.clearChoices();
+                    adapter.refresh();
+                    updateChips();
+                    updateBottomBar();
+                }, false, false);
 
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, Dim.dp36, 1f);
         params.setMargins(Dim.dp4, Dim.dp8, Dim.dp4, Dim.dp8);
@@ -604,17 +678,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         return selected;
     }
 
-    private void applyStateToSelection(FlagState state) {
-        for (Long flag : getSelectedFlags()) {
-            flagStates.put(flag, state);
-        }
-
-        listView.clearChoices();
-        adapter.refresh();
-        updateChips();
-        updateBottomBar();
-    }
-
     /**
      * Copies the selected flags, or all shown flags if nothing is selected.
      */
@@ -640,7 +703,21 @@ public class FeatureFlagsManagerPreference extends Preference {
         editText.setTextSize(14);
         editText.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         editText.setSingleLine(false);
-        editText.setText(buildExportText());
+        List<Long> on = new ArrayList<>();
+        List<Long> off = new ArrayList<>();
+        for (Long flag : flagStates.keySet()) {
+            if (Boolean.TRUE.equals(loggedFlagStates.get(flag))) {
+                on.add(flag);
+            } else {
+                off.add(flag);
+            }
+        }
+        String exportText = "app=" + Utils.getAppVersionName()
+                + "\nblocked=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.BLOCKED), ',')
+                + "\nforced=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.FORCED), ',')
+                + "\non=" + EnableDebuggingPatch.serializeFlags(on, ',')
+                + "\noff=" + EnableDebuggingPatch.serializeFlags(off, ',');
+        editText.setText(exportText);
 
         Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
                 context,
@@ -656,19 +733,28 @@ public class FeatureFlagsManagerPreference extends Preference {
         );
 
         // Insert the file buttons between the text and the dialog buttons.
-        dialogPair.second.addView(createFileButtons(context, editText), 2);
-
-        dialogPair.first.show();
-    }
-
-    private LinearLayout createFileButtons(Context context, EditText editText) {
         Button buttonExport = CustomDialog.createButton(context, null,
                 str("morphe_settings_export_file"),
                 () -> exportToFile(editText.getText().toString()), false, false);
         Button buttonImport = CustomDialog.createButton(context, null,
-                str("morphe_settings_import_file"), () -> importFromFile(editText), false, false);
+                str("morphe_settings_import_file"), () -> {
+                    AbstractPreferenceFragment fragment = AbstractPreferenceFragment.instance.get();
+                    if (fragment == null) return;
 
-        return CustomDialog.createButtonRow(context, buttonExport, buttonImport);
+                    fragment.importTextActivity(text -> {
+                        if (text == null) {
+                            Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_failed"));
+                            return;
+                        }
+
+                        editText.setText(text);
+                        Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_success"));
+                    });
+                }, false, false);
+        LinearLayout fileButtons = CustomDialog.createButtonRow(context, buttonExport, buttonImport);
+        dialogPair.second.addView(fileButtons, 2);
+
+        dialogPair.first.show();
     }
 
     private void exportToFile(String text) {
@@ -681,21 +767,6 @@ public class FeatureFlagsManagerPreference extends Preference {
                         : "morphe_debug_feature_flags_manager_export_file_failed")));
     }
 
-    private void importFromFile(EditText editText) {
-        AbstractPreferenceFragment fragment = AbstractPreferenceFragment.instance.get();
-        if (fragment == null) return;
-
-        fragment.importTextActivity(text -> {
-            if (text == null) {
-                Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_failed"));
-                return;
-            }
-
-            editText.setText(text);
-            Utils.showToastShort(str("morphe_debug_feature_flags_manager_import_file_success"));
-        });
-    }
-
     /**
      * @return The flags that are in the given state, in ascending order.
      */
@@ -706,24 +777,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         }
 
         return flags;
-    }
-
-    private String buildExportText() {
-        List<Long> on = new ArrayList<>();
-        List<Long> off = new ArrayList<>();
-        for (Long flag : flagStates.keySet()) {
-            if (Boolean.TRUE.equals(loggedFlagStates.get(flag))) {
-                on.add(flag);
-            } else {
-                off.add(flag);
-            }
-        }
-
-        return "app=" + Utils.getAppVersionName()
-                + "\nblocked=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.BLOCKED), ',')
-                + "\nforced=" + EnableDebuggingPatch.serializeFlags(flagsWithState(FlagState.FORCED), ',')
-                + "\non=" + EnableDebuggingPatch.serializeFlags(on, ',')
-                + "\noff=" + EnableDebuggingPatch.serializeFlags(off, ',');
     }
 
     /**
@@ -772,100 +825,6 @@ public class FeatureFlagsManagerPreference extends Preference {
         } catch (Exception ex) {
             Logger.printException(() -> "Could not import feature flags", ex);
         }
-    }
-
-    /**
-     * Explains the binary search, then starts it.
-     */
-    private void showBisectStartDialog(Context context, Dialog managerDialog) {
-        // Only an active flag can cause a behavior that is present, and blocking a flag
-        // the app already has off would only add steps to the search.
-        List<Long> candidates = new ArrayList<>();
-        for (Map.Entry<Long, FlagState> entry : flagStates.entrySet()) {
-            if (FlagFilter.ACTIVE.matches(entry.getValue(), loggedFlagStates.get(entry.getKey()))) {
-                candidates.add(entry.getKey());
-            }
-        }
-
-        if (candidates.isEmpty()) {
-            CustomDialog.create(
-                    context,
-                    str("morphe_debug_feature_flags_manager_bisect_title"),
-                    str("morphe_debug_feature_flags_manager_bisect_no_candidates"),
-                    null,
-                    null,
-                    null,
-                    () -> {},
-                    null,
-                    null,
-                    false
-            ).first.show();
-            return;
-        }
-
-        CustomDialog.create(
-                context,
-                str("morphe_debug_feature_flags_manager_bisect_title"),
-                str("morphe_debug_feature_flags_manager_bisect_start_message", candidates.size()),
-                null,
-                str("morphe_debug_feature_flags_manager_bisect_start_button"),
-                () -> {
-                    // The search blocks flags on top of what is saved, so save the current list first.
-                    persistFlagStates();
-                    FeatureFlagsBisect.start(candidates);
-                    managerDialog.dismiss();
-                    AbstractPreferenceFragment.showRestartDialog(context);
-                },
-                () -> {},
-                null,
-                null,
-                false
-        ).first.show();
-    }
-
-    /**
-     * Shows the three answers of a binary search in progress.
-     */
-    private void showBisectDialog(Context context, FeatureFlagsBisect bisect) {
-        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
-                context,
-                str("morphe_debug_feature_flags_manager_bisect_title"),
-                str("morphe_debug_feature_flags_manager_bisect_status",
-                        bisect.getStep(), bisect.getRemainingCount(), bisect.getTestingCount()),
-                null,
-                null,
-                null,
-                () -> {},
-                null,
-                null,
-                false
-        );
-
-        Dialog dialog = dialogPair.first;
-        LinearLayout mainLayout = dialogPair.second;
-
-        LinearLayout buttons = new LinearLayout(context);
-        buttons.setOrientation(LinearLayout.VERTICAL);
-        buttons.addView(createBisectButton(context, dialog,
-                "morphe_debug_feature_flags_manager_bisect_present", true,
-                () -> answerBisect(context, bisect, true)));
-        buttons.addView(createBisectButton(context, dialog,
-                "morphe_debug_feature_flags_manager_bisect_absent", false,
-                () -> answerBisect(context, bisect, false)));
-        buttons.addView(createBisectButton(context, dialog,
-                "morphe_debug_feature_flags_manager_bisect_cancel", false,
-                () -> {
-                    bisect.cancel();
-                    Utils.showToastShort(str("morphe_debug_feature_flags_manager_bisect_canceled"));
-                    AbstractPreferenceFragment.showRestartDialog(context);
-                }));
-
-        // Insert the answers before the dialog button row.
-        mainLayout.addView(buttons, mainLayout.getChildCount() - 1,
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        dialog.show();
     }
 
     private Button createBisectButton(Context context, Dialog dialog, String stringKey,

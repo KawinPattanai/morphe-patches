@@ -1958,7 +1958,34 @@ public class FeedCardLayoutPatch {
                             }
                         }
 
-                        fitShelfHeaders(current);
+                        // The shelf headers of the newer A/B test of the cards have their buttons, such as the menu button,
+                        // near the edge of the list, outside the spacing of the cards below them. The buttons are moved
+                        // inside the spacing of the cards. The horizontal shelves, with their header and their videos
+                        // in the same list item, keep their layout.
+                        final int margin = cardPx(CARD_HORIZONTAL_PADDING_DP);
+                        List<View> moved = new ArrayList<>();
+                        for (int i = 0, count = current.getChildCount(); i < count; i++) {
+                            View item = current.getChildAt(i);
+                            if (item.getWidth() > 2 * margin && item.getHeight() > 0
+                                    && (isShelfHeader(item) || isVideoShelfHeader(item)) && !hasNestedList(item)) {
+                                fitShelfHeaderViews(item, item, 0, margin, moved, 0);
+                            }
+                        }
+
+                        // The views that are no longer at the edge of a shelf header of the list are moved back.
+                        for (View view : movedShelfHeaderViews.keySet().toArray(new View[0])) {
+                            if (view == null || moved.contains(view)) {
+                                continue;
+                            }
+                            for (ViewParent parent = view.getParent(); parent != null; parent = parent.getParent()) {
+                                if (parent == current) {
+                                    movedShelfHeaderViews.remove(view);
+                                    view.removeOnAttachStateChangeListener(SHELF_HEADER_VIEW_DETACH_LISTENER);
+                                    view.setTranslationX(0);
+                                    break;
+                                }
+                            }
+                        }
 
                         final boolean feed = current.getId() == getFeedId();
                         if (feed) {
@@ -2205,39 +2232,6 @@ public class FeedCardLayoutPatch {
             }
         } catch (Exception ex) {
             Logger.printException(() -> "onListDraw failure", ex);
-        }
-    }
-
-    /**
-     * The shelf headers of the newer A/B test of the cards have their buttons, such as the menu button,
-     * near the edge of the list, outside the spacing of the cards below them. The buttons are moved
-     * inside the spacing of the cards. The horizontal shelves, with their header and their videos
-     * in the same list item, keep their layout.
-     */
-    private static void fitShelfHeaders(RecyclerView list) {
-        final int margin = cardPx(CARD_HORIZONTAL_PADDING_DP);
-        List<View> moved = new ArrayList<>();
-        for (int i = 0, count = list.getChildCount(); i < count; i++) {
-            View item = list.getChildAt(i);
-            if (item.getWidth() > 2 * margin && item.getHeight() > 0
-                    && (isShelfHeader(item) || isVideoShelfHeader(item)) && !hasNestedList(item)) {
-                fitShelfHeaderViews(item, item, 0, margin, moved, 0);
-            }
-        }
-
-        // The views that are no longer at the edge of a shelf header of the list are moved back.
-        for (View view : movedShelfHeaderViews.keySet().toArray(new View[0])) {
-            if (view == null || moved.contains(view)) {
-                continue;
-            }
-            for (ViewParent parent = view.getParent(); parent != null; parent = parent.getParent()) {
-                if (parent == list) {
-                    movedShelfHeaderViews.remove(view);
-                    view.removeOnAttachStateChangeListener(SHELF_HEADER_VIEW_DETACH_LISTENER);
-                    view.setTranslationX(0);
-                    break;
-                }
-            }
         }
     }
 

@@ -133,23 +133,19 @@ public class PlaylistPatch {
     public static void syncIfNeeded() {
         if (!playlistId.isEmpty() && !syncStarted && !AuthUtils.isNotLoggedIn()) {
             syncStarted = true;
-            syncPlaylistItems();
-        }
-    }
-
-    private static void syncPlaylistItems() {
-        Utils.submitOnBackgroundThread(() -> {
-            Map<String, String> items = GetPlaylistItemsRequest.fetch(playlistId, AuthUtils.getRequestHeader());
-            if (items != null && !items.isEmpty()) {
-                synchronized (lastVideoIds) {
-                    for (Map.Entry<String, String> entry : items.entrySet()) {
-                        lastVideoIds.putIfAbsent(entry.getKey(), entry.getValue());
+            Utils.submitOnBackgroundThread(() -> {
+                Map<String, String> items = GetPlaylistItemsRequest.fetch(playlistId, AuthUtils.getRequestHeader());
+                if (items != null && !items.isEmpty()) {
+                    synchronized (lastVideoIds) {
+                        for (Map.Entry<String, String> entry : items.entrySet()) {
+                            lastVideoIds.putIfAbsent(entry.getKey(), entry.getValue());
+                        }
                     }
+                    Logger.printDebug(() -> "Synced " + items.size() + " items from queue playlist");
                 }
-                Logger.printDebug(() -> "Synced " + items.size() + " items from queue playlist");
-            }
-            return null;
-        });
+                return null;
+            });
+        }
     }
 
     private static void buildBottomSheetDialog(Context context, QueueManager[] queueManagerEntries) {
