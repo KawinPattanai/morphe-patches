@@ -497,7 +497,10 @@ public final class NavigationBar {
             NavigationButton oldButton = NavigationButton.selectedNavigationButton;
 
             if (button == null) { // An unknown tab was selected.
-                Logger.printExceptionIfDebug(() -> "Unknown navigation view selected: " + navButtonImageView);
+                // The app ships tabs this map does not know (a ConstraintLayout tab on some builds),
+                // and the state below is reset for them as designed. Logged as debug so a debug run
+                // does not raise an error toast for a tab that is handled.
+                Logger.printDebug(() -> "Unknown navigation view selected: " + navButtonImageView);
 
                 NavigationButton.selectedNavigationButton = null;
                 openedFromNavigationButton = null;
