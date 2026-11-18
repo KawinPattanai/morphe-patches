@@ -334,6 +334,42 @@ final class CommentSchedule {
         );
     }
 
+    private int nextLane(int requestedLaneCount) {
+        int laneCount = Math.max(1, requestedLaneCount);
+        if (laneCount != shuffledLaneCount || shuffledLaneIndex >= shuffledLanes.length) {
+            List<Integer> lanes = new ArrayList<>(laneCount);
+            for (int lane = 0; lane < laneCount; lane++) {
+                lanes.add(lane);
+            }
+            Collections.shuffle(lanes, random);
+            if (laneCount > 1 && lanes.get(0) == lastLane) {
+                Collections.swap(lanes, 0, 1);
+            }
+            shuffledLanes = new int[laneCount];
+            for (int index = 0; index < laneCount; index++) {
+                shuffledLanes[index] = lanes.get(index);
+            }
+            shuffledLaneCount = laneCount;
+            shuffledLaneIndex = 0;
+        }
+
+        int lane = shuffledLanes[shuffledLaneIndex++];
+        lastLane = lane;
+        return lane;
+    }
+
+    private void recalculateLiveCursor(long videoTimeMs, long liveStepMs) {
+        long latestPendingLiveMs = Long.MIN_VALUE;
+        for (ScheduledComment scheduled : comments) {
+            if (scheduled.comment.videoOffsetMs() < 0 && scheduled.startTimeMs > videoTimeMs) {
+                latestPendingLiveMs = Math.max(latestPendingLiveMs, scheduled.startTimeMs);
+            }
+        }
+        nextLiveStartTimeMs = latestPendingLiveMs == Long.MIN_VALUE
+                ? videoTimeMs
+                : latestPendingLiveMs + Math.max(LIVE_SPREAD_MIN_STEP_MS, liveStepMs);
+    }
+
     record ScheduledComment(NiconicoComment comment, long startTimeMs, int lane, float width) {
     }
 }

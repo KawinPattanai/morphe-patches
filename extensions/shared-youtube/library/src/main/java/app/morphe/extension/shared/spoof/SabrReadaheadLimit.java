@@ -30,7 +30,7 @@ import app.morphe.extension.shared.Logger;
  * media as was already watched. The app keeps all the buffered media in the Java heap, so videos of
  * high quality or at a high speed filled the heap after a few minutes and the app ran out of memory.
  * The target is lowered so the media buffered ahead fits in a part of the heap, using the bitrate of
- * the media that is received.
+ * the media that is received, and is never more than the readahead of the player config of the app.
  */
 final class SabrReadaheadLimit {
     private static final int PART_MEDIA_HEADER = 20;
@@ -44,11 +44,17 @@ final class SabrReadaheadLimit {
     private static final int POLICY_TARGET_VIDEO_READAHEAD_MS_FIELD = 2;
 
     /**
-     * Part of the maximum heap size that the media buffered ahead can use.
+     * Memory that the media buffered ahead can use: a part of the maximum heap size, up to 100 MB,
+     * which is about 30 seconds of 4K video at 60 fps.
      * The media behind the playback position and the rest of the app need the remaining heap.
      */
-    private static final long MAX_BUFFERED_BYTES = Runtime.getRuntime().maxMemory() / 4;
+    private static final long MAX_BUFFERED_BYTES = Math.min(100L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 5);
     private static final long MIN_READAHEAD_MS = 10_000;
+    /**
+     * Max readahead of the player config of the app (exoPlayerConfig maxReadAheadMediaTimeMs).
+     * The player configs of the SABR clients have no readahead, so the server target was not limited by time.
+     */
+    private static final long MAX_READAHEAD_MS = 120_000;
 
     /**
      * Formats that were not received for this long are no longer counted in the bitrate.
@@ -88,41 +94,7 @@ final class SabrReadaheadLimit {
     static void onRequest(Object callbacks) {
         responseReaders.put(callbacks, new SabrResponseReader(
                 SabrReadaheadLimit::limitReadahead, PART_NEXT_REQUEST_POLICY,
-                (partType, part) -> {
-                    try {
-                        CodedInputStream input = CodedInputStream.newInstance(part);
-                        int itag = -1;
-                        long durationMs = 0;
-                        long contentLength = 0;
-                        int tag;
-                        while ((tag = input.readTag()) != 0) {
-                            switch (WireFormat.getTagFieldNumber(tag)) {
-                                case MEDIA_HEADER_ITAG_FIELD -> itag = input.readInt32();
-                                case MEDIA_HEADER_DURATION_MS_FIELD -> durationMs = input.readInt64();
-                                case MEDIA_HEADER_CONTENT_LENGTH_FIELD -> contentLength = input.readInt64();
-                                default -> input.skipField(tag);
-                            }
-                        }
-
-                        // Init segments have no duration.
-                        if (itag < 0 || durationMs <= 0 || contentLength <= 0) {
-                            return;
-                        }
-
-                        final double bytesPerMs = (double) contentLength / durationMs;
-                        synchronized (bitrates) {
-                            FormatBitrate bitrate = bitrates.get(itag);
-                            if (bitrate == null) {
-                                bitrate = new FormatBitrate();
-                                bitrates.put(itag, bitrate);
-                            }
-                            bitrate.bytesPerMs = Math.max(bytesPerMs, bitrate.bytesPerMs * BITRATE_DECAY);
-                            bitrate.receivedTime = SystemClock.elapsedRealtime();
-                        }
-                    } catch (IOException ex) {
-                        Logger.printInfo(() -> "Could not read media header", ex);
-                    }
-                }, PART_MEDIA_HEADER));
+                (partType, part) -> onMediaHeader(part), PART_MEDIA_HEADER));
     }
 
     static void onResponseChunk(Object callbacks, ByteBuffer chunk) {
@@ -138,36 +110,71 @@ final class SabrReadaheadLimit {
         }
     }
 
+    private static void onMediaHeader(byte[] part) {
+        try {
+            CodedInputStream input = CodedInputStream.newInstance(part);
+            int itag = -1;
+            long durationMs = 0;
+            long contentLength = 0;
+            int tag;
+            while ((tag = input.readTag()) != 0) {
+                switch (WireFormat.getTagFieldNumber(tag)) {
+                    case MEDIA_HEADER_ITAG_FIELD -> itag = input.readInt32();
+                    case MEDIA_HEADER_DURATION_MS_FIELD -> durationMs = input.readInt64();
+                    case MEDIA_HEADER_CONTENT_LENGTH_FIELD -> contentLength = input.readInt64();
+                    default -> input.skipField(tag);
+                }
+            }
+            // Init segments have no duration.
+            if (itag < 0 || durationMs <= 0 || contentLength <= 0) {
+                return;
+            }
+
+            final double bytesPerMs = (double) contentLength / durationMs;
+            synchronized (bitrates) {
+                FormatBitrate bitrate = bitrates.get(itag);
+                if (bitrate == null) {
+                    bitrate = new FormatBitrate();
+                    bitrates.put(itag, bitrate);
+                }
+                bitrate.bytesPerMs = Math.max(bytesPerMs, bitrate.bytesPerMs * BITRATE_DECAY);
+                bitrate.receivedTime = SystemClock.elapsedRealtime();
+            }
+        } catch (IOException ex) {
+            Logger.printInfo(() -> "Could not read media header", ex);
+        }
+    }
+
+    /**
+     * @return The largest readahead that fits in the heap, or the max readahead if the bitrate is not known yet.
+     */
+    private static long getReadaheadLimitMs() {
+        final long now = SystemClock.elapsedRealtime();
+        double bytesPerMs = 0;
+        synchronized (bitrates) {
+            Iterator<FormatBitrate> iterator = bitrates.values().iterator();
+            while (iterator.hasNext()) {
+                FormatBitrate bitrate = iterator.next();
+                if (now - bitrate.receivedTime > FORMAT_EXPIRATION_MS) {
+                    iterator.remove();
+                } else {
+                    bytesPerMs += bitrate.bytesPerMs;
+                }
+            }
+        }
+        if (bytesPerMs <= 0) {
+            return MAX_READAHEAD_MS;
+        }
+        return Math.max(MIN_READAHEAD_MS, Math.min(MAX_READAHEAD_MS, (long) (MAX_BUFFERED_BYTES / bytesPerMs)));
+    }
+
     /**
      * Lowers the readahead targets of a NextRequestPolicy message in place.
      * A target is written with the same number of bytes, so the size of the part does not change.
      * Protobuf varints can have extra empty groups, and parsers accept them.
      */
     private static void limitReadahead(ByteBuffer chunk, int offset, int length) {
-        long limitMs;
-        getReadaheadLimitMs: {
-            final long now = SystemClock.elapsedRealtime();
-            double bytesPerMs = 0;
-            synchronized (bitrates) {
-                Iterator<FormatBitrate> iterator = bitrates.values().iterator();
-                while (iterator.hasNext()) {
-                    FormatBitrate bitrate = iterator.next();
-                    if (now - bitrate.receivedTime > FORMAT_EXPIRATION_MS) {
-                        iterator.remove();
-                    } else {
-                        bytesPerMs += bitrate.bytesPerMs;
-                    }
-                }
-            }
-            if (bytesPerMs <= 0) {
-                limitMs = -1;
-                break getReadaheadLimitMs;
-            }
-            limitMs = Math.max(MIN_READAHEAD_MS, (long) (MAX_BUFFERED_BYTES / bytesPerMs));
-        }
-        if (limitMs < 0) {
-            return;
-        }
+        final long limitMs = getReadaheadLimitMs();
         final int end = offset + length;
         int position = offset;
         while (position < end) {

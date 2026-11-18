@@ -263,6 +263,13 @@ public class ToolbarPreferenceFragment extends AbstractPreferenceFragment {
     }
 
     /**
+     * Allows subclasses to customize the dialog's root view background.
+     */
+    protected void customizeDialogBackground(ViewGroup rootView) {
+        rootView.setBackgroundColor(ThemeUtils.getAppBackgroundColor());
+    }
+
+    /**
      * Allows subclasses to customize the toolbar.
      */
     protected void customizeToolbar(Toolbar toolbar) {

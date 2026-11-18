@@ -27,7 +27,6 @@ import app.morphe.patcher.patch.resourceFile
 import app.morphe.patcher.patch.resourceXml
 import app.morphe.patcher.patch.stringOption
 import app.morphe.patcher.util.returnEarly
-import app.morphe.patcher.xml.XmlElement
 import app.morphe.patches.all.misc.clone.setOrGetFallbackPackageName
 import app.morphe.patches.shared.misc.fix.bitmap.fixRecycledBitmapPatch
 import app.morphe.patches.shared.misc.settings.preference.BasePreference
@@ -816,9 +815,198 @@ private fun resolveIconStyle(appIconStyle: String?, customIcon: String?): String
         ?: if (customIcon != null) CUSTOM_USER_ICON_STYLE_NAME else DEFAULT_ICON_STYLE_NAME
 
 /**
+ * The names of the string resources that decide the app name a launcher and the system show.
+ * The name the patch declares is first, followed by any additional name the manifest points to.
+ */
+private fun appNameResourceNames(originalAppName: String): List<String> {
+    val declaredName = stringResourceNameOrNull(originalAppName)
+        ?: throw PatchException("Expected a string resource but found: $originalAppName")
+
+    val resourceNames = mutableListOf(declaredName)
+
+    resourceXml("AndroidManifest.xml").use { manifest ->
+        // A launcher shows the label of the launch activity and falls back to the application
+        // label, and the app list of the system settings always shows the application label.
+        // These can be different resources, such as "YT Music" and "YouTube Music".
+        val application = manifest.elements("application").first()
+        stringResourceNameOrNull(application.attribute("android:label").orEmpty())?.let {
+            resourceNames += it
+        }
+
+        arrayOf("activity", "activity-alias").forEach { tagName ->
+            manifest.elements(tagName).forEach { element ->
+                if (element.elements("category").none {
+                        it.attribute("android:name") == "android.intent.category.LAUNCHER"
+                    }
+                ) return@forEach
+
+                stringResourceNameOrNull(element.attribute("android:label").orEmpty())?.let {
+                    resourceNames += it
+                }
+            }
+        }
+    }
+
+    return resourceNames.distinct()
+}
+
+/**
  * The resource name of a string reference such as '@string/app_name', or null for anything
  * else such as a literal or a framework resource like '@android:string/untitled'.
  */
 private fun stringResourceNameOrNull(reference: String): String? =
     if (reference.startsWith("@string/")) reference.substring("@string/".length) else null
 
+/**
+ * Sets the app name of the default locale, and removes the localized app names because
+ * a launcher resolves the app name using the locale of the device and not of the app.
+ *
+ * @return If the resource was declared and set for the default locale.
+ */
+private fun setAppNameResource(resourceName: String, appName: String): Boolean {
+    var defaultAppNameSet = false
+
+    listDecodableFiles("res/values*/strings.xml").forEach { path ->
+        resourceXml(path).use { strings ->
+            if (path != "res/values/strings.xml") {
+                strings.resourceOrNull(resourceName)?.remove()
+                return@use
+            }
+
+            val sanitizedAppName = StringResourceSanitizer.sanitizeAndroidResourceString(
+                resourceName,
+                appName
+            )
+
+            defaultAppNameSet = true
+            val string = strings.resourceOrNull(resourceName)
+                ?: strings.root.appendChild("string") { setAttribute("name", resourceName) }
+            string.text = sanitizedAppName
+        }
+    }
+
+    return defaultAppNameSet
+}
+
+/**
+ * Replaces the notification icon of the app with a bundled icon style, or with the
+ * notification icon the user provided.
+ *
+ * The original icons are removed and not overwritten, because they are raster images for each
+ * density and a density qualified resource is a better match than the vector that replaces them.
+ *
+ * @return If the notification icon was replaced.
+ */
+private fun setNotificationIconResource(
+    originalNotificationIconName: String,
+    iconStyle: String,
+    customIcon: String?
+): Boolean {
+    if (!hasMountedNotificationIcon(iconStyle, customIcon)) return false
+
+    val vectorIcon: ByteArray?
+    val rasterIcons: Map<String, File>
+
+    if (iconStyle == CUSTOM_USER_ICON_STYLE_NAME) {
+        val iconPathFile = File(customIcon!!.trim())
+
+        vectorIcon = iconPathFile
+            .resolve("drawable/$USER_CUSTOM_NOTIFICATION_ICON_XML_FILE_NAME")
+            .takeIf { it.exists() }
+            ?.readBytes()
+
+        rasterIcons = notificationIconPngDirectories.keys.mapNotNull { dpi ->
+            val sourceFile = iconPathFile.resolve("$dpi/$USER_CUSTOM_NOTIFICATION_ICON_PNG_FILE_NAME")
+            if (sourceFile.exists()) dpi to sourceFile else null
+        }.toMap()
+    } else {
+        vectorIcon = bundledBrandingResource("drawable/${NOTIFICATION_ICON_NAME}_$iconStyle.xml")
+            ?: throw PatchException("Could not find the bundled notification icon style: $iconStyle")
+
+        rasterIcons = emptyMap()
+    }
+
+    var removedIcons = 0
+
+    val iconsToDelete = listDecodableFiles("res/drawable*/$originalNotificationIconName.*")
+    iconsToDelete.forEach { path ->
+        deleteResource(path)
+        removedIcons++
+    }
+
+    if (removedIcons == 0) {
+        // Not fatal, because the launcher icon and the app name are the visible part of the
+        // branding and patching should not fail if only the notification icon was renamed.
+        logger.warning(
+            "Could not find the notification icon to replace: @drawable/$originalNotificationIconName"
+        )
+        return false
+    }
+
+    if (vectorIcon != null) {
+        val targetFile = resourceFile("res/drawable/$originalNotificationIconName.xml")
+        targetFile.parentFile.mkdirs()
+        targetFile.writeBytes(vectorIcon)
+    }
+
+    rasterIcons.forEach { (dpi, sourceFile) ->
+        val targetFile = resourceFile("res/$dpi/$originalNotificationIconName.png")
+        targetFile.parentFile.mkdirs()
+        sourceFile.copyTo(
+            target = targetFile,
+            overwrite = true
+        )
+    }
+
+    return true
+}
+
+/**
+ * Replaces the adaptive launcher icon of the app with a bundled icon style.
+ */
+private fun setLauncherIconResource(
+    originalLauncherIconName: String,
+    iconStyle: String
+) {
+    val iconReferences = mutableSetOf("mipmap" to originalLauncherIconName)
+
+    resourceXml("AndroidManifest.xml").use { manifest ->
+        val application = manifest.elements("application").first()
+
+        // Some launchers show the round icon, and it can point to a different resource.
+        arrayOf("android:icon", "android:roundIcon").forEach { attributeName ->
+            val reference = application.attribute(attributeName).orEmpty()
+            val typeIndex = reference.indexOf('/')
+
+            // Framework resources such as '@android:mipmap/sym_def_app_icon' cannot be replaced.
+            if (!reference.startsWith("@") || typeIndex < 0 || reference.contains(':')) {
+                return@forEach
+            }
+
+            iconReferences += reference.substring(1, typeIndex) to reference.substring(typeIndex + 1)
+        }
+    }
+
+    val bundledIcon =
+        bundledBrandingResource("mipmap-anydpi/$LAUNCHER_RESOURCE_NAME_PREFIX$iconStyle.xml")
+            ?: throw PatchException("Could not find the bundled icon style: $iconStyle")
+
+    var replacedIcons = 0
+
+    iconReferences.forEach { (resourceType, resourceName) ->
+        listDecodableFiles("res/$resourceType*/$resourceName.xml").forEach { path ->
+            // Only the adaptive icon is replaced. A raster icon of the same name is used by
+            // Android 7 and older, which the target apps no longer support.
+            // Replaced without decoding it.
+            resourceFile(path, false).writeBytes(bundledIcon)
+            replacedIcons++
+        }
+    }
+
+    if (replacedIcons == 0) {
+        throw PatchException(
+            "Could not find an adaptive launcher icon to replace: " +
+                    iconReferences.joinToString { (type, name) -> "@$type/$name" }
+        )
+    }
+}

@@ -770,6 +770,7 @@ public class CustomPlaybackSpeedPatch {
     private static float clampPitch(float pitch) {
         return Utils.clamp(pitch, (float) PITCH_ADJUSTMENT_CHANGE, VideoInformation.PLAYBACK_AUDIO_PITCH_MAXIMUM);
     }
+
 }
 
 /**

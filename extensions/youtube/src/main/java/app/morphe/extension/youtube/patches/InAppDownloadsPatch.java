@@ -9,9 +9,6 @@
 
 package app.morphe.extension.youtube.patches;
 
-import android.net.Uri;
-import android.util.Base64;
-
 import androidx.annotation.Nullable;
 
 import com.google.protobuf.ByteString;
@@ -30,7 +27,6 @@ import app.morphe.extension.shared.innertube.Offline.DownloadButtonColor;
 import app.morphe.extension.shared.innertube.Offline.DownloadButtonLayout;
 import app.morphe.extension.shared.innertube.Offline.DownloadButtonSize;
 import app.morphe.extension.shared.innertube.Offline.DownloadButtonStyle;
-import app.morphe.extension.shared.innertube.Offline.EntityKey;
 import app.morphe.extension.shared.innertube.Offline.FlexibleAction;
 import app.morphe.extension.shared.innertube.Offline.FlexibleActionsRow;
 import app.morphe.extension.shared.innertube.Offline.FlexibleActionsViewModel;
@@ -46,6 +42,7 @@ import app.morphe.extension.shared.innertube.Offline.PlaylistDownloadButtonViewM
 import app.morphe.extension.shared.innertube.Offline.PlaylistDownloadStatusEntityId;
 import app.morphe.extension.shared.patches.BaseInAppDownloadsPatch;
 import app.morphe.extension.shared.patches.DownloadMode;
+import app.morphe.extension.youtube.patches.utils.EntityKeys;
 import app.morphe.extension.youtube.patches.utils.FeedVideoCardsPatch;
 import app.morphe.extension.youtube.patches.utils.ProtoNode;
 import app.morphe.extension.youtube.settings.Settings;
@@ -76,7 +73,6 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
     private static final int PLAYLIST_DOWNLOAD_STATUS_ENTITY_ID_TYPE = 306;
     private static final int GENERATION_STATUS_ENTITY_TYPE = 147;
     private static final String PLAYLIST_GENERATION_STATUS_ENTITY_ID = "playlist";
-    private static final int ENTITY_PERSISTENCE = 1;
 
     private static final String PLAYLIST_DOWNLOAD_BUTTON_IDENTIFIER = "playlist-download-button";
 
@@ -97,17 +93,6 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
     private static final String[] FORMAT_LABELS = {
             "2160p", "1440p", "1080p", "720p", "480p", "360p", "144p"
     };
-
-    /**
-     * Longer side of 1080p. The video decoder sizes are raised to at least this while
-     * the streams of a download are picked, in either orientation.
-     */
-    private static final int FULL_HD_LONG_SIDE = 1920;
-
-    /**
-     * Set while the current thread picks the streams of a download in in-app download mode.
-     */
-    private static final ThreadLocal<Boolean> SELECTING_DOWNLOAD_STREAMS = new ThreadLocal<>();
 
     /**
      * Injection point.
@@ -261,17 +246,8 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
                                                              int maxHeight, int audioQuality,
                                                              StreamingDataInterface streamingData,
                                                              boolean audio, Object playerConfig) {
-        if (!isInAppDownloadMode()) {
-            return selector.patch_selectStream(quality, maxHeight, audioQuality, streamingData, audio, playerConfig);
-        }
-
-        FormatStreamInterface stream;
-        SELECTING_DOWNLOAD_STREAMS.set(Boolean.TRUE);
-        try {
-            stream = selector.patch_selectStream(quality, maxHeight, audioQuality, streamingData, audio, playerConfig);
-        } finally {
-            SELECTING_DOWNLOAD_STREAMS.remove();
-        }
+        FormatStreamInterface stream = selector.patch_selectStream(
+                quality, maxHeight, audioQuality, streamingData, audio, playerConfig);
         if (audio) {
             return stream;
         }
@@ -285,61 +261,6 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
             Logger.printException(() -> "selectDownloadStream failure", ex);
             return stream;
         }
-    }
-
-    /**
-     * Implemented by the app interface that picks the video and audio streams of a saved video.
-     */
-    public interface OfflineStreamSelector {
-        /**
-         * The stream selection of the app, which uses the same device and server checks as playback.
-         *
-         * @param streamingData Streaming data of the video.
-         * @param playerConfig  Player config of the video.
-         * @param parameters    Quality and audio track to pick the streams of.
-         * @return The video and audio streams it picked.
-         */
-        Object patch_selectStreams(Object streamingData, Object playerConfig, Object parameters);
-    }
-
-    /**
-     * Injection point.
-     * <p>
-     * Called when a download starts, to pick its video and audio streams.
-     * The selection throws if no stream fits, which the app catches, so exceptions are not caught here.
-     *
-     * @return The video and audio streams the app picked.
-     */
-    public static Object selectDownloadStreams(OfflineStreamSelector selector, Object streamingData,
-                                               Object playerConfig, Object parameters) {
-        if (!isInAppDownloadMode()) {
-            return selector.patch_selectStreams(streamingData, playerConfig, parameters);
-        }
-
-        SELECTING_DOWNLOAD_STREAMS.set(Boolean.TRUE);
-        try {
-            return selector.patch_selectStreams(streamingData, playerConfig, parameters);
-        } finally {
-            SELECTING_DOWNLOAD_STREAMS.remove();
-        }
-    }
-
-    /**
-     * Injection point.
-     * <p>
-     * Called when the stream selection of the app reads the largest video size the hardware
-     * decoder supports. If the app uses only the hardware decoders, it drops the streams that are
-     * larger, and some devices list a size below 1080p, so the quality picker of a download
-     * offers only the lowest qualities. While the streams of a download are picked,
-     * the size is raised to at least 1080p, the same as the download qualities of every screen.
-     * Qualities above 1080p are left to the force 4K setting.
-     *
-     * @param maxSize Largest height or width the decoder supports.
-     */
-    public static int getVideoDecoderMaxSize(int maxSize) {
-        return Boolean.TRUE.equals(SELECTING_DOWNLOAD_STREAMS.get())
-                ? Math.max(maxSize, FULL_HD_LONG_SIDE)
-                : maxSize;
     }
 
     /**
@@ -464,79 +385,8 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
             }
 
             for (ProtoNode actionsNode : ProtoNode.findMessages(element, FLEXIBLE_ACTIONS_VIEW_MODEL_FIELD)) {
-                // The buttons with a Download button in the row of the Play all button of a playlist,
-                // or null if the buttons are not of a playlist or already have a Download button.
-                FlexibleActionsViewModel actions;
-                withPlaylistDownloadButton: {
-                    FlexibleActionsViewModel originalActions = FlexibleActionsViewModel.parseFrom(actionsNode.getPayload());
-                    int playlistRowIndex = -1;
-                    String playlistId = "";
-
-                    List<FlexibleActionsRow> rows = originalActions.getActionsRowsList();
-                    for (int i = 0; i < rows.size(); i++) {
-                        for (FlexibleAction action : rows.get(i).getActionsList()) {
-                            if (action.hasDownloadButtonViewModel()) {
-                                actions = null;
-                                break withPlaylistDownloadButton;
-                            }
-                            String id = action.getButtonViewModel().getOnTap().getInnertubeCommand()
-                                    .getWatchEndpoint().getPlaylistId();
-                            if (playlistId.isEmpty() && !id.isEmpty()) {
-                                playlistRowIndex = i;
-                                playlistId = id;
-                            }
-                        }
-                    }
-                    if (playlistId.isEmpty()) {
-                        actions = null;
-                        break withPlaylistDownloadButton;
-                    }
-
-                    // The Download button the server gives to the playlist page header of Premium accounts,
-                    // which saves the playlist or removes it if it's saved.
-                    final String downloadPlaylistId = playlistId;
-                    Logger.printDebug(() -> "Adding download button to playlist: " + downloadPlaylistId);
-
-                    OfflinePlaylistEndpoint endpoint = OfflinePlaylistEndpoint.newBuilder()
-                            .setPlaylistId(playlistId)
-                            .setAction(OfflinePlaylistAction.OFFLINE_PLAYLIST_ACTION_INFER_AUTOMATICALLY)
-                            .setOfflineability(offlineability(List.of()))
-                            .build();
-                    // Texts of the app, which all supported app versions have.
-                    String downloadableText = ResourceUtils.getString("accessibility_playlist_download");
-                    String inProgressText = ResourceUtils.getString("offline_button_progress_text");
-                    String completedText = ResourceUtils.getString("offline_button_complete_text");
-                    ByteString downloadStatusEntityId = PlaylistDownloadStatusEntityId.newBuilder()
-                            .setPlaylistId(playlistId)
-                            .setType(PLAYLIST_DOWNLOAD_STATUS_ENTITY_ID_TYPE)
-                            .build()
-                            .toByteString();
-
-                    PlaylistDownloadButtonViewModel button = PlaylistDownloadButtonViewModel.newBuilder()
-                            .setPlaylistId(playlistId)
-                            .setDownloadableText(downloadableText)
-                            .setInProgressText(inProgressText)
-                            .setCompletedText(completedText)
-                            .setDownloadableA11YText(downloadableText)
-                            .setInProgressA11YText(inProgressText)
-                            .setCompletedA11YText(completedText)
-                            .setDownloadStatusKey(entityKey(DOWNLOAD_STATUS_ENTITY_TYPE, downloadStatusEntityId))
-                            .setGenerationStatusKey(entityKey(GENERATION_STATUS_ENTITY_TYPE,
-                                    ByteString.copyFromUtf8(PLAYLIST_GENERATION_STATUS_ENTITY_ID)))
-                            .setLayout(DownloadButtonLayout.DOWNLOAD_BUTTON_LAYOUT_PLAYLIST_HEADER)
-                            .setIconColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
-                            .setTextColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
-                            .setButtonSize(DownloadButtonSize.DOWNLOAD_BUTTON_SIZE_DEFAULT)
-                            .setButtonStyle(DownloadButtonStyle.DOWNLOAD_BUTTON_STYLE_OVERLAY)
-                            .setOnTapCommand(ButtonCommand.newBuilder().setInnertubeCommand(
-                                    OfflineCommand.newBuilder().setOfflinePlaylistEndpoint(endpoint)))
-                            .setIdentifier(PLAYLIST_DOWNLOAD_BUTTON_IDENTIFIER)
-                            .build();
-                    actions = originalActions.toBuilder()
-                            .setActionsRows(playlistRowIndex, rows.get(playlistRowIndex).toBuilder()
-                                    .addActions(FlexibleAction.newBuilder().setDownloadButtonViewModel(button).build()))
-                            .build();
-                }
+                FlexibleActionsViewModel actions = withPlaylistDownloadButton(
+                        FlexibleActionsViewModel.parseFrom(actionsNode.getPayload()));
                 if (actions != null) {
                     actionsNode.setPayload(actions.toByteArray());
                     return ProtoNode.write(element);
@@ -550,15 +400,81 @@ public final class InAppDownloadsPatch extends BaseInAppDownloadsPatch {
     }
 
     /**
-     * @return The key of the entity, as the app encodes it.
+     * @return The buttons with a Download button in the row of the Play all button of a playlist,
+     *         or null if the buttons are not of a playlist or already have a Download button.
      */
-    private static String entityKey(int entityType, ByteString entityId) {
-        EntityKey key = EntityKey.newBuilder()
-                .setEntityId(entityId)
-                .setEntityType(entityType)
-                .setPersistence(ENTITY_PERSISTENCE)
+    @Nullable
+    private static FlexibleActionsViewModel withPlaylistDownloadButton(FlexibleActionsViewModel actions) {
+        int playlistRowIndex = -1;
+        String playlistId = "";
+
+        List<FlexibleActionsRow> rows = actions.getActionsRowsList();
+        for (int i = 0; i < rows.size(); i++) {
+            for (FlexibleAction action : rows.get(i).getActionsList()) {
+                if (action.hasDownloadButtonViewModel()) {
+                    return null;
+                }
+                String id = action.getButtonViewModel().getOnTap().getInnertubeCommand()
+                        .getWatchEndpoint().getPlaylistId();
+                if (playlistId.isEmpty() && !id.isEmpty()) {
+                    playlistRowIndex = i;
+                    playlistId = id;
+                }
+            }
+        }
+        if (playlistId.isEmpty()) {
+            return null;
+        }
+
+        return actions.toBuilder()
+                .setActionsRows(playlistRowIndex, rows.get(playlistRowIndex).toBuilder()
+                        .addActions(playlistDownloadButton(playlistId)))
                 .build();
-        return Uri.encode(Base64.encodeToString(key.toByteArray(), Base64.URL_SAFE | Base64.NO_WRAP));
+    }
+
+    /**
+     * @return The Download button the server gives to the playlist page header of Premium accounts,
+     *         which saves the playlist or removes it if it's saved.
+     */
+    private static FlexibleAction playlistDownloadButton(String playlistId) {
+        Logger.printDebug(() -> "Adding download button to playlist: " + playlistId);
+
+        OfflinePlaylistEndpoint endpoint = OfflinePlaylistEndpoint.newBuilder()
+                .setPlaylistId(playlistId)
+                .setAction(OfflinePlaylistAction.OFFLINE_PLAYLIST_ACTION_INFER_AUTOMATICALLY)
+                .setOfflineability(offlineability(List.of()))
+                .build();
+        // Texts of the app, which all supported app versions have.
+        String downloadableText = ResourceUtils.getString("accessibility_playlist_download");
+        String inProgressText = ResourceUtils.getString("offline_button_progress_text");
+        String completedText = ResourceUtils.getString("offline_button_complete_text");
+        ByteString downloadStatusEntityId = PlaylistDownloadStatusEntityId.newBuilder()
+                .setPlaylistId(playlistId)
+                .setType(PLAYLIST_DOWNLOAD_STATUS_ENTITY_ID_TYPE)
+                .build()
+                .toByteString();
+
+        PlaylistDownloadButtonViewModel button = PlaylistDownloadButtonViewModel.newBuilder()
+                .setPlaylistId(playlistId)
+                .setDownloadableText(downloadableText)
+                .setInProgressText(inProgressText)
+                .setCompletedText(completedText)
+                .setDownloadableA11YText(downloadableText)
+                .setInProgressA11YText(inProgressText)
+                .setCompletedA11YText(completedText)
+                .setDownloadStatusKey(EntityKeys.key(DOWNLOAD_STATUS_ENTITY_TYPE, downloadStatusEntityId))
+                .setGenerationStatusKey(EntityKeys.key(GENERATION_STATUS_ENTITY_TYPE,
+                        ByteString.copyFromUtf8(PLAYLIST_GENERATION_STATUS_ENTITY_ID)))
+                .setLayout(DownloadButtonLayout.DOWNLOAD_BUTTON_LAYOUT_PLAYLIST_HEADER)
+                .setIconColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
+                .setTextColor(DownloadButtonColor.DOWNLOAD_BUTTON_COLOR_PLAYLIST_HEADER)
+                .setButtonSize(DownloadButtonSize.DOWNLOAD_BUTTON_SIZE_DEFAULT)
+                .setButtonStyle(DownloadButtonStyle.DOWNLOAD_BUTTON_STYLE_OVERLAY)
+                .setOnTapCommand(ButtonCommand.newBuilder().setInnertubeCommand(
+                        OfflineCommand.newBuilder().setOfflinePlaylistEndpoint(endpoint)))
+                .setIdentifier(PLAYLIST_DOWNLOAD_BUTTON_IDENTIFIER)
+                .build();
+        return FlexibleAction.newBuilder().setDownloadButtonViewModel(button).build();
     }
 
     /**

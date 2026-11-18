@@ -134,6 +134,21 @@ fun gmsCoreSupportPatch(
         }
 
         val authoritiesPrefix = AUTHORITIES.map { it to "content://$it" }
+        fun contentUrisTransform(str: String): String? {
+            // only when content:// URI
+            // check if matches any authority
+            for ((authority, uriPrefix) in authoritiesPrefix) {
+                if (str.startsWith(uriPrefix)) {
+                    return str.replace(
+                        uriPrefix,
+                        "content://${authority.replace("com.google", GMS_CORE_VENDOR_GROUP_ID)}",
+                    )
+                }
+            }
+
+            return null
+        }
+
         // endregion
 
         string(
