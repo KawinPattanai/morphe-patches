@@ -429,24 +429,13 @@ public class StreamingDataRequest {
 
     private static StreamingDataRequest fetchWithLastHeaders(String videoId) {
         Logger.printDebug(() -> "Fetching streams without a player request for: " + videoId);
-        // The app takes this path when it starts a video without a player response, which it does for
-        // live streams, and nothing here can tell live from recorded before the streams arrive. A
-        // client that cannot play live leaves the player failing a second later, so the client that
-        // plays both goes first; the rest follow in the order the user chose.
-        ClientType[] order = clientOrderToUse;
-        if (order.length > 0 && order[0] != ClientType.TV_DASH) {
-            ClientType[] liveFirst = new ClientType[order.length];
-            liveFirst[0] = ClientType.TV_DASH;
-            int index = 1;
-            for (ClientType client : order) {
-                if (client != ClientType.TV_DASH) {
-                    liveFirst[index++] = client;
-                }
-            }
-            order = liveFirst;
-        }
+        // The client order stays as the user chose it. Asking a JavaScript client first here covered
+        // the live stream that reaches this path, but it made seeking of an ordinary video stall: the
+        // player asks for the range it seeks to and never receives it. Live needs the live client,
+        // which the player response path already picks; doing it here as well is not worth a stall on
+        // every seek.
         StreamingDataRequest request = new StreamingDataRequest(videoId, lastAppHeaders, false,
-                order, false);
+                clientOrderToUse, false);
         cache.put(videoId, request);
         return request;
     }
