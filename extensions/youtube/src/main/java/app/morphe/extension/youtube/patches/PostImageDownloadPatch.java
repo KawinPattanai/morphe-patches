@@ -257,7 +257,7 @@ public final class PostImageDownloadPatch {
     private static String getCutOffStart(String text) {
         int index = text.indexOf("...");
         if (index < 0) {
-            index = text.indexOf('โ€ฆ');
+            index = text.indexOf('\u2026');
         }
         return index >= LONG_TEXT_LENGTH ? normalize(text.substring(0, index)) : null;
     }

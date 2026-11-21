@@ -2,6 +2,7 @@ package app.morphe.extension.youtube.patches.spoof;
 
 import java.util.List;
 
+import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.settings.Setting;
 import app.morphe.extension.shared.spoof.ClientType;
 import app.morphe.extension.youtube.patches.DisableVideoCodecsPatch;
@@ -31,7 +32,18 @@ public class SpoofVideoStreamsPatch {
      * Injection point.
      */
     public static void setClientOrderToUse() {
-        ClientType client = Settings.SPOOF_VIDEO_STREAMS_CLIENT_TYPE.get();
+        final ClientType requestedClient = Settings.SPOOF_VIDEO_STREAMS_CLIENT_TYPE.get();
+        ClientType client = requestedClient;
+
+        // A music client belongs to YouTube Music. Its streams reach the player of this app as
+        // "Invalid playback type; streaming data is not playable" and the playback error page follows.
+        // The client list hides these from the settings, but a stored value can still name one, so the
+        // client falls back to the one this app ships with.
+        if (requestedClient.name().startsWith("ANDROID_MUSIC")) {
+            Logger.printInfo(() -> "Ignoring the music client " + requestedClient.name()
+                    + " here, using TV_SABR instead");
+            client = ClientType.TV_SABR;
+        }
 
         // Use the Android XR or visionOS client that has AV1 if user settings allow it.
         // AVC cannot be forced with these clients because they use VP9 and AV1.

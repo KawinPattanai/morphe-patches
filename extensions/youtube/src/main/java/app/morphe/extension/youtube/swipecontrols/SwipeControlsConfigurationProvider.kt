@@ -180,6 +180,9 @@ class SwipeControlsConfigurationProvider {
     /**
      * Indicates whether press-to-swipe mode is enabled, requiring a press before swiping to activate controls.
      */
+    // Java callers in the extension (the hold gesture) read this as a method, which a Kotlin
+    // property does not produce by itself.
+    @get:JvmName("shouldEnablePressToSwipe")
     val shouldEnablePressToSwipe = Settings.SWIPE_PRESS_TO_ENGAGE.get()
 
     /**
