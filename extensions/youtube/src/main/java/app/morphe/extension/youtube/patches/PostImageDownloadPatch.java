@@ -9,6 +9,7 @@ package app.morphe.extension.youtube.patches;
 
 import static app.morphe.extension.shared.StringRef.str;
 
+import android.annotation.SuppressLint;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -256,7 +257,7 @@ public final class PostImageDownloadPatch {
     private static String getCutOffStart(String text) {
         int index = text.indexOf("...");
         if (index < 0) {
-            index = text.indexOf('…');
+            index = text.indexOf('โ€ฆ');
         }
         return index >= LONG_TEXT_LENGTH ? normalize(text.substring(0, index)) : null;
     }

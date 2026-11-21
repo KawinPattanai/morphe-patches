@@ -71,6 +71,7 @@ import app.morphe.extension.youtube.patches.SaveToWatchLaterPatch;
 import app.morphe.extension.youtube.patches.VideoDelayPatch;
 import app.morphe.extension.youtube.patches.VideoInformation;
 import app.morphe.extension.youtube.patches.components.PlayerFlyoutMenuComponentsFilter;
+import app.morphe.extension.youtube.patches.glassmenus.GlassMenusPatch;
 import app.morphe.extension.youtube.patches.onthego.OnTheGoPatch;
 import app.morphe.extension.youtube.patches.playback.speed.ShortsPlaybackSpeedFlyoutPatch;
 import app.morphe.extension.youtube.patches.queue.PlaylistCardSource;
@@ -307,6 +308,15 @@ public final class FlyoutUtils {
             getAsciiBytes("history-shorts-shelf-item"),
             getAsciiBytes("shorts-shelf-item")
     );
+    /**
+     * Menus of the videos in the list of the watch page.
+     */
+    private static final byte[] WATCH_RELATED_MENU_BYTES = getAsciiBytes("watch-related-menu-button");
+    /**
+     * Command of the Save to playlist item. The server leaves the save items out of the menus
+     * of the videos in the watch page of a video for kids, and of the Shorts in the feed.
+     */
+    private static final byte[] ADD_TO_PLAYLIST_COMMAND_BYTES = getAsciiBytes("add_to_playlist");
     private static final List<byte[]> HORIZONTAL_SHELF_HISTORY_BYTES = List.of(
             getAsciiBytes("horizontal_shelf.e"),
             getAsciiBytes("FEhistory")
@@ -375,6 +385,11 @@ public final class FlyoutUtils {
 
     private static boolean isMyTabHistoryFlyout;
     private static boolean isShortFlyout;
+    /**
+     * Menu of a video in the watch page of a video for kids, or of a Short in the feed, which has no save item.
+     * The server data is used, as a save item hidden by a Morphe setting can be left out before the app binds it.
+     */
+    private static boolean isVideoFlyoutWithoutSaveItem;
     /**
      * If the open menu is the menu of the Shorts player, which has another layout
      * and only gets the items that apply to the playing Short.
@@ -529,6 +544,9 @@ public final class FlyoutUtils {
             OnTheGoPatch.onFlyoutCreated();
         }
         flyoutPopupWindow = popupWindow;
+        if (GlassMenusPatch.isPatchIncluded()) {
+            GlassMenusPatch.onPopupWindow(popupWindow);
+        }
 
         // The app can set the content view after this call, in the same method that shows the popup.
         Utils.runOnMainThreadDelayed(() -> {
@@ -630,6 +648,7 @@ public final class FlyoutUtils {
                         flyoutPlaylistId = "";
                         nativeQueuePlaylistSource = null;
                         flyoutBuffer = null;
+                        isVideoFlyoutWithoutSaveItem = false;
                         if (flyoutChannelIdRequest != null) {
                             // The buttons waiting for the channel are gone with the menu.
                             flyoutChannelIdRequest.cancelIfNotDone();
@@ -701,7 +720,9 @@ public final class FlyoutUtils {
             nextButtonIndex = PostTranslatePatch.addFlyoutButton(
                     flyoutPanel,
                     nextButtonIndex,
-                    senderViewRef.get()
+                    senderViewRef.get(),
+                    flyoutBuffer,
+                    flyoutVideoId
             );
         }
 
@@ -749,6 +770,7 @@ public final class FlyoutUtils {
                     flyoutPanel,
                     nextButtonIndex,
                     flyoutVideoId,
+                    isVideoFlyoutWithoutSaveItem,
                     PlayerFlyoutMenuComponentsFilter.getTopFlyoutMenuVisible()
             );
         }
@@ -1423,6 +1445,9 @@ public final class FlyoutUtils {
         // Set before the queue reads the source. A Short has no duration badge,
         // so the queue would otherwise treat its card as a playlist.
         isShortFlyout = flyoutBuffer != null && byteIndexesOf(flyoutBuffer, SHORTS_VIDEO_ELEMENT_BYTES).size() == 1;
+        isVideoFlyoutWithoutSaveItem = flyoutBuffer != null
+                && (isShortFlyout || byteIndexOf(flyoutBuffer, WATCH_RELATED_MENU_BYTES) >= 0)
+                && byteIndexOf(flyoutBuffer, ADD_TO_PLAYLIST_COMMAND_BYTES) < 0;
         if (AddToQueuePatch.isPatchIncluded() && AddToQueuePatch.isNativeQueueEnabled()) {
             nativeQueuePlaylistSource = QueueFlyoutActions.playlistSource(bufferObject, senderViewRef.get());
         }

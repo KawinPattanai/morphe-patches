@@ -216,6 +216,7 @@ public final class YouTubeGlassNavigationBar {
      */
     private static volatile int seenAppRoom;
     private static volatile int seenAppRoomPadding;
+    private static volatile boolean seenAppRoomKnown;
 
     /**
      * How far the room the app adds to the height may differ from the bottom padding.
@@ -528,13 +529,15 @@ public final class YouTubeGlassNavigationBar {
                     // it is put back right before the frame is drawn, so no frame is drawn with the
                     // buttons moved down.
                     // The room is added to the height of the bar when it is measured.
+                    // The padding can also still be the room for the system navigation buttons without
+                    // the bottom margin, if it was set before the bar had a size, so the margin is added to it.
                     final int room = pivotBar.getPaddingBottom();
-                    final int minRoom = FLOATING_ROOM + BOTTOM_MARGIN;
-                    if (room < minRoom) {
-                        Logger.printDebug(() -> "Glass navigation bar floating room set: " + room + " -> " + minRoom);
+                    final int newRoom = getFloatingRoom(pivotBar, room);
+                    if (newRoom != room) {
+                        Logger.printDebug(() -> "Glass navigation bar floating room set: " + room + " -> " + newRoom);
                         // The patched setPadding keeps this room, as it already includes the bottom margin.
                         pivotBar.setPadding(pivotBar.getPaddingLeft(), pivotBar.getPaddingTop(),
-                                pivotBar.getPaddingRight(), getFloatingRoom(pivotBar, 0));
+                                pivotBar.getPaddingRight(), newRoom);
                         layoutChanged = true;
                     }
 

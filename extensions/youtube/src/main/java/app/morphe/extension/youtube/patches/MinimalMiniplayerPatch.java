@@ -56,6 +56,7 @@ import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.ResourceType;
 import app.morphe.extension.shared.ResourceUtils;
 import app.morphe.extension.shared.Utils;
+import app.morphe.extension.shared.patches.VideoFormat;
 import app.morphe.extension.shared.settings.preference.SeekBarPreference;
 import app.morphe.extension.shared.theme.ThemeUtils;
 import app.morphe.extension.shared.ui.Dim;
@@ -283,6 +284,19 @@ public final class MinimalMiniplayerPatch {
     private static WeakReference<View> glassContainerRef = new WeakReference<>(null);
     @Nullable
     private static Drawable glassOriginalBackground;
+
+    /**
+     * The page behind the bar is blurred, so the glass is drawn again when the page scrolls.
+     * A single listener serves the current container, and it's added once to the window of the container.
+     */
+    private static final ViewTreeObserver.OnScrollChangedListener glassScrollListener = () -> {
+        View container = glassContainerRef.get();
+        if (container != null && inBarMode() && container.getBackground() instanceof GlassCapsuleDrawable) {
+            container.invalidate();
+        }
+    };
+    private static WeakReference<ViewTreeObserver> glassScrollObserverRef = new WeakReference<>(null);
+
     @Nullable
     private static GlassBackdrop glassBackdrop;
     private static boolean recordingBackdrop;
@@ -1548,15 +1562,43 @@ public final class MinimalMiniplayerPatch {
         glassContainerRef = new WeakReference<>(container);
         glassOriginalBackground = null;
 
-        // The page behind the bar is blurred, so the glass is drawn again when the page scrolls.
-        container.getViewTreeObserver().addOnScrollChangedListener(() -> {
-            if (inBarMode() && container.getBackground() instanceof GlassCapsuleDrawable) {
-                container.invalidate();
+        // A new glass is made for every new container, and again for the same container once the old
+        // glass is garbage collected, so the listener is moved instead of added again. A view that is not
+        // attached has a temporary observer, whose listeners are merged into the observer of the window
+        // when it's attached, so the listener is also removed from the new observer before it's added.
+        ViewTreeObserver observer = container.getViewTreeObserver();
+        ViewTreeObserver previousObserver = glassScrollObserverRef.get();
+        if (observer != previousObserver) {
+            if (previousObserver != null && previousObserver.isAlive()) {
+                previousObserver.removeOnScrollChangedListener(glassScrollListener);
             }
-        });
+            observer.removeOnScrollChangedListener(glassScrollListener);
+            observer.addOnScrollChangedListener(glassScrollListener);
+            glassScrollObserverRef = new WeakReference<>(observer);
+        }
 
         Logger.printDebug(() -> "Glass miniplayer applied");
         return glass;
+    }
+
+    /**
+     * The views drawn before the bar container, which are behind it, in the order they are drawn.
+     * The player is left out, its video is drawn over the glass.
+     */
+    private static void collectViewsBehind(View target) {
+        View player = watchPlayer();
+        View child = target;
+        for (ViewParent parent = target.getParent(); parent instanceof ViewGroup group; parent = group.getParent()) {
+            final int index = group.indexOfChild(child);
+            for (int i = index - 1; i >= 0; i--) {
+                View view = group.getChildAt(i);
+                if (view.getVisibility() == View.VISIBLE && view.getWidth() > 0 && view.getHeight() > 0
+                        && view.getAlpha() > 0 && !holds(view, player)) {
+                    MinimalMiniplayerPatch.viewsBehind.add(0, view);
+                }
+            }
+            child = group;
+        }
     }
 
     private static boolean holds(View view, @Nullable View descendant) {
@@ -1608,7 +1650,7 @@ public final class MinimalMiniplayerPatch {
 
         /**
          * The page behind type 1 is blurred, on Android 14 and later like the glass navigation bar.
-         * Otherwise the page is covered by the background of the app, or the sharp page would show through.
+         * Otherwise, the page is covered by the background of the app, or the sharp page would show through.
          */
         @Override
         public void drawBackdrop(Canvas canvas) {
@@ -1624,22 +1666,7 @@ public final class MinimalMiniplayerPatch {
 
             recordingBackdrop = true;
             try {
-                // The views drawn before the bar container, which are behind it, in the order they are drawn.
-                // The player is left out, its video is drawn over the glass.
-                List<View> out = viewsBehind;
-                View player = watchPlayer();
-                View child = container;
-                for (ViewParent parent = container.getParent(); parent instanceof ViewGroup group; parent = group.getParent()) {
-                    final int index = group.indexOfChild(child);
-                    for (int i = index - 1; i >= 0; i--) {
-                        View view = group.getChildAt(i);
-                        if (view.getVisibility() == View.VISIBLE && view.getWidth() > 0 && view.getHeight() > 0
-                                && view.getAlpha() > 0 && !holds(view, player)) {
-                            out.add(0, view);
-                        }
-                    }
-                    child = group;
-                }
+                collectViewsBehind(container);
                 if (glassBackdrop == null) {
                     glassBackdrop = new GlassBackdrop("GlassMinimalMiniplayer", GLASS_BLUR_RADIUS);
                 }
