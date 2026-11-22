@@ -87,7 +87,7 @@ public class StreamingDataRequest {
      * playable". The user's choice replaces this once the app sets it, but a build where that never
      * runs must still play.
      */
-    private static volatile ClientType[] clientOrderToUse = {ClientType.TV_SABR};
+    private static volatile ClientType[] clientOrderToUse = {ClientType.TV_SIMPLY};
 
     /** Set once the app hands over the clients it offers; before that the default above is used. */
     private static volatile boolean clientOrderConfigured;
