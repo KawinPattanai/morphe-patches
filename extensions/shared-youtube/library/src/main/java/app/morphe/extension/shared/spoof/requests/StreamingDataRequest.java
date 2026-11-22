@@ -80,11 +80,22 @@ public class StreamingDataRequest {
                              ClientType client) {
     }
 
-    private static volatile ClientType[] clientOrderToUse = ClientType.values();
+    /**
+     * Clients to ask for the streams, in order. The default is the client this app ships with, and
+     * never every client in declaration order: that order starts with the YouTube Music clients, and
+     * their streams reach the player of this app as "Invalid playback type; streaming data is not
+     * playable". The user's choice replaces this once the app sets it, but a build where that never
+     * runs must still play.
+     */
+    private static volatile ClientType[] clientOrderToUse = {ClientType.TV_SABR};
+
+    /** Set once the app hands over the clients it offers; before that the default above is used. */
+    private static volatile boolean clientOrderConfigured;
 
     public static void setClientOrderToUse(List<ClientType> availableClients, ClientType preferredClient) {
         List<ClientType> orderToUse = buildClientOrder(availableClients, preferredClient);
 
+        clientOrderConfigured = true;
         clientOrderToUse = orderToUse.toArray(new ClientType[0]);
         Logger.printDebug(() -> "Available spoof clients: " + orderToUse);
     }
@@ -466,6 +477,11 @@ public class StreamingDataRequest {
 
     private static StreamingDataRequest fetchWithLastHeaders(String videoId) {
         Logger.printDebug(() -> "Fetching streams without a player request for: " + videoId);
+        if (!clientOrderConfigured) {
+            // Reported at info so a build where the app's own hook never ran is visible in a user log.
+            Logger.printInfo(() -> "No client was chosen by the app yet, asking with "
+                    + clientOrderToUse[0].name());
+        }
         // The client order stays as the user chose it. Asking a JavaScript client first here covered
         // the live stream that reaches this path, but it made seeking of an ordinary video stall: the
         // player asks for the range it seeks to and never receives it. Live needs the live client,
