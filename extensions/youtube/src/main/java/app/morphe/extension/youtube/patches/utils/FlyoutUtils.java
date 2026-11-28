@@ -1328,7 +1328,7 @@ public final class FlyoutUtils {
                 );
             } else {
                 if (currentInjectedItems == null) {
-                    currentInjectedItems = new InjectedItemsScrollView(context, menuContainer, menuInfo.popupWindow());
+                    currentInjectedItems = new InjectedItemsScrollView(context, menuContainer, menuInfo.popupWindow(), null);
                     LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
                             LinearLayout.LayoutParams.WRAP_CONTENT

@@ -21,7 +21,6 @@ import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.Objects;
 import java.util.function.Consumer;
-import java.util.function.Function;
 
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.Utils;
@@ -41,14 +40,6 @@ public final class LoadVideoPatch {
     public interface PlayerInterface {
         // Method is added during patching.
         void patch_dismissPlayer();
-    }
-
-    /**
-     * Interface to deliver intents to the main activity, as {@code Activity.onNewIntent(Intent)} is protected.
-     */
-    public interface MainActivityInterface {
-        // Method is added during patching.
-        void patch_onNewIntent(Intent intent);
     }
 
     /**
@@ -76,13 +67,6 @@ public final class LoadVideoPatch {
     private static final long RELOAD_VIDEO_DELAY_MILLISECONDS = 500;
 
     private static WeakReference<PlayerInterface> playerInterfaceRef = new WeakReference<>(null);
-
-    private static Function<Activity, MainActivityInterface> mainActivityAdapter = activity ->
-            activity instanceof MainActivityInterface mainActivity ? mainActivity : null;
-
-    public static void setMainActivityAdapter(Function<Activity, MainActivityInterface> adapter) {
-        mainActivityAdapter = Objects.requireNonNull(adapter);
-    }
 
     private static WeakReference<InlinePlaybackInterface> inlinePlaybackInterfaceRef = new WeakReference<>(null);
 
@@ -321,65 +305,6 @@ public final class LoadVideoPatch {
             return true;
         } catch (Exception ex) {
             Logger.printException(() -> "openUrl failure: " + url, ex);
-            return false;
-        }
-    }
-
-    // This method opens a video based on hardcoded parameters found in an obfuscated class.
-    // It is generally faster than the solution that uses 'Intent.FLAG_ACTIVITY_NEW_TASK'.
-    public static void openVideoIntentWithInternalContext(String videoIDWithParams) {
-        PlayerInterface playerInterface;
-        if ((playerInterface = getPlayerInterface()) != null) {
-            Context context = Utils.getActivity();
-            // No videoID is needed to put inside the Intent initialization.
-            Intent reloadVideoIntent = new Intent();
-            reloadVideoIntent.setComponent(new ComponentName(
-                    context,
-                    "com.google.android.apps.youtube.app.watchwhile.InternalMainActivity"
-            ));
-            // NEW_TASK intent is not needed by this code.
-            reloadVideoIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            // Always put 'inventory_identifier' putExtra before 'watch'
-            // putExtra, to ensure the patch works correctly.
-            reloadVideoIntent.putExtra(
-                    "android.intent.extra.inventory_identifier", new String[]{"vnd.youtube://" + videoIDWithParams}
-            );
-            // Get the needed Parcelable object from a static method, which will
-            // read inventory_identifier inside the currently built Intent.
-            reloadVideoIntent.putExtra("watch", playerInterface.patch_getIntentParcelable(reloadVideoIntent));
-
-            context.startActivity(reloadVideoIntent);
-        }
-    }
-
-    /**
-     * Starts a video by handing the watch intent to the running activity, which does not need the app to be on screen.
-     */
-    public static boolean deliverVideoIntentInProcess(String videoId) {
-        try {
-            PlayerInterface playerInterface = playerInterfaceRef.get();
-            Activity activity = Utils.getActivity();
-            if (playerInterface == null || activity == null) {
-                return false;
-            }
-            MainActivityInterface mainActivity = mainActivityAdapter.apply(activity);
-            if (mainActivity == null) {
-                return false;
-            }
-
-            Intent intent = new Intent();
-            intent.setComponent(new ComponentName(
-                    activity,
-                    "com.google.android.apps.youtube.app.watchwhile.InternalMainActivity"
-            ));
-            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            intent.putExtra("android.intent.extra.inventory_identifier", new String[]{"vnd.youtube://" + videoId});
-            intent.putExtra("watch", playerInterface.patch_getIntentParcelable(intent));
-
-            mainActivity.patch_onNewIntent(intent);
-            return true;
-        } catch (Exception ex) {
-            Logger.printException(() -> "deliverVideoIntentInProcess failure", ex);
             return false;
         }
     }

@@ -16,7 +16,6 @@ import app.morphe.extension.youtube.patches.onthego.OnTheGoPatch
 import app.morphe.extension.youtube.swipecontrols.SwipeControlsConfigurationProvider.SwipeZoneAction
 import app.morphe.extension.youtube.swipecontrols.SwipeControlsHostActivity
 import app.morphe.extension.youtube.swipecontrols.misc.Point
-import app.morphe.extension.youtube.swipecontrols.misc.contains
 import app.morphe.extension.youtube.swipecontrols.misc.toPoint
 
 /**

@@ -13,10 +13,12 @@ data class Rectangle(
     val right = x + width
     val top = y
     val bottom = y + height
-}
 
-/**
- * Checks if the point is within this rectangle.
- */
-operator fun Rectangle.contains(p: Point): Boolean =
-    p.x in left..right && p.y in top..bottom
+    /**
+     * Checks if the point is within this rectangle.
+     *
+     * A member rather than an extension function, so the Java controllers can call it.
+     */
+    operator fun contains(p: Point): Boolean =
+        p.x in left..right && p.y in top..bottom
+}

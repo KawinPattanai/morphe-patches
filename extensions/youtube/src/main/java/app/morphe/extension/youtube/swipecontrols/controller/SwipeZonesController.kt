@@ -75,8 +75,10 @@ class SwipeZonesController(
 
     /**
      * Rectangle of the area that is effectively usable for swipe controls.
+     *
+     * Public because the replay swipe of the Java controllers asks whether a swipe starts here.
      */
-    private val effectiveSwipeRect: Rectangle
+    val effectiveSwipeRect: Rectangle
         get() {
             maybeAttachPlayerBoundsListener()
             val p = if (playerRect != null) playerRect!! else fallbackScreenRect()

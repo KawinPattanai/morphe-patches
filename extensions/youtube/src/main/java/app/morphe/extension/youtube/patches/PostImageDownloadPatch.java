@@ -264,14 +264,16 @@ public final class PostImageDownloadPatch {
     // region Elements
 
     private static boolean isPostText(String text) {
-        if (text.contains(".eml") || text.startsWith("http")) {
-            return false;
-        }
-        if (text.length() >= MIN_TEXT_LENGTH) {
-            return true;
-        }
-        // A text with only emojis or symbols, such as the text of a post that is a single emoji.
-        // Short texts with letters or numbers, such as counts, are shown by many posts.
+        return (text.length() >= MIN_TEXT_LENGTH || isEmojiText(text))
+                && !text.contains(".eml")
+                && !text.startsWith("http");
+    }
+
+    /**
+     * @return If the text has only emojis or symbols, such as the text of a post that is a single emoji.
+     *         Short texts with letters or numbers, such as counts, are shown by many posts.
+     */
+    private static boolean isEmojiText(String text) {
         boolean hasSymbol = false;
         for (int i = 0, length = text.length(); i < length; ) {
             final int codePoint = text.codePointAt(i);
@@ -298,7 +300,7 @@ public final class PostImageDownloadPatch {
     private static String getCutOffStart(String text) {
         int index = text.indexOf("...");
         if (index < 0) {
-            index = text.indexOf('\u2026');
+            index = text.indexOf('…');
         }
         return index >= LONG_TEXT_LENGTH ? normalize(text.substring(0, index)) : null;
     }
@@ -322,6 +324,22 @@ public final class PostImageDownloadPatch {
     /** Avatars and emojis are cropped to a circle or to a square without a border. */
     private static boolean isAvatarOptions(String options) {
         return options.contains("-k-") || options.contains("no-rj");
+    }
+
+    private static UrlKind getUrlKind(String text) {
+        UrlKind kind = UrlKind.NONE;
+        Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
+        while (matcher.find()) {
+            String url = matcher.group();
+            final int optionsIndex = url.indexOf('=');
+            String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
+            if (isAvatarOptions(options)) {
+                kind = UrlKind.AVATAR;
+            } else if (getImageSize(options) >= MIN_IMAGE_SIZE) {
+                return UrlKind.IMAGE;
+            }
+        }
+        return kind;
     }
 
     /**
@@ -365,22 +383,7 @@ public final class PostImageDownloadPatch {
             List<String> current = new ArrayList<>();
             boolean currentHasImage = false;
             for (String text : texts) {
-                UrlKind kind;
-                getUrlKind: {
-                    kind = UrlKind.NONE;
-                    Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
-                    while (matcher.find()) {
-                        String url = matcher.group();
-                        final int optionsIndex = url.indexOf('=');
-                        String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
-                        if (isAvatarOptions(options)) {
-                            kind = UrlKind.AVATAR;
-                        } else if (getImageSize(options) >= MIN_IMAGE_SIZE) {
-                            kind = UrlKind.IMAGE;
-                            break getUrlKind;
-                        }
-                    }
-                }
+                final UrlKind kind = getUrlKind(text);
                 if (kind == UrlKind.AVATAR && currentHasImage) {
                     posts.add(current);
                     current = new ArrayList<>();
@@ -440,35 +443,7 @@ public final class PostImageDownloadPatch {
                                        boolean isImagePost) {
         String key = NOT_IMAGE_POST;
         if (isImagePost) {
-            // Base url -> image, in the order of the post.
-            Map<String, PostImage> images = new LinkedHashMap<>();
-            for (String text : texts) {
-                Matcher matcher = IMAGE_URL_PATTERN.matcher(text);
-                while (matcher.find()) {
-                    String url = matcher.group();
-                    if (url.startsWith("//")) {
-                        url = "https:" + url;
-                    }
-
-                    final int optionsIndex = url.indexOf('=');
-                    String base = optionsIndex < 0 ? url : url.substring(0, optionsIndex);
-                    String options = optionsIndex < 0 ? "" : url.substring(optionsIndex + 1);
-                    if (isAvatarOptions(options)) {
-                        continue;
-                    }
-
-                    final int size = getImageSize(options);
-                    if (size < MIN_IMAGE_SIZE) {
-                        continue;
-                    }
-
-                    // The largest shown size of each image.
-                    PostImage previous = images.get(base);
-                    if (previous == null || size > previous.shownSize()) {
-                        images.put(base, new PostImage(base + ORIGINAL_SIZE_OPTIONS, url, size));
-                    }
-                }
-            }
+            Map<String, PostImage> images = findImages(texts);
             if (images.isEmpty()) {
                 return null;
             }
@@ -711,6 +686,12 @@ public final class PostImageDownloadPatch {
         return locales;
     }
 
+    private static void addLocales(Set<Locale> locales, LocaleList list) {
+        for (int i = 0, size = list.size(); i < size; i++) {
+            locales.add(list.get(i));
+        }
+    }
+
     /**
      * The languages are only changed to read texts of the app. If the app does not have a language
      * (such as an APKM bundle without it), the texts fall back like the texts the app shows.
@@ -761,12 +742,6 @@ public final class PostImageDownloadPatch {
         return shareLabels;
     }
 
-    private static void addLocales(Set<Locale> locales, LocaleList list) {
-        for (int i = 0, size = list.size(); i < size; i++) {
-            locales.add(list.get(i));
-        }
-    }
-
     private static void addShareLabel(List<String> labels, @Nullable String label) {
         if (label == null) {
             return;
@@ -801,24 +776,11 @@ public final class PostImageDownloadPatch {
                 continue;
             }
             CharSequence description = child.getContentDescription();
-            if (description != null) {
-                boolean isShareDescription;
-                isShareDescription: {
-                    String text = description.toString().trim();
-                    for (String label : labels) {
-                        if (text.equalsIgnoreCase(label)) {
-                            isShareDescription = true;
-                            break isShareDescription;
-                        }
-                    }
-                    isShareDescription = false;
-                }
-                if (isShareDescription) {
-                    rect.set(0, 0, child.getWidth(), child.getHeight());
-                    root.offsetDescendantRectToMyCoords(child, rect);
-                    if (rect.width() > 0 && rect.width() <= Dim.dp(MAX_SHARE_BUTTON_DP)) {
-                        return child;
-                    }
+            if (description != null && isShareDescription(description, labels)) {
+                rect.set(0, 0, child.getWidth(), child.getHeight());
+                root.offsetDescendantRectToMyCoords(child, rect);
+                if (rect.width() > 0 && rect.width() <= Dim.dp(MAX_SHARE_BUTTON_DP)) {
+                    return child;
                 }
             }
             if (child instanceof ComponentHost host) {
@@ -1060,59 +1022,7 @@ public final class PostImageDownloadPatch {
                     clearPressed();
                     if (hit) {
                         host.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                        List<PostImage> shownImages;
-                        getShownImages: {
-                            List<PostImage> images = getImages(card.key);
-                            if (images == null || images.size() < 2) {
-                                shownImages = images;
-                                break getShownImages;
-                            }
-                            View carousel = findImageCarousel(host, null);
-                            // The position of the item of the carousel that is shown the most, or -1 if none.
-                            final int index;
-                            if (carousel instanceof RecyclerView list) {
-                                getShownIndex: {
-                                    View shown = null;
-                                    int shownWidth = 0;
-                                    int firstLeft = Integer.MAX_VALUE;
-                                    int secondLeft = Integer.MAX_VALUE;
-                                    for (int i = 0, count = list.getChildCount(); i < count; i++) {
-                                        View child = list.getChildAt(i);
-                                        final int left = child.getLeft();
-                                        if (left < firstLeft) {
-                                            secondLeft = firstLeft;
-                                            firstLeft = left;
-                                        } else if (left < secondLeft) {
-                                            secondLeft = left;
-                                        }
-                                        final int visible = Math.min(child.getRight(), list.getWidth())
-                                                - Math.max(left, 0);
-                                        if (visible > shownWidth) {
-                                            shownWidth = visible;
-                                            shown = child;
-                                        }
-                                    }
-                                    if (shown == null || shown.getWidth() <= 0) {
-                                        index = -1;
-                                        break getShownIndex;
-                                    }
-                                    final int pitch = secondLeft != Integer.MAX_VALUE && secondLeft > firstLeft
-                                            ? secondLeft - firstLeft
-                                            : shown.getWidth();
-
-                                    // The scroll offset is the distance of the start of the list to its first item,
-                                    // and is the same for any adapter.
-                                    final int position = list.computeHorizontalScrollOffset() + shown.getLeft()
-                                            - list.getPaddingLeft();
-                                    index = Math.max(0, Math.round(position / (float) pitch));
-                                }
-                            } else {
-                                index = -1;
-                            }
-                            Logger.printDebug(() -> "Shown image " + index + " of " + images.size());
-                            shownImages = index >= 0 && index < images.size() ? List.of(images.get(index)) : images;
-                        }
-                        download(shownImages);
+                        download(getShownImages(host, getImages(card.key)));
                     }
                 }
                 case MotionEvent.ACTION_CANCEL -> clearPressed();
@@ -1130,6 +1040,20 @@ public final class PostImageDownloadPatch {
             pressedCard.button.setPressed(false);
             pressedCard = null;
         }
+    }
+
+    /**
+     * @return The image the post shows now, or all images if it is not known.
+     */
+    @Nullable
+    private static List<PostImage> getShownImages(ComponentHost root, @Nullable List<PostImage> images) {
+        if (images == null || images.size() < 2) {
+            return images;
+        }
+        View carousel = findImageCarousel(root, null);
+        final int index = carousel instanceof RecyclerView list ? getShownIndex(list) : -1;
+        Logger.printDebug(() -> "Shown image " + index + " of " + images.size());
+        return index >= 0 && index < images.size() ? List.of(images.get(index)) : images;
     }
 
     /**
@@ -1153,6 +1077,43 @@ public final class PostImageDownloadPatch {
             }
         }
         return best;
+    }
+
+    /**
+     * @return The position of the item of the carousel that is shown the most, or -1 if none.
+     */
+    private static int getShownIndex(RecyclerView carousel) {
+        View shown = null;
+        int shownWidth = 0;
+        int firstLeft = Integer.MAX_VALUE;
+        int secondLeft = Integer.MAX_VALUE;
+        for (int i = 0, count = carousel.getChildCount(); i < count; i++) {
+            View child = carousel.getChildAt(i);
+            final int left = child.getLeft();
+            if (left < firstLeft) {
+                secondLeft = firstLeft;
+                firstLeft = left;
+            } else if (left < secondLeft) {
+                secondLeft = left;
+            }
+            final int visible = Math.min(child.getRight(), carousel.getWidth()) - Math.max(left, 0);
+            if (visible > shownWidth) {
+                shownWidth = visible;
+                shown = child;
+            }
+        }
+        if (shown == null || shown.getWidth() <= 0) {
+            return -1;
+        }
+        final int pitch = secondLeft != Integer.MAX_VALUE && secondLeft > firstLeft
+                ? secondLeft - firstLeft
+                : shown.getWidth();
+
+        // The scroll offset is the distance of the start of the list to its first item,
+        // and is the same for any adapter.
+        final int position = carousel.computeHorizontalScrollOffset() + shown.getLeft()
+                - carousel.getPaddingLeft();
+        return Math.max(0, Math.round(position / (float) pitch));
     }
 
     // endregion

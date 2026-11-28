@@ -141,11 +141,11 @@ public final class ReplaySwipeController implements GestureController {
         if (!host.getConfig().isFullscreenOrMultiWindowVideo()) return true;
         if (host.isStatusBarVisible() && !host.isInSplitScreenMode()) return false;
         // Existing seek and top-zone gestures keep ownership of their horizontal swipes.
+        // This composition has no seek zone (SwipeZoneAction is OFF/VOLUME/BRIGHTNESS/SPEED),
+        // so only the top zone can own the point.
         Point point = Point.fromMotionEvent(event);
-        return (host.getConfig().getTopZoneAction() == SwipeZoneAction.OFF
-                || !host.getZones().getTop().contains(point))
-                && (!host.getConfig().isSwipeSeekEnabled()
-                || !host.getZones().getEffectiveSwipeRect().contains(point));
+        return host.getConfig().getTopZoneAction() == SwipeZoneAction.OFF
+                || !host.getZones().getTop().contains(point);
     }
 
     public void cancel() {

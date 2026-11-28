@@ -8,7 +8,17 @@ import android.view.MotionEvent
 data class Point(
     val x: Int,
     val y: Int,
-)
+) {
+    companion object {
+        /**
+         * Java callers get the point from a motion event through this, since an extension
+         * function is not visible to them.
+         */
+        @JvmStatic
+        fun fromMotionEvent(event: MotionEvent): Point =
+            Point(event.x.toInt(), event.y.toInt())
+    }
+}
 
 /**
  * Converts the motion event coordinates to a point.
