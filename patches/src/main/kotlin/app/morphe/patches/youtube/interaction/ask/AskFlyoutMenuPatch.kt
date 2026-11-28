@@ -127,6 +127,8 @@ val askFlyoutMenuPatch = patch(
             }
         val protos = Protos(messageClass)
 
+        addElementsResourceLoading(protos)
+
         mutableClassDefBy(messageClass).apply {
             addPatchInterface(
                 MESSAGE_ACCESS_INTERFACE,
@@ -537,6 +539,128 @@ private class Protos(private val messageClass: String) {
             move-result-object $result
         """
     }
+
+    showMenuMethod.apply {
+        // The popup is shown before or after the bottom sheet, depending on the app version,
+        // so the later call is changed first.
+        listOf(showBottomSheetIndex, showPopupIndex).sortedDescending().forEach { index ->
+            addMenuItemBefore(index, index == showPopupIndex)
+        }
+    }
+
+    // Lists that are not built with Litho, such as the History page, show the popup from the menu button
+    // with the same call.
+    FullHistoryFlyoutBufferObjectFingerprint.method.apply {
+        addMenuItemBefore(indexOfFirstInstructionOrThrow(methodCall(reference = showPopupMethod)), true)
+    }
+
+    mutableClassDefBy(menuItemClass).interfaces.add(MENU_ITEM_ACCESS_INTERFACE)
+
+    mutableClassDefBy(rowClass).apply {
+        addPatchInterface(
+            MENU_ROW_ACCESS_INTERFACE,
+            "patch_getMenuItem",
+            rowMenuItemField
+        )
+    }
+
+    val menus = listOf(
+        MenuRows(menuFragmentClass.type, createRowMethod, findRowsField(menuFragmentClass), null),
+        MenuRows(popupMenu.type, popupMenu.createRowMethod, popupMenu.rowsField, popupMenu.dismissMethod)
+    )
+    for (menu in menus) {
+        mutableClassDefBy(menu.type).apply {
+            addPatchInterface(
+                MENU_ACCESS_INTERFACE,
+                "patch_getRows",
+                menu.rowsField
+            )
+            addPatchInterface(
+                MENU_ACCESS_INTERFACE,
+                "patch_createRow",
+                """
+                    check-cast p1, $menuItemClass
+                    invoke-virtual { p0, p1 }, ${menu.createRowMethod.toReference()}
+                    move-result-object v0
+                    const/4 v1, 0x0
+                    invoke-virtual { v0, v1 }, ${menu.createRowMethod.returnType}->orElse(Ljava/lang/Object;)Ljava/lang/Object;
+                    move-result-object v0
+                    return-object v0
+                """
+            )
+            addPatchInterface(
+                MENU_ACCESS_INTERFACE,
+                "patch_dismissPopup",
+                if (menu.dismissMethod == null) {
+                    """
+                        const/4 v0, 0x0
+                        return v0
+                    """
+                } else {
+                    """
+                        invoke-virtual { p0 }, ${menu.dismissMethod.toReference()}
+                        const/4 v0, 0x1
+                        return v0
+                    """
+                }
+            )
+
+            findMutableMethodOf(menu.createRowMethod).addInstructions(
+                0,
+                """
+                    invoke-static/range { p0 .. p1 }, $EXTENSION_CLASS->onMenuRowCreated($MENU_ACCESS_INTERFACE$MENU_ITEM_ACCESS_INTERFACE)Ljava/lang/Object;
+                    move-result-object p1
+                    check-cast p1, $menuItemClass
+                """
+            )
+        }
+    }
+
+    // The bottom sheet handles the taps on its rows itself, and the popup with a tap handler of its rows.
+    for (rowTapMethod in listOf(rowTapMatch.method, popupMenu.rowTapMethod)) {
+        mutableClassDefBy(rowTapMethod.definingClass).findMutableMethodOf(rowTapMethod).addInstructionsWithLabels(
+            0,
+            """
+                invoke-static/range { p1 .. p1 }, $EXTENSION_CLASS->onMenuRowTapped(Ljava/lang/Object;)Z
+                move-result v0
+                if-eqz v0, :not_summarize_item
+                return-void
+                :not_summarize_item
+                nop
+            """
+        )
+    }
+
+    // A popup that shows the menu items as they are, such as on tablets, shows them with a presenter
+    // that handles their taps. The presenter dismisses the popup and reads the menu item it shows.
+    // 21.45+ has two of them.
+    Fingerprint(
+        name = "onClick",
+        returnType = "V",
+        parameters = listOf("Landroid/view/View;"),
+        filters = listOf(
+            methodCall(reference = popupMenu.dismissMethod),
+            fieldAccess(opcode = Opcode.IGET_OBJECT, location = MatchAfterImmediately()),
+            checkCast(menuItemClass, location = MatchAfterImmediately())
+        )
+    ).matchAll(1..2).forEach { itemTapMatch ->
+        val itemField = itemTapMatch.instructionMatches[1].getFieldReference()
+        itemTapMatch.method.addInstructionsWithLabels(
+            0,
+            """
+                move-object/from16 v0, p0
+                iget-object v0, v0, $itemField
+                invoke-static/range { v0 .. v0 }, $EXTENSION_CLASS->onMenuItemTapped(Ljava/lang/Object;)Z
+                move-result v0
+                if-eqz v0, :not_summarize_item
+                return-void
+                :not_summarize_item
+                nop
+            """
+        )
+    }
+
+    restoreMenuRowTextConstraints()
 }
 
 /**
@@ -570,6 +694,82 @@ private fun findRowsField(menuClass: ClassDef) = menuClass.fields.single { field
     !AccessFlags.STATIC.isSet(field.accessFlags) &&
             generateSequence(field.type) { type -> classDefByOrNull(type)?.superclass }
                 .any { type -> type == "Ljava/util/AbstractList;" }
+}
+
+/**
+ * The Ask chat shows nothing until a watch page response attaches its Elements templates.
+ * Lets the extension load the Elements resources of a watch page it fetches,
+ * with the processor that loads them from the app's own responses.
+ */
+private fun addElementsResourceLoading(protos: Protos) {
+    val processorClass = ElementsFrameworkUpdatesFingerprint.classDef
+    val frameworkUpdatesClass = ElementsFrameworkUpdatesReaderFingerprint.method.parameterTypes.first().toString()
+    val processMethod = ElementsFrameworkUpdatesProcessFingerprint.method
+    val usedResourcesField = processorClass.fields.single { field ->
+        !AccessFlags.STATIC.isSet(field.accessFlags) && field.type == "Ljava/util/Set;"
+    }
+
+    ElementsResourceProcessorConstructorFingerprint.method.apply {
+        findInstructionIndicesReversedOrThrow(Opcode.RETURN_VOID).forEach { index ->
+            addInstruction(
+                index,
+                "invoke-static/range { p0 .. p0 }, $EXTENSION_CLASS->onElementsResourceProcessorCreated($ELEMENTS_RESOURCE_PROCESSOR_ACCESS_INTERFACE)V"
+            )
+        }
+    }
+
+    mutableClassDefBy(processorClass.type).apply {
+        addPatchInterface(
+            ELEMENTS_RESOURCE_PROCESSOR_ACCESS_INTERFACE,
+            "patch_processFrameworkUpdates",
+            """
+                ${protos.parse(frameworkUpdatesClass, bytes = "p1", result = "v0", registry = "v1")}
+                check-cast v0, $frameworkUpdatesClass
+                const/4 v1, 0x0
+                invoke-virtual { p0, v1, v0 }, ${processMethod.toReference()}
+                return-void
+            """
+        )
+        addPatchInterface(
+            ELEMENTS_RESOURCE_PROCESSOR_ACCESS_INTERFACE,
+            "patch_getUsedResources",
+            usedResourcesField
+        )
+    }
+}
+
+/**
+ * The menu bottom sheet reuses its rows. A row without icons, such as the loading download item,
+ * gets start constraints that move its text to the place of the icon, and keeps them when it is reused,
+ * such as for the summarize item that replaces its loading item, which then shows its icon over its text.
+ * Restores the start constraints of an inflated row before each bind.
+ * Newer app versions restore them for rows with icons themselves, some only behind a flag.
+ */
+private fun restoreMenuRowTextConstraints() {
+    MenuRowBindFingerprint.let {
+        val textContainerField = it.instructionMatches[1].getFieldReference()
+        val constraintsClass = it.instructionMatches[5].instruction.getReference<TypeReference>()!!.type
+        val startConstraintFields = it.instructionMatches.takeLast(2).map { match -> match.getFieldReference() }
+
+        // -1 is unset, as the layout of the row does not set them.
+        it.method.addInstructionsWithLabels(
+            0,
+            $$"""
+                move-object/from16 v0, p0
+                iget-object v0, v0, $$textContainerField
+                if-eqz v0, :no_text_container
+                invoke-virtual { v0 }, Landroid/widget/LinearLayout;->getLayoutParams()Landroid/view/ViewGroup$LayoutParams;
+                move-result-object v1
+                check-cast v1, $$constraintsClass
+                const/4 v2, -0x1
+                iput v2, v1, $${startConstraintFields[0]}
+                iput v2, v1, $${startConstraintFields[1]}
+                invoke-virtual { v0, v1 }, Landroid/widget/LinearLayout;->setLayoutParams(Landroid/view/ViewGroup$LayoutParams;)V
+                :no_text_container
+                nop
+            """
+        )
+    }
 }
 
 private fun MethodReference.toReference() =

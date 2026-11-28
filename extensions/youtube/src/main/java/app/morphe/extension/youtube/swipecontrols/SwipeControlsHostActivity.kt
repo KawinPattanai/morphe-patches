@@ -33,9 +33,11 @@ import app.morphe.extension.youtube.swipecontrols.controller.SwipeZonesControlle
 import app.morphe.extension.youtube.swipecontrols.controller.VolumeKeysController
 import app.morphe.extension.youtube.swipecontrols.controller.gesture.ClassicSwipeController
 import app.morphe.extension.youtube.swipecontrols.controller.gesture.PressToSwipeController
+import app.morphe.extension.youtube.swipecontrols.controller.gesture.ReplaySwipeController
 import app.morphe.extension.youtube.swipecontrols.controller.gesture.core.GestureController
 import app.morphe.extension.youtube.swipecontrols.misc.Rectangle
 import app.morphe.extension.youtube.swipecontrols.views.SwipeControlsOverlayLayout
+import app.morphe.extension.youtube.videoplayer.ReplayVideoButton
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XC_MethodHook.MethodHookParam
 import de.robv.android.xposed.XposedBridge
@@ -86,6 +88,11 @@ class SwipeControlsHostActivity(val activity: Activity) {
     private lateinit var keys: VolumeKeysController
 
     /**
+     * The replay gesture, which goes before the other gestures. Null until a replay swipe starts.
+     */
+    private var replayGesture: ReplaySwipeController? = null
+
+    /**
      * Current content view with id [android.R.id.content].
      */
     private val contentRoot
@@ -108,6 +115,49 @@ class SwipeControlsHostActivity(val activity: Activity) {
             activity,
             event
         ) as Boolean
+    }
+
+    /**
+     * Cancels the existing detectors once a replay swipe owns the touch sequence.
+     */
+    fun cancelTouchGestures(canceled: MotionEvent) {
+        gesture.submitTouchEvent(canceled)
+        dispatchDownstreamTouchEvent(canceled)
+    }
+
+    /**
+     * Reports a user interaction to the activity, which the replay swipe consumes before descending.
+     */
+    fun onUserInteraction() {
+        activity.onUserInteraction()
+    }
+
+    /**
+     * Whether the status bar is visible on Android 15+ (edge-to-edge display).
+     */
+    fun isStatusBarVisible(): Boolean = statusBarVisible
+
+    /**
+     * The replay swipe goes first, and cancels the other gestures once it owns the touch.
+     */
+    private fun submitReplayTouchEvent(ev: MotionEvent): Boolean {
+        var replay = replayGesture
+        try {
+            if (ReplayVideoButton.isPatchIncluded() && Settings.REPLAY_VIDEO_BUTTON.get()
+                && Settings.REPLAY_VIDEO_SWIPE.get()
+            ) {
+                if (replay == null) {
+                    replay = ReplaySwipeController(this)
+                    replayGesture = replay
+                }
+                return replay.submitTouchEvent(ev)
+            }
+            replay?.cancel()
+        } catch (ex: Exception) {
+            printException { "submitReplayTouchEvent failure" }
+            replay?.cancel()
+        }
+        return false
     }
 
     /**
@@ -275,6 +325,7 @@ class SwipeControlsHostActivity(val activity: Activity) {
          * The container is attached for the entire playback session, and only its Litho content
          * is mounted while the screen is locked, so the mounted content is what tells both states apart.
          */
+        @JvmStatic
         val isPlayerLocked: Boolean
             get() {
                 val overlay = lockModeOverlay.get() ?: return false
@@ -351,7 +402,10 @@ class SwipeControlsHostActivity(val activity: Activity) {
             XposedHelpers.findAndHookMethod(
                 activityClass, "onDestroy", object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        param.swipeControlsHost?.let { PlayerType.getOnChange().removeObserver(it::onPlayerTypeChanged) }
+                        param.swipeControlsHost?.let {
+                            it.replayGesture?.cancel()
+                            PlayerType.getOnChange().removeObserver(it::onPlayerTypeChanged)
+                        }
                     }
                 })
             XposedHelpers.findAndHookMethod(
@@ -363,7 +417,9 @@ class SwipeControlsHostActivity(val activity: Activity) {
                         val ev = param.args[0] as MotionEvent?
                         param.swipeControlsHost?.apply {
                             ensureInitialized()
-                            if ((ev != null) && gesture.submitTouchEvent(ev)) {
+                            if (ev != null && submitReplayTouchEvent(ev)) {
+                                param.result = true
+                            } else if ((ev != null) && gesture.submitTouchEvent(ev)) {
                                 param.result = true
                             }
                         }

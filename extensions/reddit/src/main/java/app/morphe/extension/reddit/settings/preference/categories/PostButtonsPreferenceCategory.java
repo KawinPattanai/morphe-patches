@@ -7,8 +7,6 @@
 
 package app.morphe.extension.reddit.settings.preference.categories;
 
-import static app.morphe.extension.shared.StringRef.str;
-
 import android.content.Context;
 import android.preference.PreferenceScreen;
 
@@ -20,8 +18,8 @@ import app.morphe.extension.shared.Utils;
 @SuppressWarnings("deprecation")
 public class PostButtonsPreferenceCategory extends ConditionalPreferenceCategory {
     public PostButtonsPreferenceCategory(Context context, PreferenceScreen screen) {
-        super(context, screen);
-        setTitle(str("morphe_screen_post_buttons_title"));
+        super(context, screen, "morphe_post_buttons_screen",
+                "morphe_post_buttons_screen_title", "morphe_post_buttons_screen_summary");
     }
 
     @Override
@@ -59,6 +57,14 @@ public class PostButtonsPreferenceCategory extends ConditionalPreferenceCategory
             addPreference(new BooleanSettingPreference(
                     context,
                     Settings.HIDE_POST_VOTE_BUTTONS
+            ));
+            addPreference(new BooleanSettingPreference(
+                    context,
+                    Settings.HIDE_POST_SHARE_COUNT
+            ));
+            addPreference(new BooleanSettingPreference(
+                    context,
+                    Settings.HIDE_POST_VOTE_COUNT
             ));
         }
 

@@ -10,6 +10,7 @@
 
 package app.morphe.patches.music.layout.buttons.navigation
 
+import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
@@ -26,6 +27,7 @@ import app.morphe.patches.music.layout.miniplayer.miniplayerColorHookPatch
 import app.morphe.patches.music.misc.extension.sharedExtensionPatch
 import app.morphe.patches.music.misc.mediasession.addSetPlaybackStateHook
 import app.morphe.patches.music.misc.mediasession.mediaSessionHookPatch
+import app.morphe.patches.music.misc.playservice.is_9_38_or_greater
 import app.morphe.patches.music.misc.playservice.is_9_39_or_greater
 import app.morphe.patches.music.misc.playservice.versionCheckPatch
 import app.morphe.patches.music.misc.settings.PreferenceScreen
@@ -35,12 +37,16 @@ import app.morphe.patches.shared.misc.fix.proto.fixProtoLibraryPatch
 import app.morphe.patches.shared.misc.settings.preference.NonInteractivePreference
 import app.morphe.patches.shared.misc.settings.preference.PreferenceScreenPreference
 import app.morphe.patches.shared.misc.settings.preference.SwitchPreference
+import app.morphe.util.addInstructionsAtControlFlowLabel
+import app.morphe.util.findInstructionIndicesReversedOrThrow
 import app.morphe.util.indexOfFirstInstructionOrThrow
 import app.morphe.util.indexOfFirstLiteralInstructionOrThrow
 import app.morphe.util.insertLiteralOverride
+import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
 import com.android.tools.smali.dexlib2.util.MethodUtil
 
 private const val EXTENSION_CLASS = "Lapp/morphe/extension/music/patches/NavigationBarPatch;"
@@ -52,7 +58,7 @@ private const val MUSIC_PLAYBACK_CONTROLS_TIME_BAR_CLASS =
 
 val navigationBarPatch = patch(
     name = "Navigation bar",
-    description = "Adds options to hide and change the bottom navigation bar (such as the Samples button) "
+    description = "Adds options to hide and change the bottom navigation bar (such as the Upgrade button) "
             + "and the upper navigation toolbar."
 ) {
     dependsOn(
@@ -79,9 +85,11 @@ val navigationBarPatch = patch(
                     SwitchPreference("morphe_music_hide_navigation_bar_explore_button"),
                     SwitchPreference("morphe_music_hide_navigation_bar_library_button"),
                     SwitchPreference("morphe_music_hide_navigation_bar_upgrade_button"),
-                    SwitchPreference("morphe_music_hide_navigation_bar"),
-                    SwitchPreference("morphe_music_hide_navigation_bar_labels"),
-                    SwitchPreference("morphe_music_navigation_bar_glass", summary = true),
+                    SwitchPreference("morphe_music_show_navigation_bar_settings_button", titleKey = "morphe_show_settings_button_title"),
+                    SwitchPreference("morphe_music_show_navigation_bar_settings_button_type", titleKey = "morphe_show_settings_button_type_title", summary = true),
+                    SwitchPreference("morphe_music_hide_navigation_bar", titleKey = "morphe_hide_navigation_bar_title"),
+                    SwitchPreference("morphe_music_hide_navigation_bar_labels", titleKey = "morphe_hide_navigation_button_labels_title"),
+                    SwitchPreference("morphe_music_navigation_bar_glass", titleKey = "morphe_navigation_bar_glass_title", summary = true),
                     // Height, width, button spacing, opacity and rim brightness, with a preview.
                     NonInteractivePreference(
                         key = "morphe_music_navigation_bar_glass_height",
@@ -151,6 +159,7 @@ val navigationBarPatch = patch(
                     pivotTabIndex,
                     """
                         invoke-static { v$pivotTabRegister }, $EXTENSION_CLASS->hideNavigationButton(Landroid/view/View;)V
+                        invoke-static { v$pivotTabRegister }, $EXTENSION_CLASS->setNavigationSettingsButton(Landroid/view/View;)V
                         invoke-static { v$pivotTabRegister }, $EXTENSION_GLASS_CLASS->navigationTabCreated(Landroid/view/View;)V
                     """
                 )
@@ -171,6 +180,50 @@ val navigationBarPatch = patch(
                 addInstruction(
                     labelIndex + 1,
                     "invoke-static { v$targetRegister }, $EXTENSION_CLASS->hideNavigationLabel(Landroid/widget/TextView;)V"
+                )
+            }
+        }
+
+        // Region for the Settings button in the navigation bar.
+        // The button is created with the factory of the buttons shown before the guide response is loaded.
+        val navigationButtonFactory = DefaultNavigationButtonsFingerprint.instructionMatches.last().getMethodCalled()
+        // The factory is private, and the extension calls it.
+        navigationButtonFactory.accessFlags = (navigationButtonFactory.accessFlags and
+                AccessFlags.PRIVATE.value.inv()) or AccessFlags.PUBLIC.value
+
+        val iconType = navigationButtonFactory.parameterTypes[2].toString()
+        // The fields of the enum constants are obfuscated, so the icon type is found by its value.
+        val iconTypeLookupMethod = Fingerprint(
+            definingClass = iconType,
+            isStatic = true,
+            returnType = iconType,
+            parameters = listOf("I")
+        ).originalMethod
+
+        // The method has only its parameter registers, so the icon type replaces its value in p2.
+        Fingerprint(definingClass = EXTENSION_CLASS, name = "createNavigationButton").method.addInstructions(
+            0,
+            """
+                invoke-static { p2 }, $iconTypeLookupMethod
+                move-result-object p2
+                invoke-static { p0, p1, p2 }, $navigationButtonFactory
+                move-result-object p0
+                return-object p0
+            """
+        )
+
+        NavigationButtonsListFingerprint.let {
+            it.method.apply {
+                val index = it.instructionMatches[1].index
+                val register = getInstruction<TwoRegisterInstruction>(index).registerA
+
+                // A branch jumps straight to the field put, so the code goes at its label.
+                addInstructionsAtControlFlowLabel(
+                    index,
+                    """
+                        invoke-static { v$register }, $EXTENSION_CLASS->addSettingsNavigationButton(Ljava/util/List;)Ljava/util/List;
+                        move-result-object v$register
+                    """
                 )
             }
         }
@@ -211,11 +264,24 @@ val navigationBarPatch = patch(
         val toolbarPreferences = setOf(
             SwitchPreference("morphe_music_hide_activity_button"),
             SwitchPreference("morphe_music_hide_ask_music_button"),
-            SwitchPreference("morphe_music_hide_cast_button"),
+            SwitchPreference("morphe_music_hide_cast_button", titleKey = "morphe_hide_cast_button_title"),
             SwitchPreference("morphe_music_hide_history_button"),
-            SwitchPreference("morphe_music_hide_search_button"),
+            SwitchPreference(
+                "morphe_music_hide_samples_button",
+                titleKey = "morphe_music_hide_navigation_bar_samples_button_title"
+            ),
+            SwitchPreference("morphe_music_hide_search_button", titleKey = "morphe_hide_search_button_title"),
             SwitchPreference("morphe_music_hide_sound_search_button"),
-            SwitchPreference("morphe_music_hide_voice_search_button")
+            SwitchPreference("morphe_music_hide_voice_search_button"),
+            SwitchPreference(
+                "morphe_music_show_toolbar_settings_button",
+                titleKey = "morphe_show_settings_button_title"
+            ),
+            SwitchPreference(
+                "morphe_music_show_toolbar_settings_button_type",
+                titleKey = "morphe_show_settings_button_type_title",
+                summaryKey = "morphe_music_show_navigation_bar_settings_button_type_summary"
+            )
         )
 
         PreferenceScreen.GENERAL.addPreferences(
@@ -225,6 +291,44 @@ val navigationBarPatch = patch(
                 preferences = toolbarPreferences
             )
         )
+
+        // Region for the Settings button in the top bar.
+        // The button is a hidden menu item before the account button, which the extension shows.
+        resourceXml("res/menu/main_menu.xml").use { menu ->
+            val avatarItem = menu.elementByAttribute("android:id", "@id/action_avatar")
+            // The namespace prefix of the app attributes depends on the resource decoder.
+            val showAsActionAttribute = avatarItem.attributeNames.single { it.endsWith(":showAsAction") }
+
+            avatarItem.parent!!.insertChild(avatarItem.index, "item") {
+                setAttribute("android:id", "@+id/morphe_settings_menu_item")
+                setAttribute("android:title", "@string/settings")
+                setAttribute("android:orderInCategory", avatarItem.attribute("android:orderInCategory")!!)
+                setAttribute("android:visible", "false")
+                setAttribute(showAsActionAttribute, "always")
+            }
+        }
+
+        MusicActivityOnCreateOptionsMenuFingerprint.let {
+            it.method.apply {
+                val menuRegister = it.instructionMatches[1].getInstruction<FiveRegisterInstruction>().registerE
+
+                // After the app sets the icons of the menu items, so the extension can use the icon
+                // of the offline settings item. Some app versions set the icons only with a flag,
+                // and the branch around them jumps to this index.
+                addInstructionsAtControlFlowLabel(
+                    it.instructionMatches.last().index,
+                    "invoke-static { v$menuRegister }, $EXTENSION_CLASS->showToolbarSettingsButton(Landroid/view/Menu;)V"
+                )
+            }
+        }
+
+        // Pages with buttons from the server can remove all the buttons of the menu before adding theirs.
+        ToolbarServerButtonsFingerprint.let {
+            it.method.addInstruction(
+                it.instructionMatches.last().index + 1,
+                "invoke-static { p1 }, $EXTENSION_CLASS->showToolbarSettingsButton(Landroid/view/Menu;)V"
+            )
+        }
 
         // Region for hide history button in the top bar.
         HistoryMenuItemFingerprint.let {
@@ -308,7 +412,8 @@ val navigationBarPatch = patch(
                     """
                 )
 
-                // The button renderer is the constructor parameter right before the notification count key.
+                // Ask Music and Samples buttons are told apart by the icon of the button renderer,
+                // the constructor parameter right before the notification count key.
                 val classDef = it.classDef
                 val parameterTypes = classDef.methods.first { method ->
                     MethodUtil.isConstructor(method)
@@ -322,7 +427,7 @@ val navigationBarPatch = patch(
                     insertIndex,
                     """
                         iget-object v$freeRegister, p0, ${classDef.type}->${rendererField.name}:$rendererType
-                        invoke-static { v$targetRegister, v$freeRegister }, $EXTENSION_CLASS->hideAskMusicButton(Landroid/view/View;Ljava/lang/Object;)V
+                        invoke-static { v$targetRegister, v$freeRegister }, $EXTENSION_CLASS->hideTopBarButton(Landroid/view/View;Ljava/lang/Object;)V
                     """
                 )
             }
@@ -354,6 +459,27 @@ val navigationBarPatch = patch(
                 move-result p1
             """
         )
+
+        // Region for hide Ask Music button in the player, miniplayer and fullscreen.
+        // All three take the button renderer from one method. Without a renderer
+        // the app hides the buttons and the space next to them on its own.
+        if (is_9_38_or_greater) {
+            PlayerAskMusicButtonRendererFingerprint.instructionMatches.first().getMethodCalled().apply {
+                findInstructionIndicesReversedOrThrow(Opcode.RETURN_OBJECT).forEach { index ->
+                    val register = getInstruction<OneRegisterInstruction>(index).registerA
+
+                    // A branch jumps straight to the return, so the code goes at its label.
+                    addInstructionsAtControlFlowLabel(
+                        index,
+                        """
+                            invoke-static { v$register }, $EXTENSION_CLASS->hidePlayerAskMusicButton(Ljava/lang/Object;)Ljava/lang/Object;
+                            move-result-object v$register
+                            check-cast v$register, $returnType
+                        """
+                    )
+                }
+            }
+        }
 
         // Ensure the first ImageView has 'layout_weight' to stay properly sized
         // when the TextView is hidden.

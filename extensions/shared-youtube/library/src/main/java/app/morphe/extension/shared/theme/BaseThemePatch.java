@@ -16,6 +16,30 @@ import androidx.annotation.Nullable;
 @SuppressWarnings("unused")
 public abstract class BaseThemePatch {
     /**
+     * Check if a value matches any of the provided values.
+     *
+     * @param value The value to check.
+     * @param of    The array of values to compare against.
+     * @return True if the value matches any of the provided values.
+     */
+    protected static boolean anyEquals(int value, int... of) {
+        for (int v : of) {
+            if (value == v) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @return The background color selected for the theme the app shows.
+     */
+    @ColorInt
+    protected static int getThemeBackgroundColor() {
+        return ThemeColorPatch.themeColor(ThemeColorPatch.isDarkTheme());
+    }
+
+    /**
      * Helper method to process color values for Litho components.
      *
      * @param originalValue The original color value.

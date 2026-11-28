@@ -56,6 +56,10 @@ import app.morphe.extension.youtube.shared.ShortsPlayerState;
 public final class ShortsFilter extends Filter {
     private static final boolean HIDE_SHORTS_NAVIGATION_BAR = Settings.HIDE_SHORTS_NAVIGATION_BAR.get();
     /**
+     * Videos of the modern home feed layout. The Shorts tab of a channel uses the same element.
+     */
+    private static final String MODERN_FEED_LOCKUP_PATH = "lockup.e";
+    /**
      * Videos of the feed and the search that can be Shorts.
      */
     private static final String[] SHORTS_COMPACT_FEED_VIDEO_PATHS = {
@@ -64,7 +68,9 @@ public final class ShortsFilter extends Filter {
             // 'video_lockup_with_attachment.e' is shown instead of 'compact_video.e' for some users
             "video_lockup_with_attachment.e",
             // Search results that appear in a horizontal shelf.
-            "video_card.e"
+            "video_card.e",
+            // Videos of the modern home feed layout.
+            MODERN_FEED_LOCKUP_PATH
     };
     private static final String REEL_CHANNEL_BAR_PATH = "reel_channel_bar.e";
 
@@ -122,6 +128,8 @@ public final class ShortsFilter extends Filter {
     private final StringFilterGroup reelCarousel;
     private final ByteArrayFilterGroupList reelCarouselBuffer = new ByteArrayFilterGroupList();
     private final ByteArrayFilterGroup searchResultsBuffer;
+    private final StringFilterGroup horizontalShelfIdentifier;
+    private final ByteArrayFilterGroup regularVideoThumbnailBuffer;
     private final StringFilterGroup shelfHeaderIdentifier;
     private final StringFilterGroup shelfHeaderPath;
     private final StringFilterGroup shortsActionBar;
@@ -165,12 +173,24 @@ public final class ShortsFilter extends Filter {
                 "shelf_header.e"
         );
 
-        addIdentifierCallbacks(shortsIdentifiers, channelProfile, shelfHeaderIdentifier);
+        // Shelves of the modern home feed layout, such as Breaking news, whose videos can be Shorts.
+        horizontalShelfIdentifier = new StringFilterGroup(
+                null,
+                "horizontal_shelf.e"
+        );
+
+        addIdentifierCallbacks(shortsIdentifiers, channelProfile, shelfHeaderIdentifier, horizontalShelfIdentifier);
 
         searchResultsBuffer = new ByteArrayFilterGroup(
                 null,
                 // Search page of the endpoints of the Shorts, as a length-prefixed proto string.
                 new byte[]{0x32, 0x06, 's', 'e', 'a', 'r', 'c', 'h'}
+        );
+
+        // Thumbnail of the regular videos, which the Shorts do not have.
+        regularVideoThumbnailBuffer = new ByteArrayFilterGroup(
+                null,
+                "/mqdefault.jpg"
         );
 
         //
@@ -607,6 +627,18 @@ public final class ShortsFilter extends Filter {
                 }
             } else if (matchedGroup == channelProfile) {
                 return !NavigationBar.isSearchBarActive();
+            } else if (matchedGroup == horizontalShelfIdentifier) {
+                // The Shorts of the shelf are hidden one by one as videos of the modern home feed layout,
+                // and the header of the shelf stays. A shelf with only Shorts is hidden as a whole,
+                // which is checked once with the buffer of the whole shelf.
+                if (contentIndex != 0
+                        || Utils.indexOf(path, ".e", identifier.length()) >= 0
+                        // Same check as the videos of the modern home feed layout.
+                        || !contextInterface.isHomeFeedOrRelatedVideo()
+                        || !shortsCompactFeedVideoBuffer.matches(buffer)
+                        || regularVideoThumbnailBuffer.check(buffer).isFiltered()) {
+                    return false;
+                }
             }
 
             // Nested components of the element have their own buffer.
@@ -631,6 +663,10 @@ public final class ShortsFilter extends Filter {
                 // Searching the buffer of each nested component made the layout of the feed slow.
                 final int nameEnd = Utils.indexOf(path, ".e", Utils.indexOfFirstFound(path, SHORTS_COMPACT_FEED_VIDEO_PATHS));
                 if (Utils.indexOf(path, ".e", nameEnd + 2) >= 0) {
+                    return false;
+                }
+                // Same check as the Shorts shelf header, to not hide the Shorts tab of a channel.
+                if (Utils.contains(path, MODERN_FEED_LOCKUP_PATH) && !contextInterface.isHomeFeedOrRelatedVideo()) {
                     return false;
                 }
                 // When a video is autoplaying in the feed, no new components are drawn on the screen.
@@ -741,6 +777,13 @@ public final class ShortsFilter extends Filter {
             }
             // For now, consider Shorts under video player the same as the home feed.
             return logDecision(component, hideHome, "player: home");
+        }
+
+        // The feed behind the Shorts player is laid out again while the Shorts player is open,
+        // such as the search results a Short was opened from, whose search bar is not shown meanwhile.
+        if (NavigationBar.isSearchBarBehindShortsPlayer()) {
+            return hideShortsInFeed(component, "search behind the Shorts player",
+                    Settings.HIDE_SHORTS_SEARCH, buffer, rootComponent);
         }
 
         // Must check second, as search can be from any tab.

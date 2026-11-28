@@ -14,23 +14,6 @@ import app.morphe.patcher.resource.ResourceType
 import app.morphe.patcher.resourceLiteral
 
 /**
- * The bottom sheet dialog of the Material components, which every bottom sheet of the app uses.
- */
-internal object BottomSheetDialogClassFingerprint : Fingerprint(
-    returnType = "V",
-    filters = listOf(
-        resourceLiteral(ResourceType.LAYOUT, "design_bottom_sheet_dialog"),
-    )
-)
-
-internal object BottomSheetDialogOnAttachedToWindowFingerprint : Fingerprint(
-    classFingerprint = BottomSheetDialogClassFingerprint,
-    name = "onAttachedToWindow",
-    returnType = "V",
-    parameters = listOf(),
-)
-
-/**
  * onCreateView of the sheet to save a video to a playlist, a dialog of its own.
  */
 internal object AddToPlaylistCreateViewFingerprint : Fingerprint(
@@ -41,30 +24,48 @@ internal object AddToPlaylistCreateViewFingerprint : Fingerprint(
 )
 
 /**
- * onStart of the dialog fragment of AndroidX, which shows the dialog of every dialog fragment of the app.
+ * The touch feedback drawable of the app, which wraps the background of a Litho component, such as a row of a menu.
+ * The first instruction match is the constructor of the superclass.
  */
-internal object DialogFragmentOnStartFingerprint : Fingerprint(
-    returnType = "V",
-    parameters = listOf(),
+internal object TouchFeedbackDrawableConstructorFingerprint : Fingerprint(
+    definingClass = "Lcom/google/android/libraries/youtube/rendering/ui/spec/motion/TouchFeedbackDrawable;",
+    name = "<init>",
+    parameters = listOf("Landroid/graphics/drawable/Drawable;"),
     filters = listOf(
-        methodCall(definingClass = "Landroid/app/Dialog;", name = "show"),
+        methodCall(definingClass = "Landroid/graphics/drawable/Drawable;", name = "<init>"),
         methodCall(
-            definingClass = "Landroid/app/Dialog;",
-            name = "getWindow",
-            location = MatchAfterWithin(5)
-        ),
-        methodCall(
-            definingClass = "Landroid/view/Window;",
-            name = "getDecorView",
-            location = MatchAfterWithin(5)
+            smali = $$"Landroid/graphics/drawable/Drawable;->setCallback(Landroid/graphics/drawable/Drawable$Callback;)V",
+            location = MatchAfterWithin(10)
         )
     )
 )
 
 /**
- * The bottom sheets of Morphe (playback speed, voice over translation), in the shared extension.
+ * Shows the "Please wait" progress dialog before the download quality menu. Matches 2 methods: the download button of
+ * a video and the download option of a menu.
  */
-internal object SlideDialogCreateFingerprint : Fingerprint(
-    definingClass = "Lapp/morphe/extension/shared/ui/SheetBottomDialog;",
-    name = "createSlideDialog",
+internal object DownloadProgressDialogFingerprint : Fingerprint(
+    filters = listOf(
+        resourceLiteral(ResourceType.STRING, "offline_stream_selection_waiting"),
+        methodCall(smali = "Landroid/app/ProgressDialog;->show()V"),
+    )
+)
+
+/**
+ * Shows a menu of a command as a list popup anchored to the view that opened it, such as the dropdown of the
+ * Shorts header, or the menus of the feed on the accounts of an A/B test. Matches 1 or 2 methods.
+ */
+internal object MenuListPopupWindowShowFingerprint : Fingerprint(
+    returnType = "V",
+    filters = listOf(
+        methodCall(smali = "Landroid/widget/ListPopupWindow;->setDropDownGravity(I)V"),
+        methodCall(
+            smali = "Landroid/widget/ListPopupWindow;->setAnchorView(Landroid/view/View;)V",
+            location = MatchAfterWithin(5)
+        ),
+        methodCall(
+            smali = "Landroid/widget/ListPopupWindow;->show()V",
+            location = MatchAfterWithin(5)
+        ),
+    )
 )

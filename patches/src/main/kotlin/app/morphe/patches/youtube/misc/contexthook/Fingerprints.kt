@@ -106,6 +106,37 @@ internal object BrowseEndpointParentFingerprint : Fingerprint(
     strings = listOf("browseId"),
 )
 
+/**
+ * Puts the browse ID field in the request.
+ */
+internal object BrowseEndpointBrowseIdFingerprint : Fingerprint(
+    returnType = "Ljava/lang/String;",
+    filters = listOf(
+        string("browseId"),
+        fieldAccess(
+            opcode = Opcode.IGET_OBJECT,
+            definingClass = "this",
+            type = "Ljava/lang/String;",
+            location = MatchAfterImmediately()
+        )
+    )
+)
+
+/**
+ * 20.50 and older read the browse ID field before the string.
+ */
+internal object BrowseEndpointBrowseIdLegacyFingerprint : Fingerprint(
+    returnType = "Ljava/lang/String;",
+    filters = listOf(
+        fieldAccess(
+            opcode = Opcode.IGET_OBJECT,
+            definingClass = "this",
+            type = "Ljava/lang/String;"
+        ),
+        string("browseId", location = MatchAfterImmediately())
+    )
+)
+
 internal object GetWatchEndpointConstructorPrimaryFingerprint : Fingerprint(
     accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.CONSTRUCTOR),
     returnType = "V",
@@ -177,4 +208,23 @@ internal object TranscriptEndpointConstructorFingerprint : Fingerprint(
     accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.CONSTRUCTOR),
     returnType = "V",
     strings = listOf("get_transcript"),
+)
+
+/**
+ * Sets the form factor of the client info from the ordinal of [ClientFormFactorEnumOrdinalFingerprint].
+ */
+internal object SetClientFormFactorFingerprint : Fingerprint(
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.FINAL),
+    returnType = "V",
+    parameters = listOf("L"),
+    filters = listOf(
+        fieldAccess(
+            opcode = Opcode.IGET,
+            definingClass = CLIENT_INFO_CLASS,
+            type = "I"
+        ),
+        methodCall(
+            reference = { ClientFormFactorEnumOrdinalFingerprint.originalMethod }
+        )
+    )
 )

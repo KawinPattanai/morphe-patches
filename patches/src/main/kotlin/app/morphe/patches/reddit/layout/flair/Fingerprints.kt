@@ -63,6 +63,17 @@ internal object PostFlairsElementToStringFingerprint : Fingerprint(
     )
 )
 
+/**
+ * The public link id method of the base class of all feed elements,
+ * which is the superclass of [PostFlairsElementToStringFingerprint].
+ */
+internal object FeedElementGetLinkIdFingerprint : Fingerprint(
+    definingClass = { PostFlairsElementToStringFingerprint.originalClassDef.superclass!! },
+    name = "getLinkId",
+    returnType = { "Ljava/lang/String;" },
+    parameters = { emptyList() }
+)
+
 internal object PostFlairsSectionToStringFingerprint : Fingerprint(
     name = "toString",
     parameters = listOf(),
@@ -162,6 +173,19 @@ internal object PostPreviewFeedElementConstructorFingerprint : Fingerprint(
     )
 )
 
+internal object PostPreviewFeedElementClassicPostFingerprint : Fingerprint(
+    classFingerprint = PostPreviewFeedElementToStringFingerprint,
+    name = "<init>",
+    filters = listOf(
+        // Classic post element.
+        fieldAccess(
+            opcode = Opcode.IPUT_OBJECT,
+            definingClass = "this",
+            type = { ClassicPostElementToStringFingerprint.originalClassDef.type }
+        )
+    )
+)
+
 /**
  * Kotlin data class copy method with a default value bit mask.
  */
@@ -220,6 +244,52 @@ internal object FeedPostSectionConstructorFingerprint : Fingerprint(
             opcode = Opcode.IPUT_OBJECT,
             definingClass = "this",
             location = MatchAfterImmediately()
+        )
+    )
+)
+
+internal object ClassicPostElementToStringFingerprint : Fingerprint(
+    name = "toString",
+    parameters = listOf(),
+    returnType = "Ljava/lang/String;",
+    strings = listOf(
+        "ClassicPostElement(linkId=",
+        ", uniqueId="
+    )
+)
+
+internal object ClassicPostElementConstructorFingerprint : Fingerprint(
+    classFingerprint = ClassicPostElementToStringFingerprint,
+    name = "<init>",
+    filters = listOf(
+        // Flairs element.
+        fieldAccess(
+            opcode = Opcode.IPUT_OBJECT,
+            definingClass = "this",
+            type = { PostFlairsElementToStringFingerprint.originalClassDef.type }
+        )
+    )
+)
+
+internal object ClassicPostSectionToStringFingerprint : Fingerprint(
+    name = "toString",
+    parameters = listOf(),
+    returnType = "Ljava/lang/String;",
+    strings = listOf(
+        "ClassicPostSection(linkId=",
+        ", data="
+    )
+)
+
+internal object ClassicPostSectionConstructorFingerprint : Fingerprint(
+    classFingerprint = ClassicPostSectionToStringFingerprint,
+    name = "<init>",
+    filters = listOf(
+        // Classic post element.
+        fieldAccess(
+            opcode = Opcode.IPUT_OBJECT,
+            definingClass = "this",
+            type = { ClassicPostElementToStringFingerprint.originalClassDef.type }
         )
     )
 )

@@ -19,6 +19,10 @@ import com.android.tools.smali.dexlib2.Opcode
 
 /**
  * Shows a snackbar in the bottom UI container, unless the message asks to skip it.
+ *
+ * The HaTS survey method has the same shape, and the Hide layout components patch adds a
+ * static boolean call to it, so the skip check is matched as an interface call and the
+ * method must also set a boolean field of the container.
  */
 internal object SnackbarDisplayFingerprint : Fingerprint(
     accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.FINAL),
@@ -26,6 +30,7 @@ internal object SnackbarDisplayFingerprint : Fingerprint(
     parameters = listOf("L"),
     filters = listOf(
         methodCall(
+            opcode = Opcode.INVOKE_INTERFACE,
             parameters = emptyList(),
             returnType = "Z"
         ),
@@ -33,6 +38,11 @@ internal object SnackbarDisplayFingerprint : Fingerprint(
             definingClass = "Lcom/google/android/apps/youtube/app/common/ui/bottomui/BottomUiContainer;",
             parameters = listOf("L", "L", "L"),
             returnType = "V"
+        ),
+        fieldAccess(
+            opcode = Opcode.IPUT_BOOLEAN,
+            definingClass = "Lcom/google/android/apps/youtube/app/common/ui/bottomui/BottomUiContainer;",
+            type = "Z"
         )
     )
 )
@@ -140,6 +150,20 @@ internal object MealbarFingerprint : Fingerprint(
         methodCall(
             opcode = Opcode.INVOKE_DIRECT,
             name = "<init>"
+        )
+    )
+)
+
+/**
+ * Draws the text of a Litho text component.
+ */
+internal object LithoTextDrawableDrawFingerprint : Fingerprint(
+    name = "draw",
+    returnType = "V",
+    parameters = listOf("Landroid/graphics/Canvas;"),
+    filters = listOf(
+        methodCall(
+            smali = "Landroid/text/Layout;->draw(Landroid/graphics/Canvas;Landroid/graphics/Path;Landroid/graphics/Paint;I)V"
         )
     )
 )

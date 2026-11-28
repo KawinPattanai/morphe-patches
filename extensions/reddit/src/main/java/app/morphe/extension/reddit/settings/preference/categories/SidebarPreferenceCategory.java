@@ -7,12 +7,11 @@
 
 package app.morphe.extension.reddit.settings.preference.categories;
 
-import static app.morphe.extension.shared.StringRef.str;
-
 import android.content.Context;
 import android.preference.PreferenceScreen;
 
 import app.morphe.extension.reddit.patches.HideSidebarComponentsPatch;
+import app.morphe.extension.reddit.patches.SettingsInSidebarPatch;
 import app.morphe.extension.reddit.settings.Settings;
 import app.morphe.extension.reddit.settings.preference.BooleanSettingPreference;
 import app.morphe.extension.shared.Utils;
@@ -20,17 +19,24 @@ import app.morphe.extension.shared.Utils;
 @SuppressWarnings("deprecation")
 public class SidebarPreferenceCategory extends ConditionalPreferenceCategory {
     public SidebarPreferenceCategory(Context context, PreferenceScreen screen) {
-        super(context, screen);
-        setTitle(str("morphe_screen_sidebar_title"));
+        super(context, screen, "morphe_sidebar_screen", "morphe_screen_sidebar_title", "morphe_sidebar_screen_summary");
     }
 
     @Override
     public boolean getSettingsStatus() {
-        return HideSidebarComponentsPatch.isPatchIncluded();
+        return SettingsInSidebarPatch.isPatchIncluded() ||
+                HideSidebarComponentsPatch.isPatchIncluded();
     }
 
     @Override
     public void addPreferences(Context context) {
+        if (SettingsInSidebarPatch.isPatchIncluded()) {
+            addPreference(new BooleanSettingPreference(
+                    context,
+                    Settings.SETTINGS_IN_SIDEBAR
+            ));
+        }
+
         if (HideSidebarComponentsPatch.isPatchIncluded()) {
             addPreference(new BooleanSettingPreference(
                     context,

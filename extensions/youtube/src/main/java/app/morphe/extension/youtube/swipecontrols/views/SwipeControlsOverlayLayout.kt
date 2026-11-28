@@ -22,6 +22,7 @@ import app.morphe.extension.shared.StringRef.str
 import app.morphe.extension.shared.ui.ViewAnimations
 import app.morphe.extension.youtube.patches.SoundBoostPatch
 import app.morphe.extension.youtube.patches.VideoInformation
+import app.morphe.extension.youtube.patches.playback.speed.ReplaySwipeGesture
 import app.morphe.extension.youtube.swipecontrols.SwipeControlsConfigurationProvider
 import app.morphe.extension.youtube.swipecontrols.misc.SwipeControlsOverlay
 import app.morphe.extension.youtube.videoplayer.PlayerIcons
@@ -69,6 +70,55 @@ class SwipeControlsOverlayLayout(
         )
         drawable.setTint(config.overlayTextColor)
         return drawable
+    }
+
+    // Feedback of the replay swipe, which is shown over the player.
+    private var replayProgressView: HorizontalProgressView? = null
+
+    /**
+     * Shows the selected rewind inside the player, including in portrait mode.
+     */
+    fun showReplayFeedback(seconds: Int, playerBounds: Rect) {
+        var progressView = replayProgressView
+        if (progressView == null) {
+            progressView = HorizontalProgressView(
+                context,
+                config.overlayBackgroundOpacity,
+                config.overlayStyle.isMinimal,
+                config.overlaySpeedProgressColor,
+                config.overlayFillBackgroundPaint,
+                config.overlayTextColor,
+                config.overlayTextSize,
+            ).apply {
+                icon = getDrawable("morphe_replay_video_button")
+                visibility = GONE
+            }
+            addView(progressView)
+            replayProgressView = progressView
+        }
+
+        val text = str("morphe_replay_video_swipe_preview", seconds)
+        progressView.setProgress(seconds, ReplaySwipeGesture.MAX_REWIND_SECONDS, text, false)
+        progressView.contentDescription = text
+
+        val maxWidth = playerBounds.width() * 4 / 5
+        val height = 32f.toDisplayPixels().toInt()
+        progressView.measure(
+            MeasureSpec.makeMeasureSpec(maxWidth, MeasureSpec.AT_MOST),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+        )
+        val width = progressView.measuredWidth
+        val location = IntArray(2)
+        getLocationOnScreen(location)
+        progressView.layoutParams = LayoutParams(width, height).apply {
+            leftMargin = playerBounds.centerX() - location[0] - width / 2
+            topMargin = playerBounds.centerY() - location[1] - height / 2
+        }
+        progressView.visibility = VISIBLE
+    }
+
+    fun hideReplayFeedback() {
+        replayProgressView?.visibility = GONE
     }
 
     // Initialize progress bars.

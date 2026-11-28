@@ -10,16 +10,15 @@ package app.morphe.patches.youtube.misc.contexthook
 import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
-import app.morphe.patcher.fieldAccess
 import app.morphe.patcher.methodCall
 import app.morphe.patcher.patch.patch
 import app.morphe.patcher.util.cloneParameters
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod.Companion.toMutable
 import app.morphe.patches.youtube.misc.extension.sharedExtensionPatch
+import app.morphe.patches.youtube.misc.playservice.is_20_51_or_greater
 import app.morphe.patches.youtube.misc.playservice.is_21_20_or_greater
 import app.morphe.patches.youtube.misc.playservice.is_21_21_or_greater
 import app.morphe.patches.youtube.misc.playservice.versionCheckPatch
-import app.morphe.patches.youtube.shared.CLIENT_INFO_CLASS
 import app.morphe.util.addInstructionsAtControlFlowLabel
 import app.morphe.util.findInstructionIndicesReversedOrThrow
 import app.morphe.util.indexOfFirstInstructionOrThrow
@@ -95,22 +94,22 @@ val clientContextHookPatch = patch(
             }
         }
 
-        val messageLiteBuilderMethod : MethodReference
-        (if (is_21_20_or_greater) AuthenticationChangeListenerFingerprint
-        else AuthenticationChangeListenerLegacyFingerprint).method.apply {
-            val messageLiteBuilderIndex = indexOfFirstInstructionOrThrow(
-                filter = methodCall(
-                    opcode = Opcode.INVOKE_VIRTUAL,
-                    parameters = emptyList(),
-                    returnType = messageLiteBuilderField.definingClass
+        // 20.51 has the listener in both of its request classes, which use the same builder method.
+        val authenticationChangeListeners =
+            if (is_21_20_or_greater) listOf(AuthenticationChangeListenerFingerprint.method)
+            else AuthenticationChangeListenerLegacyFingerprint.matchAll().map { it.method }
+        val messageLiteBuilderMethod = authenticationChangeListeners.map { listener ->
+            listener.getInstruction<ReferenceInstruction>(
+                listener.indexOfFirstInstructionOrThrow(
+                    filter = methodCall(
+                        opcode = Opcode.INVOKE_VIRTUAL,
+                        parameters = emptyList(),
+                        returnType = messageLiteBuilderField.definingClass
+                    )
                 )
-            )
-
-            messageLiteBuilderMethod = getInstruction<ReferenceInstruction>(
-                messageLiteBuilderIndex
             ).reference as MethodReference
-            messageLiteBuilderMethodRef = WeakReference(messageLiteBuilderMethod)
-        }
+        }.distinct().single()
+        messageLiteBuilderMethodRef = WeakReference(messageLiteBuilderMethod)
 
         osNameFieldRef = WeakReference(
             BuildClientContextBodyFingerprint.method.getInstruction<ReferenceInstruction>(
@@ -118,25 +117,9 @@ val clientContextHookPatch = patch(
             ).reference as FieldReference
         )
 
-        val setClientFormFactorFingerprint = Fingerprint(
-            accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.FINAL),
-            returnType = "V",
-            parameters = listOf("L"),
-            filters = listOf(
-                fieldAccess(
-                    opcode = Opcode.IGET,
-                    definingClass = CLIENT_INFO_CLASS,
-                    type = "I"
-                ),
-                methodCall(
-                    reference = ClientFormFactorEnumOrdinalFingerprint.method
-                )
-            )
-        )
-
         clientFormFactorFieldRef = WeakReference(
-            setClientFormFactorFingerprint.method.getInstruction<ReferenceInstruction>(
-                setClientFormFactorFingerprint.instructionMatches.first().index
+            SetClientFormFactorFingerprint.method.getInstruction<ReferenceInstruction>(
+                SetClientFormFactorFingerprint.instructionMatches.first().index
             ).reference as FieldReference
         )
     }
@@ -214,6 +197,30 @@ fun addClientFormFactorHook(endPoint: Endpoint, descriptor: String) {
         """
 
     endPoint.smaliInstructions += smaliInstructions
+}
+
+/**
+ * Same as [addClientFormFactorHook] for the browse endpoint, but also passes the browse ID
+ * so the form factor can be chosen per page.
+ *
+ * @param descriptor Method that takes the form factor and the browse ID, and returns the form factor.
+ */
+fun addBrowseClientFormFactorHook(descriptor: String) {
+    val clientFormFactorField = clientFormFactorFieldRef.get()!!
+    val browseIdField = if (is_20_51_or_greater) {
+        BrowseEndpointBrowseIdFingerprint.instructionMatches.last()
+    } else {
+        BrowseEndpointBrowseIdLegacyFingerprint.instructionMatches.first()
+    }.fieldReference
+    val smaliInstructions = """
+        iget v2, v1, $clientFormFactorField
+        iget-object v3, p0, $browseIdField
+        invoke-static { v2, v3 }, $descriptor
+        move-result v2
+        iput v2, v1, $clientFormFactorField
+        """
+
+    Endpoint.BROWSE.smaliInstructions += smaliInstructions
 }
 
 fun addClientVersionHook(endPoint: Endpoint, descriptor: String) {

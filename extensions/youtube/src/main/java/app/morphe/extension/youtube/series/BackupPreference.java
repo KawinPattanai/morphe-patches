@@ -7,6 +7,7 @@
 
 package app.morphe.extension.youtube.series;
 
+import android.app.Activity;
 import android.content.Context;
 import android.preference.Preference;
 import android.util.AttributeSet;
@@ -33,23 +34,7 @@ public final class BackupPreference extends Preference {
             sheet.dialog.dismiss();
             fragment.importTextActivity(text -> service.previewBackup(text,
                     (data, count) -> {
-                        if (isShowing(fragment)) {
-                            NativeSheet restoreSheet = new NativeSheet(fragment.getActivity(),
-                                    "morphe_series_tracker_backup_restore");
-                            restoreSheet.message(UiText.format("morphe_series_tracker_backup_preview",
-                                    count, data.series().size() - count));
-                            restoreSheet.action("morphe_series_tracker_ui_cancel", restoreSheet.dialog::dismiss, false);
-                            if (count > 0) {
-                                restoreSheet.action("morphe_series_tracker_backup_restore", () -> {
-                                    restoreSheet.dialog.dismiss();
-                                    service.restoreBackup(data,
-                                            added -> Utils.showSnackbarLong(
-                                                    UiText.format("morphe_series_tracker_backup_restored", added)),
-                                            BackupPreference::toast);
-                                }, true);
-                            }
-                            restoreSheet.show();
-                        }
+                        if (isShowing(fragment)) confirmRestore(fragment.getActivity(), service, data, count);
                     },
                     BackupPreference::toast));
         }, false);
@@ -65,6 +50,24 @@ public final class BackupPreference extends Preference {
                                 : "morphe_series_tracker_error_backup_write"));
             }, BackupPreference::toast);
         }, true);
+        sheet.show();
+    }
+
+    private static void confirmRestore(
+            Activity activity, TrackerService service, LibraryBackup.Data data, int count) {
+        NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_backup_restore");
+        sheet.message(UiText.format("morphe_series_tracker_backup_preview",
+                count, data.series().size() - count));
+        sheet.action("morphe_cancel", sheet.dialog::dismiss, false);
+        if (count > 0) {
+            sheet.action("morphe_series_tracker_backup_restore", () -> {
+                sheet.dialog.dismiss();
+                service.restoreBackup(data,
+                        added -> Utils.showSnackbarLong(
+                                UiText.format("morphe_series_tracker_backup_restored", added)),
+                        BackupPreference::toast);
+            }, true);
+        }
         sheet.show();
     }
 

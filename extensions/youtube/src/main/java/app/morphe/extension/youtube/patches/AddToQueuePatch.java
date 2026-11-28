@@ -236,6 +236,52 @@ public final class AddToQueuePatch {
         }
     }
 
+    private static int addLocalQueueButtons(Object flyoutPanel, int index, String videoId) {
+        final boolean feedFlyout = !FlyoutUtils.getFlyoutVideoId().isEmpty();
+        if (feedFlyout && FlyoutUtils.getFlyoutPlaylistId().isEmpty()
+                && !FlyoutUtils.hasVisibleFlyoutButton(queueButtonOriginalNames.get(0))) {
+            index = FlyoutUtils.addFlyoutButton(
+                    flyoutPanel,
+                    queueButtonDrawable,
+                    str("morphe_queue_play_next"),
+                    v -> flyoutButtonClickLogic(queueButtonOriginalNames.get(0), videoId),
+                    index
+            );
+        }
+
+        if (feedFlyout && FlyoutUtils.getFlyoutPlaylistId().isEmpty()
+                && !FlyoutUtils.hasVisibleFlyoutButton(queueButtonOriginalNames.get(1))) {
+            index = FlyoutUtils.addFlyoutButton(
+                    flyoutPanel,
+                    queueButtonDrawable,
+                    str("morphe_queue_play_last"),
+                    v -> flyoutButtonClickLogic(queueButtonOriginalNames.get(1), videoId),
+                    index
+            );
+        }
+
+        final int size = LocalQueuePatch.size();
+        if (feedFlyout && size > 0) {
+            index = FlyoutUtils.addFlyoutButton(
+                    flyoutPanel,
+                    queueButtonDrawable,
+                    str("morphe_local_queue_open", size),
+                    v -> {
+                        FlyoutUtils.dismissFlyout();
+                        Activity activity = Utils.getActivity();
+                        if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
+                            LocalQueueSheet.show(activity);
+                        } else {
+                            Logger.printException(() -> "Could not open queue sheet, activity is not available");
+                        }
+                    },
+                    index
+            );
+        }
+
+        return index;
+    }
+
     /**
      * Injection point.
      */

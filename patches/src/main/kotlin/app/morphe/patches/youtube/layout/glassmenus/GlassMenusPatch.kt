@@ -9,13 +9,9 @@ package app.morphe.patches.youtube.layout.glassmenus
 
 import app.morphe.patcher.extensions.InstructionExtensions.addInstruction
 import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
-import app.morphe.patcher.patch.patch
-import app.morphe.patches.shared.layout.theme.lithoColorHookPatch
-import app.morphe.patches.shared.layout.theme.lithoDrawableDrawnColorHook
-import app.morphe.patches.shared.misc.settings.preference.NonInteractivePreference
-import app.morphe.patches.shared.misc.settings.preference.PreferenceScreenPreference
-import app.morphe.patches.shared.misc.settings.preference.PreferenceScreenPreference.Sorting
-import app.morphe.patches.shared.misc.settings.preference.SwitchPreference
+import app.morphe.patcher.util.registersUsed
+import app.morphe.patches.shared.layout.glassmenus.GLASS_MENUS_EXTENSION_CLASS
+import app.morphe.patches.shared.layout.glassmenus.glassMenusPatch
 import app.morphe.patches.youtube.layout.flyout.flyoutPatch
 import app.morphe.patches.youtube.misc.extension.sharedExtensionPatch
 import app.morphe.patches.youtube.misc.playservice.is_21_30_or_greater
@@ -25,52 +21,23 @@ import app.morphe.patches.youtube.misc.settings.settingsPatch
 import app.morphe.patches.youtube.shared.Constants.COMPATIBILITY_YOUTUBE
 import app.morphe.util.addInstructionsAtControlFlowLabel
 import app.morphe.util.findInstructionIndicesReversedOrThrow
-import app.morphe.util.setExtensionIsPatchIncluded
 import com.android.tools.smali.dexlib2.Opcode
-import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 
-private const val EXTENSION_CLASS = "Lapp/morphe/extension/youtube/patches/glassmenus/GlassMenusPatch;"
-private const val SEEKBAR_PREFERENCE = "app.morphe.extension.shared.settings.preference.SeekBarPreference"
-
 @Suppress("unused")
-val glassMenusPatch = patch(
-    name = "Glass menus",
-    description = "Adds an option to show the menus as frosted glass, with the content behind the menu blurred. " +
-        "This patch works on Android 12 and newer.",
-) {
-    dependsOn(
-        sharedExtensionPatch,
-        settingsPatch,
-        versionCheckPatch,
-        // The popup menus are passed on by the flyout menu hooks.
-        flyoutPatch,
-        // The backgrounds Litho draws inside the menus are passed on by the Litho color hook.
-        lithoColorHookPatch { is_21_30_or_greater },
-    )
-
-    compatibleWith(COMPATIBILITY_YOUTUBE)
-
-    execute {
-        PreferenceScreen.GENERAL.addPreferences(
-            PreferenceScreenPreference(
-                key = "morphe_glass_menus_screen",
-                sorting = Sorting.UNSORTED,
-                preferences = setOf(
-                    SwitchPreference("morphe_glass_menus", summary = true),
-                    NonInteractivePreference(key = "morphe_glass_menus_opacity", tag = SEEKBAR_PREFERENCE),
-                    NonInteractivePreference(key = "morphe_glass_menus_blur", tag = SEEKBAR_PREFERENCE),
-                    NonInteractivePreference(key = "morphe_glass_menus_dim", tag = SEEKBAR_PREFERENCE),
-                ),
-            ),
+val glassMenusPatch = glassMenusPatch(
+    block = {
+        dependsOn(
+            sharedExtensionPatch,
+            settingsPatch,
+            versionCheckPatch,
+            // The popup menus are passed on by the flyout menu hooks.
+            flyoutPatch,
         )
 
-        // Bottom sheets: every bottom sheet dialog of the app, when it is attached to its window.
-        BottomSheetDialogOnAttachedToWindowFingerprint.method.addInstruction(
-            0,
-            "invoke-static { p0 }, $EXTENSION_CLASS->onBottomSheetDialog(Landroid/app/Dialog;)V",
-        )
-
+        compatibleWith(COMPATIBILITY_YOUTUBE)
+    },
+    executeBlock = {
         // The sheet to save a video to a playlist, which is a dialog of its own.
         AddToPlaylistCreateViewFingerprint.method.apply {
             findInstructionIndicesReversedOrThrow(Opcode.RETURN_OBJECT).forEach { index ->
@@ -78,37 +45,43 @@ val glassMenusPatch = patch(
                 // A jump to the return must also reach the call.
                 addInstructionsAtControlFlowLabel(
                     index,
-                    "invoke-static { v$register }, $EXTENSION_CLASS->onAddToPlaylistView(Landroid/view/View;)V",
+                    "invoke-static { v$register }, $GLASS_MENUS_EXTENSION_CLASS->onAddToPlaylistView(Landroid/view/View;)V",
                 )
             }
         }
 
-        // Dialogs of dialog fragments, right after they are shown: the panels at the bottom of the screen,
-        // such as the video quality and the download quality.
-        DialogFragmentOnStartFingerprint.let {
-            it.method.apply {
-                val showIndex = it.instructionMatches.first().index
-                val dialogRegister = getInstruction<FiveRegisterInstruction>(showIndex).registerC
-                addInstruction(
-                    showIndex + 1,
-                    "invoke-static { v$dialogRegister }, $EXTENSION_CLASS->onDialogShown(Landroid/app/Dialog;)V",
-                )
-            }
+        // The touch feedback drawable sets the callback of the background it wraps before it has a callback
+        // itself, so the background has none, and the view that draws it cannot be found from it.
+        TouchFeedbackDrawableConstructorFingerprint.let {
+            it.method.addInstruction(
+                it.instructionMatches.first().index + 1,
+                "invoke-static { p0, p1 }, $GLASS_MENUS_EXTENSION_CLASS->" +
+                        "onWrappedDrawable(Landroid/graphics/drawable/Drawable;Landroid/graphics/drawable/Drawable;)V"
+            )
         }
 
-        // The sheets of Morphe, such as the playback speed and the voice over translation.
-        SlideDialogCreateFingerprint.method.apply {
-            findInstructionIndicesReversedOrThrow(Opcode.RETURN_OBJECT).forEach { index ->
-                val register = getInstruction<OneRegisterInstruction>(index).registerA
-                addInstructionsAtControlFlowLabel(
-                    index,
-                    "invoke-static { v$register }, $EXTENSION_CLASS->onSlideDialog(Landroid/app/Dialog;)V",
-                )
-            }
+        // The menus shown as a list popup, which is not a popup window of the flyout menus.
+        MenuListPopupWindowShowFingerprint.matchAll().forEach { match ->
+            val showCall = match.instructionMatches.last()
+            val popupRegister = showCall.instruction.registersUsed[0]
+            match.method.addInstruction(
+                showCall.index + 1,
+                "invoke-static { v$popupRegister }, $GLASS_MENUS_EXTENSION_CLASS->" +
+                        "onListPopupWindow(Landroid/widget/ListPopupWindow;)V",
+            )
         }
 
-        lithoDrawableDrawnColorHook("$EXTENSION_CLASS->onLithoBackgroundColor(Landroid/graphics/drawable/Drawable;I)V")
-
-        setExtensionIsPatchIncluded(EXTENSION_CLASS)
-    }
-}
+        // The "Please wait" progress dialog before the download quality menu, which is not a dialog fragment.
+        DownloadProgressDialogFingerprint.matchAll().forEach { match ->
+            val showCall = match.instructionMatches.last()
+            val dialogRegister = showCall.instruction.registersUsed[0]
+            match.method.addInstruction(
+                showCall.index + 1,
+                "invoke-static { v$dialogRegister }, $GLASS_MENUS_EXTENSION_CLASS->" +
+                        "onProgressDialogShown(Landroid/app/Dialog;)V",
+            )
+        }
+    },
+    useModernLithoColorHook = { is_21_30_or_greater },
+    preferenceScreen = PreferenceScreen.GENERAL,
+)

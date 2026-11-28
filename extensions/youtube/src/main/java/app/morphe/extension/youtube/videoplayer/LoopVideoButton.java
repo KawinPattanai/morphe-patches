@@ -111,37 +111,25 @@ public class LoopVideoButton {
         if (legacy == null) return;
         Utils.verifyOnMainThread();
 
+        toggleLoopState();
+        animateButtonTransition(buttonView, getTargetIcon());
+    }
+
+    /**
+     * Toggles the loop from outside the button, such as from the launcher of the hold gesture.
+     */
+    public static void toggleLoop() {
+        toggleLoopState();
+        updateButtonIcon();
+    }
+
+    private static void toggleLoopState() {
         final boolean newState = !Settings.LOOP_VIDEO.get();
         setLoopButton(newState);
 
         Utils.showSnackbarShort(str(newState
                 ? "morphe_loop_video_button_toast_on"
                 : "morphe_loop_video_button_toast_off"));
-
-        int newIcon = getTargetIcon();
-        LegacyPlayerControlButton localInstance = legacy;
-        if (localInstance == null) return;
-
-        if (!(buttonView instanceof ImageView imageView)) {
-            localInstance.setIcon(newIcon);
-            return;
-        }
-
-        imageView.animate()
-                .alpha(0.3f)
-                .scaleX(1.15f)
-                .scaleY(1.15f)
-                .setDuration(100)
-                .withEndAction(() -> {
-                    localInstance.setIcon(newIcon);
-                    imageView.animate()
-                            .alpha(1.0f)
-                            .scaleX(1.0f)
-                            .scaleY(1.0f)
-                            .setDuration(100)
-                            .start();
-                })
-                .start();
     }
 
     /**
@@ -173,56 +161,11 @@ public class LoopVideoButton {
                     str("morphe_loop_video_range_dialog_title"),
                     null,
                     null,
-                    str("morphe_loop_video_range_set"),
-                    () -> {
-                        String startInput = startField.getText().toString();
-                        String endInput = endField.getText().toString();
-                        final long startMs = parseTime(startInput);
-                        if (startMs < 0) {
-                            Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
-                            return;
-                        }
-
-                        final long endMs;
-                        boolean endIsVideoEnd = endInput.trim().isEmpty();
-                        if (endIsVideoEnd) {
-                            if (videoLength <= 0) {
-                                Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
-                                return;
-                            }
-                            endMs = videoLength;
-                        } else {
-                            final long parsed = parseTime(endInput);
-                            if (parsed < 0) {
-                                Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
-                                return;
-                            }
-                            if (videoLength > 0 && parsed >= videoLength) {
-                                endMs = videoLength;
-                                endIsVideoEnd = true;
-                            } else {
-                                endMs = parsed;
-                            }
-                        }
-
-                        if (endMs <= startMs) {
-                            Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
-                            return;
-                        }
-
-                        // Resets the loop range state, if set, to avoid possible errors
-                        if (!LoopVideoPatch.rangeVideoId.isEmpty()) {
-                            setLoopButton(false);
-                        }
-
-                        LoopVideoPatch.setRange(startMs, endMs, endIsVideoEnd);
-                        Settings.LOOP_VIDEO.save(true);
-                        Utils.showSnackbarShort(str("morphe_loop_video_range_toast_on",
-                                formatTime(startMs), formatTime(endMs)));
-                        updateButtonIcon();
-                    },
+                    str("morphe_set"),
+                    () -> applyRange(startField.getText().toString(),
+                            endField.getText().toString(), videoLength),
                     () -> { /* dismiss only */ },
-                    str("morphe_loop_video_range_clear"),
+                    str("morphe_settings_clear"),
                     () -> {
                         LoopVideoPatch.clearRange();
                         Settings.LOOP_VIDEO.save(false);
@@ -235,22 +178,58 @@ public class LoopVideoButton {
             LinearLayout mainLayout = result.second;
 
             // Insert the two time fields between title (index 0) and buttons (index 1).
-            LinearLayout container = new LinearLayout(context);
-            container.setOrientation(LinearLayout.VERTICAL);
-            container.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
-
-            container.addView(buildLabeledField(context,
-                    str("morphe_loop_video_range_label_start"), startField, true));
-            container.addView(buildLabeledField(context,
-                    str("morphe_loop_video_range_label_end"), endField, false));
-            mainLayout.addView(container, 1);
+            mainLayout.addView(buildFieldsLayout(context, startField, endField), 1);
 
             dialog.show();
         } catch (Exception ex) {
             Logger.printException(() -> "showRangeDialog failure", ex);
         }
+    }
+
+    private static void applyRange(String startInput, String endInput, long videoLengthMs) {
+        final long startMs = parseTime(startInput);
+        if (startMs < 0) {
+            Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
+            return;
+        }
+
+        final long endMs;
+        boolean endIsVideoEnd = endInput.trim().isEmpty();
+        if (endIsVideoEnd) {
+            if (videoLengthMs <= 0) {
+                Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
+                return;
+            }
+            endMs = videoLengthMs;
+        } else {
+            final long parsed = parseTime(endInput);
+            if (parsed < 0) {
+                Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
+                return;
+            }
+            if (videoLengthMs > 0 && parsed >= videoLengthMs) {
+                endMs = videoLengthMs;
+                endIsVideoEnd = true;
+            } else {
+                endMs = parsed;
+            }
+        }
+
+        if (endMs <= startMs) {
+            Utils.showSnackbarShort(str(videoRangeInvalidTimeStringName));
+            return;
+        }
+
+        // Resets the loop range state, if set, to avoid possible errors
+        if (!LoopVideoPatch.rangeVideoId.isEmpty()) {
+            setLoopButton(false);
+        }
+
+        LoopVideoPatch.setRange(startMs, endMs, endIsVideoEnd);
+        Settings.LOOP_VIDEO.save(true);
+        Utils.showSnackbarShort(str("morphe_loop_video_range_toast_on",
+                formatTime(startMs), formatTime(endMs)));
+        updateButtonIcon();
     }
 
     private static int getTargetIcon() {
@@ -270,6 +249,32 @@ public class LoopVideoButton {
      */
     public static void onRangeCleared() {
         Utils.runOnMainThread(LoopVideoButton::updateButtonIcon);
+    }
+
+    private static void animateButtonTransition(View buttonView, int newIcon) {
+        LegacyPlayerControlButton localInstance = legacy;
+        if (localInstance == null) return;
+
+        if (!(buttonView instanceof ImageView imageView)) {
+            localInstance.setIcon(newIcon);
+            return;
+        }
+
+        imageView.animate()
+                .alpha(0.3f)
+                .scaleX(1.15f)
+                .scaleY(1.15f)
+                .setDuration(100)
+                .withEndAction(() -> {
+                    localInstance.setIcon(newIcon);
+                    imageView.animate()
+                            .alpha(1.0f)
+                            .scaleX(1.0f)
+                            .scaleY(1.0f)
+                            .setDuration(100)
+                            .start();
+                })
+                .start();
     }
 
     private static String formatTime(long ms) {
@@ -321,6 +326,15 @@ public class LoopVideoButton {
         editText.setHintTextColor(Color.GRAY);
         editText.setBackgroundColor(Color.TRANSPARENT);
         editText.setPadding(0, 0, 0, 0);
+        addAutoColonWatcher(editText);
+        if (!prefilledText.isEmpty()) {
+            editText.setText(prefilledText);
+            editText.setSelection(editText.getText().length());
+        }
+        return editText;
+    }
+
+    private static void addAutoColonWatcher(EditText editText) {
         editText.addTextChangedListener(new TextWatcher() {
             private boolean isFormatting = false;
 
@@ -334,12 +348,7 @@ public class LoopVideoButton {
                 try {
                     String digits = s.toString().replaceAll("[^0-9]", "");
                     if (digits.length() > 6) digits = digits.substring(0, 6);
-                    StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < digits.length(); i++) {
-                        if (i == 2 || i == 4) sb.append(':');
-                        sb.append(digits.charAt(i));
-                    }
-                    String formatted = sb.toString();
+                    String formatted = formatDigitsAsTime(digits);
                     s.replace(0, s.length(), formatted);
                     Selection.setSelection(s, formatted.length());
                 } finally {
@@ -347,11 +356,30 @@ public class LoopVideoButton {
                 }
             }
         });
-        if (!prefilledText.isEmpty()) {
-            editText.setText(prefilledText);
-            editText.setSelection(editText.getText().length());
+    }
+
+    private static String formatDigitsAsTime(String d) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < d.length(); i++) {
+            if (i == 2 || i == 4) sb.append(':');
+            sb.append(d.charAt(i));
         }
-        return editText;
+        return sb.toString();
+    }
+
+    private static LinearLayout buildFieldsLayout(Context context, EditText startField, EditText endField) {
+        LinearLayout container = new LinearLayout(context);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        container.addView(buildLabeledField(context,
+                str("morphe_loop_video_range_label_start"), startField, true));
+        container.addView(buildLabeledField(context,
+                str("morphe_loop_video_range_label_end"), endField, false));
+
+        return container;
     }
 
     private static LinearLayout buildLabeledField(Context context, String label, EditText field, boolean isFirst) {

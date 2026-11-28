@@ -383,228 +383,7 @@ final class LibraryDialog {
             service.series(
                     selected,
                     s -> {
-                        if (alive() && version == request) {
-                            renderSeries: {
-                                startRender(UiText.get("morphe_series_tracker_ui_all_series"));
-                                LinearLayout header = new LinearLayout(activity);
-                                header.setGravity(Gravity.TOP);
-                                TextView title = label(null, s.name(), 20);
-                                title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                                header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-                                header.addView(
-                                        action("morphe_series_tracker_ui_more_options", () -> seriesMenu(s)),
-                                        new LinearLayout.LayoutParams(
-                                                HistoryUi.dp(48), HistoryUi.dp(48)));
-                                content.addView(header);
-                                ResumePlanner.Plan plan = ResumePlanner.plan(s);
-                                label(
-                                        content,
-                                        plan.kind() == ResumePlanner.Kind.CAUGHT_UP
-                                                ? UiText.get(plan.messageKey())
-                                                : s.complete()
-                                                        ? UiText.format("morphe_series_tracker_watched_count",
-                                                                s.watchedCount(),
-                                                                s.playableCount())
-                                                        : UiText.get("morphe_series_tracker_ui_playlist_bookmark"),
-                                        14);
-                                if (plan.playable()) {
-                                    Runnable work = () -> continueSeries(s.id());
-                                    Button button = new Button(activity);
-                                    int ink = HistoryUi.surface();
-                                    button.setText(UiText.get("morphe_series_tracker_continue"));
-                                    button.setTextSize(14);
-                                    button.setTextColor(ink);
-                                    button.setAllCaps(false);
-                                    button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                                    button.setIncludeFontPadding(false);
-                                    button.setGravity(Gravity.CENTER);
-                                    button.setMinWidth(0);
-                                    button.setMinimumWidth(0);
-                                    button.setMinHeight(HistoryUi.dp(48));
-                                    button.setMinimumHeight(HistoryUi.dp(48));
-                                    button.setStateListAnimator(null);
-                                    button.setBackgroundTintList(null);
-                                    Drawable pill = new RippleDrawable(
-                                            ColorStateList.valueOf(HistoryUi.dark() ? 0x22000000 : 0x33ffffff),
-                                            HistoryUi.rounded(HistoryUi.foreground(), 24),
-                                            HistoryUi.rounded(Color.WHITE, 24));
-                                    // A 36 dp visible pill keeps the full 48 dp touch target.
-                                    button.setBackground(new InsetDrawable(pill, 0, HistoryUi.dp(6),
-                                            0, HistoryUi.dp(6)));
-                                    button.setPadding(
-                                            HistoryUi.dp(12),
-                                            HistoryUi.dp(8),
-                                            HistoryUi.dp(16),
-                                            HistoryUi.dp(8));
-                                    button.setCompoundDrawablesRelative(
-                                            new UiIcon(UiIcon.PLAY, ink, HistoryUi.dp(20)), null, null, null);
-                                    button.setCompoundDrawablePadding(HistoryUi.dp(6));
-                                    button.setOnClickListener(v -> work.run());
-                                    content.addView(
-                                            button,
-                                            new LinearLayout.LayoutParams(-2, -2));
-                                } else if (plan.kind() == ResumePlanner.Kind.CHOOSE) {
-                                    recovery(s);
-                                } else if (plan.kind() != ResumePlanner.Kind.CAUGHT_UP) label(content, plan.messageKey(), 14);
-                                pausedNotice();
-                                if (!s.bookmarkId().isEmpty() && (!s.complete() || plan.kind() == ResumePlanner.Kind.CHOOSE))
-                                    button(
-                                            content,
-                                            "morphe_series_tracker_ui_open_saved_video",
-                                            () -> play(s, s.bookmarkId(), -1, s.progress(s.bookmarkId()).positionMs(), false));
-                                if (s.status().equals("loading"))
-                                    label(content, UiText.get("morphe_series_tracker_ui_refreshing_episodes"), 12);
-                                if (!s.error().isEmpty()) label(content, s.error(), 12);
-                                if (!s.complete()) {
-                                    label(content, "morphe_series_tracker_catalog_unavailable", 14);
-                                    break renderSeries;
-                                }
-                                Switch hide = optionSwitch("morphe_series_tracker_hide_watched", s.hideWatched());
-                                Switch advance = optionSwitch("morphe_series_tracker_watched_on_advance", s.watchedOnAdvance());
-                                hide.setOnCheckedChangeListener(
-                                        (button, checked) -> {
-                                            episodeReveal.cancel();
-                                            hide.setEnabled(false);
-                                            advance.setEnabled(false);
-                                            service.seriesOptions(
-                                                    s,
-                                                    s.reverseOrder(),
-                                                    checked,
-                                                    s.watchedOnAdvance(),
-                                                    () -> {
-                                                        page = 0;
-                                                        scroll.scrollTo(0, 0);
-                                                        reload();
-                                                    },
-                                                    this::optionFailed);
-                                        });
-                                content.addView(hide, new LinearLayout.LayoutParams(-1, -2));
-                                advance.setOnCheckedChangeListener(
-                                        (button, checked) -> {
-                                            hide.setEnabled(false);
-                                            advance.setEnabled(false);
-                                            service.seriesOptions(
-                                                    s,
-                                                    s.reverseOrder(),
-                                                    s.hideWatched(),
-                                                    checked,
-                                                    this::reload,
-                                                    this::optionFailed);
-                                        });
-                                content.addView(advance, new LinearLayout.LayoutParams(-1, -2));
-                                List<Episode> available = s.visibleEpisodes();
-                                int currentIndex = episodeReveal.targetIndex(plan, available);
-                                if (available.isEmpty()) {
-                                    if (s.playableCount() == 0) label(content, "morphe_series_tracker_no_available_episodes", 14);
-                                    break renderSeries;
-                                }
-                                if (currentIndex >= 0) page = currentIndex / 100;
-                                page = Math.min(page, (available.size() - 1) / 100);
-                                int from = page * 100, to = Math.min(available.size(), from + 100);
-                                if (available.size() > 100)
-                                    label(
-                                            content,
-                                            UiText.format("morphe_series_tracker_episode_range",
-                                                    from + 1,
-                                                    to,
-                                                    available.size()),
-                                            14);
-                                if (page > 0)
-                                    button(
-                                            content,
-                                            "morphe_series_tracker_ui_previous_100",
-                                            () -> {
-                                                episodeReveal.cancel();
-                                                page--;
-                                                scroll.scrollTo(0, 0);
-                                                reload();
-                                            });
-                                for (int i = from; i < to; i++) {
-                                    Episode e = available.get(i);
-                                    Progress p = s.progress(e.videoId);
-                                    LinearLayout row =
-                                            mediaRow(
-                                                    e.videoId,
-                                                    UiText.episodeTitle(e),
-                                                    EpisodeInfo.format(activity, e.videoInfo, s.fetchedAt()),
-                                                    "",
-                                                    () ->
-                                                            play(
-                                                                    s,
-                                                                    e.videoId,
-                                                                    e.ordinal,
-                                                                    p.watched() ? 0 : p.positionMs(),
-                                                                    p.watched()),
-                                                    () -> {
-                                                        List<String> labels = new ArrayList<>();
-                                                        List<Runnable> actions = new ArrayList<>();
-                                                        Progress episodeProgress = s.progress(e.videoId);
-                                                        if (e.available) {
-                                                            labels.add(episodeProgress.watched()
-                                                                    ? "morphe_series_tracker_ui_play_again_from_0_00"
-                                                                    : UiText.format("morphe_series_tracker_resume_at",
-                                                                    MediaTime.format(episodeProgress.positionMs())));
-                                                            actions.add(() -> play(
-                                                                    s,
-                                                                    e.videoId,
-                                                                    e.ordinal,
-                                                                    episodeProgress.watched() ? 0 : episodeProgress.positionMs(),
-                                                                    episodeProgress.watched()));
-                                                            if (!episodeProgress.watched() && episodeProgress.positionMs() > 0) {
-                                                                labels.add("morphe_series_tracker_ui_restart_from_0_00");
-                                                                actions.add(() -> play(s, e.videoId, e.ordinal, 0, true));
-                                                            }
-                                                        }
-                                                        if (e.available) {
-                                                            labels.add("morphe_series_tracker_start_here");
-                                                            actions.add(() -> {
-                                                                TrackerRuntime.flush();
-                                                                service.startHere(s, e, this::reload, this::error);
-                                                            });
-                                                        }
-                                                        labels.add(episodeProgress.watched()
-                                                                ? "morphe_series_tracker_ui_mark_unwatched"
-                                                                : "morphe_series_tracker_ui_mark_watched");
-                                                        actions.add(() -> mark(e, episodeProgress.watched()
-                                                                ? TrackerModels.Override.UNWATCHED
-                                                                : TrackerModels.Override.WATCHED));
-                                                        if (episodeProgress.override() != TrackerModels.Override.AUTO) {
-                                                            labels.add("morphe_series_tracker_ui_use_automatic_status");
-                                                            actions.add(() -> mark(e, TrackerModels.Override.AUTO));
-                                                        }
-                                                        labels.add("morphe_series_tracker_watched_to_here");
-                                                        actions.add(() -> {
-                                                            TrackerRuntime.flush();
-                                                            service.through(s, e.ordinal, this::reload, this::error);
-                                                        });
-                                                        choice(s.episodeNumber(e.ordinal) + ". " + UiText.episodeTitle(e), labels, actions);
-                                                    },
-                                                    p.watched() ? e.durationMs : p.positionMs(),
-                                                    e.durationMs,
-                                                    false);
-                                    if (p.watched()) {
-                                        FrameLayout thumbnail = (FrameLayout) row.getChildAt(0);
-                                        thumbnailBadge(thumbnail, UiIcon.CHECK);
-                                        thumbnail.setContentDescription(
-                                                UiText.episodeTitle(e)
-                                                        + ", "
-                                                        + UiText.get("morphe_series_tracker_watched"));
-                                    }
-                                    content.addView(row);
-                                    if (i == currentIndex) episodeReveal.revealAfterLayout(scroll, row, renderGeneration);
-                                }
-                                if (to < available.size())
-                                    button(
-                                            content,
-                                            "morphe_series_tracker_ui_next_100",
-                                            () -> {
-                                                episodeReveal.cancel();
-                                                page++;
-                                                scroll.scrollTo(0, 0);
-                                                reload();
-                                            });
-                            }
-                        }
+                        if (alive() && version == request) renderSeries(s);
                     },
                     message -> {
                         if (!alive() || version != request) return;
@@ -720,24 +499,8 @@ final class LibraryDialog {
                     plan.positionMs(),
                     cover == null ? 0 : cover.durationMs,
                     true);
-            if (plan.playable()) {
-                FrameLayout playableThumbnail = (FrameLayout) row.getChildAt(0);
-                thumbnailBadge(playableThumbnail, UiIcon.PLAY);
-                playableThumbnail.setForeground(HistoryUi.ripple(false));
-                playableThumbnail.setFocusable(true);
-                playableThumbnail.setContentDescription(UiText.format(
-                        "morphe_series_tracker_continue_series", s.name()));
-                playableThumbnail.setAccessibilityDelegate(
-                        new View.AccessibilityDelegate() {
-                            @Override
-                            public void onInitializeAccessibilityNodeInfo(
-                                    @NonNull View host, @NonNull AccessibilityNodeInfo info) {
-                                super.onInitializeAccessibilityNodeInfo(host, info);
-                                info.setClassName(Button.class.getName());
-                            }
-                        });
-                playableThumbnail.setOnClickListener(v -> continueSeries(s.id()));
-            } else if (plan.kind() == ResumePlanner.Kind.CAUGHT_UP) {
+            if (plan.playable()) resumeThumbnail((FrameLayout) row.getChildAt(0), s);
+            else if (plan.kind() == ResumePlanner.Kind.CAUGHT_UP) {
                 FrameLayout thumbnail = (FrameLayout) row.getChildAt(0);
                 thumbnailBadge(thumbnail, UiIcon.CHECK);
                 thumbnail.setContentDescription(
@@ -770,6 +533,170 @@ final class LibraryDialog {
                         HistoryUi.dp(36),
                         HistoryUi.dp(36),
                         Gravity.CENTER));
+    }
+
+    private void resumeThumbnail(FrameLayout thumbnail, Series series) {
+        thumbnailBadge(thumbnail, UiIcon.PLAY);
+        thumbnail.setForeground(HistoryUi.ripple(false));
+        thumbnail.setFocusable(true);
+        thumbnail.setContentDescription(UiText.format(
+                "morphe_series_tracker_continue_series", series.name()));
+        thumbnail.setAccessibilityDelegate(
+                new View.AccessibilityDelegate() {
+                    @Override
+                    public void onInitializeAccessibilityNodeInfo(
+                            @NonNull View host, @NonNull AccessibilityNodeInfo info) {
+                        super.onInitializeAccessibilityNodeInfo(host, info);
+                        info.setClassName(Button.class.getName());
+                    }
+                });
+        thumbnail.setOnClickListener(v -> continueSeries(series.id()));
+    }
+
+    private void renderSeries(Series s) {
+        startRender(UiText.get("morphe_series_tracker_ui_all_series"));
+        LinearLayout header = new LinearLayout(activity);
+        header.setGravity(Gravity.TOP);
+        TextView title = label(null, s.name(), 20);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        header.addView(
+                action("morphe_series_tracker_ui_more_options", () -> seriesMenu(s)),
+                new LinearLayout.LayoutParams(
+                        HistoryUi.dp(48), HistoryUi.dp(48)));
+        content.addView(header);
+        ResumePlanner.Plan plan = ResumePlanner.plan(s);
+        label(
+                content,
+                plan.kind() == ResumePlanner.Kind.CAUGHT_UP
+                        ? UiText.get(plan.messageKey())
+                        : s.complete()
+                                ? UiText.format("morphe_series_tracker_watched_count",
+                                        s.watchedCount(),
+                                        s.playableCount())
+                                : UiText.get("morphe_series_tracker_ui_playlist_bookmark"),
+                14);
+        if (plan.playable()) {
+            content.addView(
+                    continueButton(() -> continueSeries(s.id())),
+                    new LinearLayout.LayoutParams(-2, -2));
+        } else if (plan.kind() == ResumePlanner.Kind.CHOOSE) {
+            recovery(s);
+        } else if (plan.kind() != ResumePlanner.Kind.CAUGHT_UP) label(content, plan.messageKey(), 14);
+        pausedNotice();
+        if (!s.bookmarkId().isEmpty() && (!s.complete() || plan.kind() == ResumePlanner.Kind.CHOOSE))
+            button(
+                    content,
+                    "morphe_series_tracker_ui_open_saved_video",
+                    () -> play(s, s.bookmarkId(), -1, s.progress(s.bookmarkId()).positionMs(), false));
+        if (s.status().equals("loading"))
+            label(content, UiText.get("morphe_series_tracker_ui_refreshing_episodes"), 12);
+        if (!s.error().isEmpty()) label(content, s.error(), 12);
+        if (!s.complete()) {
+            label(content, "morphe_series_tracker_catalog_unavailable", 14);
+            return;
+        }
+        Switch hide = optionSwitch("morphe_series_tracker_hide_watched", s.hideWatched());
+        Switch advance = optionSwitch("morphe_series_tracker_watched_on_advance", s.watchedOnAdvance());
+        hide.setOnCheckedChangeListener(
+                (button, checked) -> {
+                    episodeReveal.cancel();
+                    hide.setEnabled(false);
+                    advance.setEnabled(false);
+                    service.seriesOptions(
+                            s,
+                            s.reverseOrder(),
+                            checked,
+                            s.watchedOnAdvance(),
+                            () -> {
+                                page = 0;
+                                scroll.scrollTo(0, 0);
+                                reload();
+                            },
+                            this::optionFailed);
+                });
+        content.addView(hide, new LinearLayout.LayoutParams(-1, -2));
+        advance.setOnCheckedChangeListener(
+                (button, checked) -> {
+                    hide.setEnabled(false);
+                    advance.setEnabled(false);
+                    service.seriesOptions(
+                            s,
+                            s.reverseOrder(),
+                            s.hideWatched(),
+                            checked,
+                            this::reload,
+                            this::optionFailed);
+                });
+        content.addView(advance, new LinearLayout.LayoutParams(-1, -2));
+        List<Episode> available = s.visibleEpisodes();
+        int currentIndex = episodeReveal.targetIndex(plan, available);
+        if (available.isEmpty()) {
+            if (s.playableCount() == 0) label(content, "morphe_series_tracker_no_available_episodes", 14);
+            return;
+        }
+        if (currentIndex >= 0) page = currentIndex / 100;
+        page = Math.min(page, (available.size() - 1) / 100);
+        int from = page * 100, to = Math.min(available.size(), from + 100);
+        if (available.size() > 100)
+            label(
+                    content,
+                    UiText.format("morphe_series_tracker_episode_range",
+                            from + 1,
+                            to,
+                            available.size()),
+                    14);
+        if (page > 0)
+            button(
+                    content,
+                    "morphe_series_tracker_ui_previous_100",
+                    () -> {
+                        episodeReveal.cancel();
+                        page--;
+                        scroll.scrollTo(0, 0);
+                        reload();
+                    });
+        for (int i = from; i < to; i++) {
+            Episode e = available.get(i);
+            Progress p = s.progress(e.videoId);
+            LinearLayout row =
+                    mediaRow(
+                            e.videoId,
+                            UiText.episodeTitle(e),
+                            EpisodeInfo.format(activity, e.videoInfo, s.fetchedAt()),
+                            "",
+                            () ->
+                                    play(
+                                            s,
+                                            e.videoId,
+                                            e.ordinal,
+                                            p.watched() ? 0 : p.positionMs(),
+                                            p.watched()),
+                            () -> episodeMenu(s, e),
+                            p.watched() ? e.durationMs : p.positionMs(),
+                            e.durationMs,
+                            false);
+            if (p.watched()) {
+                FrameLayout thumbnail = (FrameLayout) row.getChildAt(0);
+                thumbnailBadge(thumbnail, UiIcon.CHECK);
+                thumbnail.setContentDescription(
+                        UiText.episodeTitle(e)
+                                + ", "
+                                + UiText.get("morphe_series_tracker_watched"));
+            }
+            content.addView(row);
+            if (i == currentIndex) episodeReveal.revealAfterLayout(scroll, row, renderGeneration);
+        }
+        if (to < available.size())
+            button(
+                    content,
+                    "morphe_series_tracker_ui_next_100",
+                    () -> {
+                        episodeReveal.cancel();
+                        page++;
+                        scroll.scrollTo(0, 0);
+                        reload();
+                    });
     }
 
     private Switch optionSwitch(String key, boolean checked) {
@@ -814,6 +741,51 @@ final class LibraryDialog {
         label(content, "morphe_series_tracker_recovery_choose", 14);
     }
 
+    private void episodeMenu(Series s, Episode e) {
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        Progress p = s.progress(e.videoId);
+        if (e.available) {
+            labels.add(p.watched()
+                    ? "morphe_series_tracker_ui_play_again_from_0_00"
+                    : UiText.format("morphe_series_tracker_resume_at",
+                    MediaTime.format(p.positionMs())));
+            actions.add(() -> play(
+                    s,
+                    e.videoId,
+                    e.ordinal,
+                    p.watched() ? 0 : p.positionMs(),
+                    p.watched()));
+            if (!p.watched() && p.positionMs() > 0) {
+                labels.add("morphe_series_tracker_ui_restart_from_0_00");
+                actions.add(() -> play(s, e.videoId, e.ordinal, 0, true));
+            }
+        }
+        if (e.available) {
+            labels.add("morphe_series_tracker_start_here");
+            actions.add(() -> {
+                TrackerRuntime.flush();
+                service.startHere(s, e, this::reload, this::error);
+            });
+        }
+        labels.add(p.watched()
+                ? "morphe_series_tracker_ui_mark_unwatched"
+                : "morphe_series_tracker_ui_mark_watched");
+        actions.add(() -> mark(e, p.watched()
+                ? TrackerModels.Override.UNWATCHED
+                : TrackerModels.Override.WATCHED));
+        if (p.override() != TrackerModels.Override.AUTO) {
+            labels.add("morphe_series_tracker_ui_use_automatic_status");
+            actions.add(() -> mark(e, TrackerModels.Override.AUTO));
+        }
+        labels.add("morphe_series_tracker_watched_to_here");
+        actions.add(() -> {
+            TrackerRuntime.flush();
+            service.through(s, e.ordinal, this::reload, this::error);
+        });
+        choice(s.episodeNumber(e.ordinal) + ". " + UiText.episodeTitle(e), labels, actions);
+    }
+
     private void mark(Episode e, TrackerModels.Override value) {
         TrackerRuntime.flush();
         service.mark(e.videoId, value, this::reload, this::error);
@@ -832,24 +804,26 @@ final class LibraryDialog {
         int token = continuation.begin();
         TrackerRuntime.flush();
         // The deadline bounds the user's wait even when a background check is already running.
-        Runnable finish = () -> {
-            if (!alive() || !resumed || !continuation.claim(token)) return;
-            service.series(id,
-                    fresh -> {
-                        if (!alive() || !resumed || continuation.stale(token)) return;
-                        ResumePlanner.Plan plan = ResumePlanner.plan(fresh);
-                        if (plan.playable())
-                            play(fresh, plan.videoId(), plan.ordinal(), plan.positionMs(), false);
-                        else if (plan.kind() == ResumePlanner.Kind.CHOOSE) openSeries(id);
-                        else {
-                            reload();
-                            toast(plan.messageKey());
-                        }
-                    },
-                    this::error);
-        };
+        Runnable finish = () -> finishContinue(id, token);
         root.postDelayed(finish, 2500);
         service.syncYouTube(id, finish);
+    }
+
+    private void finishContinue(String id, int token) {
+        if (!alive() || !resumed || !continuation.claim(token)) return;
+        service.series(id,
+                fresh -> {
+                    if (!alive() || !resumed || continuation.stale(token)) return;
+                    ResumePlanner.Plan plan = ResumePlanner.plan(fresh);
+                    if (plan.playable())
+                        play(fresh, plan.videoId(), plan.ordinal(), plan.positionMs(), false);
+                    else if (plan.kind() == ResumePlanner.Kind.CHOOSE) openSeries(id);
+                    else {
+                        reload();
+                        toast(plan.messageKey());
+                    }
+                },
+                this::error);
     }
 
     private void play(Series s, String id, int ordinal, long position, boolean restart) {
@@ -872,7 +846,7 @@ final class LibraryDialog {
                     }
                     try {
                         SeriesPlayback.activate(s, id, ordinal);
-                        ResumeLauncher.launch(activity, new LaunchRequest(id, s.id(), position));
+                        ResumeLauncher.launch(new LaunchRequest(id, s.id(), position));
                     } catch (RuntimeException failure) {
                         Logger.printException(() -> "Could not open episode", failure);
                         SeriesPlayback.clear();
@@ -910,43 +884,11 @@ final class LibraryDialog {
                 Arrays.asList(
                         "morphe_series_tracker_episode_order",
                         "morphe_series_tracker_ui_refresh_episodes",
-                        "morphe_series_tracker_ui_rename",
+                        "morphe_rename",
                         "morphe_series_tracker_ui_open_playlist_in_youtube",
                         "morphe_series_tracker_ui_remove_from_library"),
                 Arrays.asList(
-                        () -> {
-                            NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_episode_order");
-                            RadioGroup options = new RadioGroup(activity);
-                            String[] labels = {"morphe_series_tracker_playlist_order", "morphe_series_tracker_reverse_order"};
-                            for (int i = 0, length = labels.length; i < length; i++) {
-                                final boolean reverse = i == 1;
-                                RadioButton option = new RadioButton(activity);
-                                option.setText(UiText.get(labels[i]));
-                                option.setTextColor(HistoryUi.foreground());
-                                option.setTextSize(16);
-                                option.setMinHeight(HistoryUi.dp(48));
-                                option.setChecked(s.reverseOrder() == reverse);
-                                option.setOnClickListener(v -> service.seriesOptions(
-                                        s,
-                                        reverse,
-                                        s.hideWatched(),
-                                        s.watchedOnAdvance(),
-                                        () -> {
-                                            sheet.dialog.dismiss();
-                                            episodeReveal.cancel();
-                                            page = 0;
-                                            scroll.scrollTo(0, 0);
-                                            reload();
-                                        },
-                                        this::error));
-                                options.addView(option, new RadioGroup.LayoutParams(-1, -2));
-                            }
-                            sheet.body.addView(options);
-                            sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
-                            children.add(sheet.dialog);
-                            sheet.onDismiss(() -> children.remove(sheet.dialog));
-                            sheet.show();
-                        },
+                        () -> orderMenu(s),
                         () -> service.refresh(s.id(), this::error),
                         () -> rename(s),
                         () -> openPlaylist(s),
@@ -961,11 +903,45 @@ final class LibraryDialog {
                                 this::error)));
     }
 
+    private void orderMenu(Series s) {
+        NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_episode_order");
+        RadioGroup options = new RadioGroup(activity);
+        String[] labels = {"morphe_series_tracker_playlist_order", "morphe_series_tracker_reverse_order"};
+        for (int i = 0, length = labels.length; i < length; i++) {
+            final boolean reverse = i == 1;
+            RadioButton option = new RadioButton(activity);
+            option.setText(UiText.get(labels[i]));
+            option.setTextColor(HistoryUi.foreground());
+            option.setTextSize(16);
+            option.setMinHeight(HistoryUi.dp(48));
+            option.setChecked(s.reverseOrder() == reverse);
+            option.setOnClickListener(v -> service.seriesOptions(
+                    s,
+                    reverse,
+                    s.hideWatched(),
+                    s.watchedOnAdvance(),
+                    () -> {
+                        sheet.dialog.dismiss();
+                        episodeReveal.cancel();
+                        page = 0;
+                        scroll.scrollTo(0, 0);
+                        reload();
+                    },
+                    this::error));
+            options.addView(option, new RadioGroup.LayoutParams(-1, -2));
+        }
+        sheet.body.addView(options);
+        sheet.action("morphe_cancel", sheet.dialog::dismiss, false);
+        children.add(sheet.dialog);
+        sheet.onDismiss(() -> children.remove(sheet.dialog));
+        sheet.show();
+    }
+
     private void rename(Series s) {
         NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_ui_series_name");
         EditText name = nameField(sheet.body, s.name());
-        sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
-        sheet.action("morphe_series_tracker_ui_save",
+        sheet.action("morphe_cancel", sheet.dialog::dismiss, false);
+        sheet.action("morphe_settings_save",
                 () -> service.rename(
                         s.id(),
                         name.getText().toString(),
@@ -980,24 +956,10 @@ final class LibraryDialog {
     private void menu() {
         choice("morphe_series_tracker_ui_library_options",
                 List.of("morphe_series_tracker_ui_clear_all_local_progress"),
-                List.of(() -> {
-                    Runnable work = () -> service.clearHistory(
+                List.of(() -> confirmClearProgress(
+                        () -> service.clearHistory(
                                 () -> toast("morphe_series_tracker_ui_local_progress_cleared"),
-                                this::error);
-                    if (!alive()) return;
-                    NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_clear_progress_title");
-                    sheet.message("morphe_series_tracker_clear_progress_message");
-                    sheet.action("morphe_series_tracker_ui_cancel", sheet.dialog::dismiss, false);
-                    sheet.action("morphe_series_tracker_ui_clear_history",
-                            () -> {
-                                sheet.dialog.dismiss();
-                                work.run();
-                            },
-                            true);
-                    children.add(sheet.dialog);
-                    sheet.onDismiss(() -> children.remove(sheet.dialog));
-                    sheet.show();
-                }));
+                                this::error))));
     }
 
     private void choice(String title, List<String> labels, List<Runnable> actions) {
@@ -1014,6 +976,22 @@ final class LibraryDialog {
             item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             sheet.body.addView(item, new LinearLayout.LayoutParams(-1, -2));
         }
+        children.add(sheet.dialog);
+        sheet.onDismiss(() -> children.remove(sheet.dialog));
+        sheet.show();
+    }
+
+    private void confirmClearProgress(Runnable work) {
+        if (!alive()) return;
+        NativeSheet sheet = new NativeSheet(activity, "morphe_series_tracker_clear_progress_title");
+        sheet.message("morphe_series_tracker_clear_progress_message");
+        sheet.action("morphe_cancel", sheet.dialog::dismiss, false);
+        sheet.action("morphe_series_tracker_ui_clear_history",
+                () -> {
+                    sheet.dialog.dismiss();
+                    work.run();
+                },
+                true);
         children.add(sheet.dialog);
         sheet.onDismiss(() -> children.remove(sheet.dialog));
         sheet.show();
@@ -1068,6 +1046,41 @@ final class LibraryDialog {
         lp.topMargin = HistoryUi.dp(8);
         lp.bottomMargin = HistoryUi.dp(8);
         parent.addView(b, lp);
+    }
+
+    private Button continueButton(Runnable work) {
+        Button button = new Button(activity);
+        int ink = HistoryUi.surface();
+        button.setText(UiText.get("morphe_settings_continue"));
+        button.setTextSize(14);
+        button.setTextColor(ink);
+        button.setAllCaps(false);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        button.setIncludeFontPadding(false);
+        button.setGravity(Gravity.CENTER);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(HistoryUi.dp(48));
+        button.setMinimumHeight(HistoryUi.dp(48));
+        button.setStateListAnimator(null);
+        button.setBackgroundTintList(null);
+        Drawable pill = new RippleDrawable(
+                ColorStateList.valueOf(HistoryUi.dark() ? 0x22000000 : 0x33ffffff),
+                HistoryUi.rounded(HistoryUi.foreground(), 24),
+                HistoryUi.rounded(Color.WHITE, 24));
+        // A 36 dp visible pill keeps the full 48 dp touch target.
+        button.setBackground(new InsetDrawable(pill, 0, HistoryUi.dp(6),
+                0, HistoryUi.dp(6)));
+        button.setPadding(
+                HistoryUi.dp(12),
+                HistoryUi.dp(8),
+                HistoryUi.dp(16),
+                HistoryUi.dp(8));
+        button.setCompoundDrawablesRelative(
+                new UiIcon(UiIcon.PLAY, ink, HistoryUi.dp(20)), null, null, null);
+        button.setCompoundDrawablePadding(HistoryUi.dp(6));
+        button.setOnClickListener(v -> work.run());
+        return button;
     }
 
     private TextView action(String title, Runnable work) {

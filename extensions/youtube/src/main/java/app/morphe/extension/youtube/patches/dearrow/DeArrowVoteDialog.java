@@ -36,6 +36,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import java.io.IOException;
@@ -234,7 +235,7 @@ final class DeArrowVoteDialog {
 
         LinearLayout listLayout = new LinearLayout(context);
         listLayout.setOrientation(LinearLayout.VERTICAL);
-        listLayout.addView(createMessage(context, str("morphe_dearrow_vote_loading"), foregroundColor));
+        listLayout.addView(createMessage(context, str("morphe_loading"), foregroundColor));
 
         ScrollView scrollView = SheetBottomDialog.createCappedScrollView(context);
         scrollView.addView(listLayout);
@@ -472,10 +473,10 @@ final class DeArrowVoteDialog {
             textLayout.addView(detailsView);
         }
 
-        row.addView(createVoteButton(context, UPVOTE_ICON, str("morphe_dearrow_vote_upvote"), foregroundColor,
+        row.addView(createVoteButton(context, UPVOTE_ICON, str("morphe_vote_upvote"), foregroundColor,
                 () -> voteAction.vote(false)));
         if (canDownvote) {
-            row.addView(createVoteButton(context, DOWNVOTE_ICON, str("morphe_dearrow_vote_downvote"), foregroundColor,
+            row.addView(createVoteButton(context, DOWNVOTE_ICON, str("morphe_vote_downvote"), foregroundColor,
                     () -> voteAction.vote(true)));
         }
         return row;
@@ -593,7 +594,7 @@ final class DeArrowVoteDialog {
                     str("morphe_dearrow_vote_new_title"),
                     null,
                     editText,
-                    str("morphe_dearrow_vote_submit"),
+                    str("morphe_submit"),
                     () -> {
                         String title = editText.getText().toString().trim();
                         if (title.isEmpty()) {
@@ -644,19 +645,8 @@ final class DeArrowVoteDialog {
                             str("morphe_dearrow_vote_new_thumbnail"),
                             null,
                             null,
-                            str("morphe_dearrow_vote_submit"),
-                            () -> {
-                                long chosenVideoTime = chosen.videoTime;
-                                Bitmap chosenImage = chosen.image;
-                                final double timestamp = chosenVideoTime / 1000.0;
-                                vote(context, sheet, videoId, false, () -> {
-                                    String error = DeArrowVoteRequest.voteThumbnail(videoId, false, timestamp, false, videoLength);
-                                    if (error == null && chosenImage != null) {
-                                        localFrames.put(new LocalFrame(videoId, timestamp), chosenImage);
-                                    }
-                                    return error;
-                                });
-                            },
+                            str("morphe_submit"),
+                            () -> submitFrame(context, sheet, videoId, videoLength, chosen.videoTime, chosen.image),
                             () -> {},
                             null,
                             null,
@@ -675,17 +665,7 @@ final class DeArrowVoteDialog {
                             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                     imageParams.setMargins(0, Dim.dp16, 0, 0);
 
-                    Runnable updateViews = () -> {
-                        String message = str("morphe_dearrow_vote_current_frame_content",
-                                formatTime(chosen.videoTime / 1000.0));
-                        if (VideoState.getCurrent() == VideoState.PLAYING) {
-                            message += "\n\n" + str("morphe_dearrow_vote_current_frame_playing");
-                        }
-                        messageView.setText(message);
-                        imageView.setImageBitmap(chosen.image);
-                        imageView.setVisibility(chosen.image == null ? View.GONE : View.VISIBLE);
-                    };
-                    updateViews.run();
+                    Runnable updateViews = getUpdateViews(chosen, messageView, imageView);
 
                     final long fineStep = Settings.DEARROW_VOTE_TIME_STEP.get();
                     final long[] steps = {-FRAME_STEP_LARGE_MILLISECONDS, -fineStep,
@@ -760,12 +740,40 @@ final class DeArrowVoteDialog {
         }
     }
 
+    @NonNull
+    private static Runnable getUpdateViews(ChosenFrame chosen, TextView messageView, ImageView imageView) {
+        Runnable updateViews = () -> {
+            String message = str("morphe_dearrow_vote_current_frame_content",
+                    formatTime(chosen.videoTime / 1000.0));
+            if (VideoState.getCurrent() == VideoState.PLAYING) {
+                message += "\n\n" + str("morphe_dearrow_vote_current_frame_playing");
+            }
+            messageView.setText(message);
+            imageView.setImageBitmap(chosen.image);
+            imageView.setVisibility(chosen.image == null ? View.GONE : View.VISIBLE);
+        };
+        updateViews.run();
+        return updateViews;
+    }
+
     /**
      * Copies the frame shown in the player. The thumbnail cache is not used, since it only has
      * images of submitted frames, and asking it for another frame makes and keeps an image of it.
      *
      * @param onCaptured Called on the main thread with the frame, or with null if it could not be copied.
      */
+    private static void submitFrame(Context context, SheetBottomDialog.SlideDialog sheet, String videoId,
+                                    long videoLength, long videoTime, @Nullable Bitmap image) {
+        final double timestamp = videoTime / 1000.0;
+        vote(context, sheet, videoId, false, () -> {
+            String error = DeArrowVoteRequest.voteThumbnail(videoId, false, timestamp, false, videoLength);
+            if (error == null && image != null) {
+                localFrames.put(new LocalFrame(videoId, timestamp), image);
+            }
+            return error;
+        });
+    }
+
     private static void captureCurrentFrame(View playerButton, Consumer<Bitmap> onCaptured) {
         // or null if none is found.
         View video;
@@ -904,7 +912,7 @@ final class DeArrowVoteDialog {
             this.videoLength = videoLength;
         }
 
-        void setDisabledWhileCopying(View view) {
+        void setDisabledWhileCopying(@Nullable View view) {
             disabledWhileCopying = view;
         }
 

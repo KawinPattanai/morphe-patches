@@ -19,7 +19,6 @@ import android.content.res.ColorStateList;
 import android.graphics.Paint;
 import android.graphics.RenderEffect;
 import android.graphics.Shader;
-import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -77,14 +76,14 @@ final class LyricsViewSupport {
     private LyricsViewSupport() {
     }
 
-    /** Bolds a paint for lyrics; a typeface set on it afterward undoes the weight. */
+    /** Bolds a paint for lyrics (using the active custom lyrics font when set). */
     static void applyLyricsBoldPaint(Paint paint) {
-        paint.setTypeface(Typeface.DEFAULT_BOLD);
+        paint.setTypeface(LyricsFontManager.mainTypeface());
         paint.setFlags(paint.getFlags()
                 | Paint.ANTI_ALIAS_FLAG
                 | Paint.SUBPIXEL_TEXT_FLAG
                 | Paint.LINEAR_TEXT_FLAG);
-        paint.setFontVariationSettings(null);
+        paint.setFontVariationSettings(LyricsFontManager.mainFontVariation());
         paint.setFakeBoldText(false);
     }
 
@@ -141,7 +140,7 @@ final class LyricsViewSupport {
         for (WordTiming span : readingSpans) {
             combined.add(new WordTiming(
                     span.start() + shift, span.end() + shift, span.startMs(), span.endMs(),
-                    null, span.hasTrailingSpace(), null, span.averaged()));
+                    null, span.hasTrailingSpace(), null, span.averaged(), span.wordGroup()));
         }
         return combined;
     }
@@ -252,9 +251,54 @@ final class LyricsViewSupport {
     static void applyFooterStyle(TextView footer) {
         footer.setTextSize(TypedValue.COMPLEX_UNIT_SP, FOOTER_TEXT_SIZE_SP);
         footer.setTextColor(LyricsColors.secondaryTextColor());
+        footer.setTypeface(LyricsFontManager.regularOrMainTypeface());
         // The secondary color alone is brighter than the app draws this line, which
         // sits dimmer than even the inactive lyrics above it.
         footer.setAlpha(FOOTER_ALPHA);
+    }
+
+    /**
+     * Bottom padding below the footer text so the last lines and credits stay clear of the pinned
+     * bottom controls without letting manual or automatic scroll push all text off-screen.
+     */
+    static int computeFooterBottomPaddingPx(
+            int viewportHeightPx,
+            int footerTopPaddingPx,
+            int footerContentHeightPx,
+            int containerBottomPaddingPx,
+            int anchorPx,
+            int minToolbarClearancePx,
+            int preferredToolbarClearancePx) {
+        final int safeMin = Math.max(0, minToolbarClearancePx);
+        final int safePreferred = Math.max(safeMin, preferredToolbarClearancePx);
+        if (viewportHeightPx <= 0) {
+            return safePreferred;
+        }
+        final int proportional = Math.round(viewportHeightPx * 0.25f);
+        final int toolbarRoom = Math.max(safeMin, Math.min(safePreferred, proportional));
+        final int maxAnchorRoom = Math.max(0,
+                viewportHeightPx - Math.max(0, anchorPx)
+                        - Math.max(0, footerTopPaddingPx)
+                        - Math.max(0, footerContentHeightPx)
+                        - Math.max(0, containerBottomPaddingPx));
+        return Math.min(toolbarRoom, Math.max(safeMin, maxAnchorRoom));
+    }
+
+    /**
+     * Clamps a desired scroll offset against the scrollable range, including any pending gap or
+     * secondary-vocal height changes that have not been committed by layout yet.
+     */
+    static int clampScrollTargetY(
+            int rawTargetY,
+            int viewportHeightPx,
+            int linesHeightPx,
+            int pendingDeltaPx) {
+        if (viewportHeightPx <= 0 || linesHeightPx <= 0) {
+            return Math.max(0, rawTargetY);
+        }
+        final int projectedLinesHeight = Math.max(0, linesHeightPx + pendingDeltaPx);
+        final int maxScroll = Math.max(0, projectedLinesHeight - viewportHeightPx);
+        return Math.max(0, Math.min(maxScroll, rawTargetY));
     }
 
     static int lineTextSizeSp(boolean isBackground, int textSize) {
@@ -376,7 +420,7 @@ final class LyricsViewSupport {
     static CharSequence sourceText(String providerName, boolean translated,
                                    boolean translatedFromGoogle, boolean translatedFromAI, @Nullable String translatedAiModel,
                                    boolean romanized, boolean romanizedFromGoogle, boolean romanizedFromAI, boolean romanizedFromEmbedded,
-                                   @Nullable String romanizedAiModel, LyricsPanelView.OnlyMode onlyMode,
+                                   @Nullable String romanizedAiModel, OnlyModeState.Mode onlyMode,
                                    @Nullable String romanizedLocalDictionary,
                                    @Nullable Runnable onTranslationLanguage,
                                    @Nullable Runnable onRomanizationLanguage,
@@ -384,7 +428,7 @@ final class LyricsViewSupport {
         SpannableStringBuilder text = new SpannableStringBuilder();
         appendSourceLine(text, String.format(str(LYRICS_SOURCE_KEY), providerName), onSourceClicked);
 
-        if (onlyMode != LyricsPanelView.OnlyMode.ROMA) {
+        if (onlyMode != OnlyModeState.Mode.ROMA) {
             if (translated && translatedFromGoogle) {
                 appendLink(text, str("morphe_music_lyrics_translated_by_google"),
                         true, onTranslationLanguage);
@@ -393,25 +437,25 @@ final class LyricsViewSupport {
                         translatedAiModel), true, onTranslationLanguage);
             }
         }
-        if (onlyMode != LyricsPanelView.OnlyMode.TRANS) {
+        if (onlyMode != OnlyModeState.Mode.TRANS) {
             final String rubyProvider = LyricsTargetLanguagePreference.rubyProviderLabel();
             String source = null;
             if (LyricsRequests.isRomanizationOff()) {
                 // No romanization, so the ruby takes its place.
                 if (rubyProvider != null) {
-                    source = String.format(str("morphe_music_lyrics_romanized_by_local"), rubyProvider);
+                    source = String.format(str("morphe_music_lyrics_romanized_by"), rubyProvider);
                 }
             } else if (romanized) {
                 if (romanizedFromGoogle) {
                     source = str("morphe_music_lyrics_romanized_by_google");
                 } else if (romanizedFromAI && romanizedAiModel != null) {
-                    source = String.format(str("morphe_music_lyrics_romanized_by_ai"), romanizedAiModel);
+                    source = String.format(str("morphe_music_lyrics_romanized_by"), romanizedAiModel);
                 } else if (romanizedLocalDictionary != null) {
                     // Named and nothing more: the licenses are in the licenses dialog.
-                    source = String.format(str("morphe_music_lyrics_romanized_by_local"),
+                    source = String.format(str("morphe_music_lyrics_romanized_by"),
                             romanizedLocalDictionary);
                 } else if (romanizedFromEmbedded && rubyProvider != null) {
-                    source = String.format(str("morphe_music_lyrics_romanized_by_local"), rubyProvider);
+                    source = String.format(str("morphe_music_lyrics_romanized_by"), rubyProvider);
                 }
                 if (source != null && rubyProvider != null && !source.contains(rubyProvider)) {
                     source = str("morphe_music_lyrics_with_ruby_provider", source, rubyProvider);

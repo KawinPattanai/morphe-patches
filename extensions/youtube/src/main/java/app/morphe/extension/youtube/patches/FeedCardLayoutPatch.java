@@ -10,6 +10,7 @@
 package app.morphe.extension.youtube.patches;
 
 import static app.morphe.extension.shared.StringRef.str;
+import static app.morphe.extension.youtube.shared.LithoDrawables.getDrawableView;
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -101,6 +102,7 @@ import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LikeEndpo
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LikeStatusEntity;
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LikeStatusEntityKey;
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LikeTarget;
+import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LockupExperiments;
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LockupInlinePlayback;
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LockupImage;
 import app.morphe.extension.youtube.innertube.FeedCardLayoutOuterClass.LockupMetadata;
@@ -170,7 +172,12 @@ public class FeedCardLayoutPatch {
         DEFAULT,
         CLASSIC,
         CARDS,
-        CARDS_WITH_ACTION_BUTTONS
+        CARDS_WITH_ACTION_BUTTONS,
+        /**
+         * Cards with a background that fades from the colors of the avatar of the channel.
+         */
+        CARDS_WITH_AVATAR_GLOW,
+        CARDS_WITH_ACTION_BUTTONS_AND_AVATAR_GLOW
     }
 
     /**
@@ -183,21 +190,30 @@ public class FeedCardLayoutPatch {
 
     private static final FeedCardLayout LAYOUT = Settings.FEED_CARD_LAYOUT.get();
     private static final boolean CARD_LAYOUT = LAYOUT == FeedCardLayout.CARDS
-            || LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS;
-    private static final boolean ACTION_BUTTONS = LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS;
+            || LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS
+            || LAYOUT == FeedCardLayout.CARDS_WITH_AVATAR_GLOW
+            || LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS_AND_AVATAR_GLOW;
+    private static final boolean ACTION_BUTTONS = LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS
+            || LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS_AND_AVATAR_GLOW;
+    private static final boolean AVATAR_GLOW = LAYOUT == FeedCardLayout.CARDS_WITH_AVATAR_GLOW
+            || LAYOUT == FeedCardLayout.CARDS_WITH_ACTION_BUTTONS_AND_AVATAR_GLOW;
 
     /**
-     * If the default layout has shown the cards of the newer A/B test, which get the padding of the card layout,
-     * see convertServerCard(). The lists then draw them as cards. The accounts with the older layouts never
-     * get these cards, so their lists are not changed.
+     * If YouTube has sent the cards of a newer A/B test with the default layout, which shows them as they are sent.
+     * The accounts with the older layouts never get these cards.
      */
     private static volatile boolean newServerCardsShown;
 
+    @SuppressWarnings("SameReturnValue")
+    public static boolean isPatchIncluded() {
+        return false; // Modified during patching.
+    }
+
     /**
-     * @return If the lists draw the cards: with the card layout, or with the default layout
-     *         once the cards of the newer A/B test are shown.
+     * @return If the feeds show cards: with the card layout, or with the default layout
+     *         once YouTube has sent the cards of the newer A/B test.
      */
-    private static boolean listsDrawCards() {
+    public static boolean feedShowsCards() {
         return CARD_LAYOUT || newServerCardsShown;
     }
 
@@ -247,13 +263,13 @@ public class FeedCardLayoutPatch {
      * Templates of the feed videos, with the field of their model and the known fields of the model
      * where the theme and the capabilities are written when the element is bound.
      */
-    private static final VideoTemplate CLASSIC = new VideoTemplate(CLASSIC_TEMPLATE, 232954548, 6, 29);
-    private static final VideoTemplate CARD = new VideoTemplate(CARD_TEMPLATE, 413471385, 4, 6);
+    private static final VideoTemplate CLASSIC = new VideoTemplate(CLASSIC_TEMPLATE, null, 232954548, 6, 29);
+    private static final VideoTemplate CARD = new VideoTemplate(CARD_TEMPLATE, null, 413471385, 4, 6);
     /**
      * Bottom overlay of the thumbnails, with the same model of the cards.
      */
     private static final VideoTemplate THUMBNAIL_BOTTOM_OVERLAY = new VideoTemplate(
-            THUMBNAIL_BOTTOM_OVERLAY_TEMPLATE, 413471385, 4, 6);
+            THUMBNAIL_BOTTOM_OVERLAY_TEMPLATE, null, 413471385, 4, 6);
     /**
      * Suffix of the template names of newer app versions, before "|hash", such as "-fe".
      */
@@ -325,6 +341,10 @@ public class FeedCardLayoutPatch {
     private static final int LIKE_STATUS_LIKE = 0;
     private static final int LIKE_STATUS_INDIFFERENT = 2;
     private static final int LIKE_STATUS_ENTITY_TYPE = 62;
+    /**
+     * Entity of the playlists that a video is saved to, which the save button of the watch page shows.
+     */
+    static final int SAVE_TO_PLAYLIST_LIST_ENTITY_TYPE = 231;
     private static final int ACTION_ADD_VIDEO = PlaylistEdit.PlaylistEditActionType.ACTION_ADD_VIDEO_VALUE;
 
     /**
@@ -360,7 +380,7 @@ public class FeedCardLayoutPatch {
     /**
      * Menu items that the menu of the cards with a save button doesn't have.
      */
-    private static final StringRef SAVE_TO_WATCH_LATER = StringRef.sfc("morphe_save_to_watch_later_flyout_title");
+    private static final StringRef SAVE_TO_WATCH_LATER = StringRef.sfc("morphe_save_to_watch_later_title");
     private static final StringRef SAVE_TO_PLAYLIST = StringRef.sfc("accessibility_save_to_playlists");
     private static final String SENDER_VIEW_KEY = "com.google.android.libraries.youtube.rendering.elements.sender_view";
     /**
@@ -427,11 +447,16 @@ public class FeedCardLayoutPatch {
             GRID_COLLECTION_TEMPLATE, COMPACT_PLAYLIST_TEMPLATE}
             : new String[]{CARD_TEMPLATE};
     /**
-     * Templates changed by the default layout: the cards of a newer A/B test, and the Shorts shelves
-     * and the shelf headers of the same A/B test.
+     * Templates of the cards and of the Shorts shelves of a newer A/B test, which the default layout looks for.
      */
     private static final ByteTrieSearch defaultLayoutSearch = new ByteTrieSearch(
-            ByteTrieSearch.convertStringsToBytes(CARD_TEMPLATE, SHELF_HEADER_TEMPLATE, SHORTS_VIDEO_CELL_TEMPLATE));
+            ByteTrieSearch.convertStringsToBytes(CARD_TEMPLATE, SHORTS_VIDEO_CELL_TEMPLATE));
+    /**
+     * Experiment of the blurred background at the bottom of the cards, enableBlurredBottomBackground (field 500561)
+     * set to true, in the bytes of the elements.
+     */
+    private static final ByteTrieSearch blurredBottomBackgroundSearch = new ByteTrieSearch(
+            new byte[]{(byte) 0x88, (byte) 0xB5, (byte) 0xF4, 0x01, 0x01});
     /**
      * Labels of the shelf headers, in the bytes of the converted elements.
      */
@@ -624,6 +649,11 @@ public class FeedCardLayoutPatch {
      */
     static final class VideoTemplate {
         final String name;
+        /**
+         * Name of another variant of the template, used only while no version of {@link #name} is cached.
+         */
+        @Nullable
+        private final String fallbackName;
         final int modelField;
         final ByteTrieSearch search;
         volatile int themeField;
@@ -643,8 +673,10 @@ public class FeedCardLayoutPatch {
         private volatile long synchronousLookupTime;
         private long checkTime;
 
-        VideoTemplate(String name, int modelField, int themeField, int capabilitiesField) {
+        VideoTemplate(String name, @Nullable String fallbackName, int modelField, int themeField,
+                      int capabilitiesField) {
             this.name = name;
+            this.fallbackName = fallbackName;
             this.modelField = modelField;
             this.themeField = themeField;
             this.capabilitiesField = capabilitiesField;
@@ -677,6 +709,7 @@ public class FeedCardLayoutPatch {
                 Runnable lookup = () -> {
                     // The cached versions of the template, from the oldest to the newest.
                     List<String> cached = new ArrayList<>();
+                    List<String> fallbackCached = new ArrayList<>();
                     try {
                         File metadata = new File(Utils.getContext().getFilesDir(), "ElementsResourceCacheMetadata");
                         if (metadata.isFile()) {
@@ -698,6 +731,8 @@ public class FeedCardLayoutPatch {
                                         String key = entry.readString();
                                         if (isTemplate(key, name)) {
                                             cached.add(key);
+                                        } else if (fallbackName != null && isTemplate(key, fallbackName)) {
+                                            fallbackCached.add(key);
                                         }
                                     } else {
                                         entry.skipField(entryTag);
@@ -715,6 +750,9 @@ public class FeedCardLayoutPatch {
                     } catch (Exception ex) {
                         Logger.printException(() -> "getUri failure", ex);
                         return;
+                    }
+                    if (cached.isEmpty()) {
+                        cached = fallbackCached;
                     }
                     // An element of the template can be seen while the cache is read.
                     synchronized (this) {
@@ -777,15 +815,56 @@ public class FeedCardLayoutPatch {
      * Injection point.
      */
     public static byte[] setFeedCardLayout(byte[] bytes) {
-        // The default layout changes only the cards of a newer A/B test, see convertServerCard(),
-        // and the spacing of the Shorts shelves and the shelf headers of the same A/B test.
-        if (LAYOUT == FeedCardLayout.DEFAULT && !defaultLayoutSearch.matches(bytes)) {
+        if (LAYOUT == FeedCardLayout.DEFAULT) {
+            // The default layout shows the elements as YouTube sends them, and only checks if YouTube sends
+            // the cards of a newer A/B test, see feedShowsCards(). The cards only lose the blurred background
+            // at the bottom.
+            if ((!newServerCardsShown && defaultLayoutSearch.matches(bytes))
+                    || blurredBottomBackgroundSearch.matches(bytes)) {
+                try {
+                    Element element = Element.parseFrom(bytes);
+                    ComponentType componentType = element.getType().getComponentType();
+                    String uri = componentType.getTemplateConfig().getUriTemplateConfig().getUri();
+                    ElementModel model = componentType.getModel();
+                    final boolean isCard = isTemplate(uri, CARD_TEMPLATE) && model.hasLockupModel();
+                    // The cards of this A/B test have no padding, unlike the cards of an older A/B test,
+                    // and the grid of its Shorts shelf has no margins.
+                    final boolean newCard = isCard && !model.getLockupModel().hasPadding();
+                    final boolean newShortsShelf = isTemplate(uri, SHORTS_VIDEO_CELL_TEMPLATE)
+                            && model.hasShortsVideoCellModel()
+                            && model.getShortsVideoCellModel().getGrid().getNoMargins();
+                    if (newCard || newShortsShelf) {
+                        newServerCardsShown = true;
+                    }
+
+                    // The cards of a newer A/B test have a blurred background at the bottom, which RenderNext draws
+                    // as a fade into the card. The app is always rendered with Litho, which draws it as a panel with
+                    // rounded corners that show light arcs on the card, so the background is removed, and the rest
+                    // of the style of the server is kept, such as the rounded corners.
+                    LockupModel card = model.getLockupModel();
+                    ElementsExperiments experiments = card.getContext().getElementsExperiments();
+                    CardLayoutExperiments cardExperiments = experiments.getCardLayoutExperiments();
+                    if (isCard && cardExperiments.getEnableBlurredBottomBackground()) {
+                        return element.toBuilder()
+                                .setType(element.getType().toBuilder().setComponentType(componentType.toBuilder()
+                                        .setModel(model.toBuilder().setLockupModel(card.toBuilder()
+                                                .setContext(card.getContext().toBuilder()
+                                                        .setElementsExperiments(experiments.toBuilder()
+                                                                .setCardLayoutExperiments(cardExperiments.toBuilder()
+                                                                        .clearEnableBlurredBottomBackground())))))))
+                                .build()
+                                .toByteArray();
+                    }
+                } catch (Exception ex) {
+                    Logger.printException(() -> "setFeedCardLayout failure", ex);
+                }
+            }
             return bytes;
         }
 
         try {
             final String elementText = FeedVideoCardsPatch.getElementText(bytes);
-            if (LAYOUT != FeedCardLayout.DEFAULT && !FeedVideoCardsPatch.containsAny(elementText, elementTemplates)) {
+            if (FeedVideoCardsPatch.lacksAll(elementText, elementTemplates)) {
                 // The elements of the layout of the setting give the current version of its template:
                 // the uri and the fields are taken from the element, if it's an element of the template.
                 // After the first element, the elements are checked once in a while, to follow a new version.
@@ -838,29 +917,7 @@ public class FeedCardLayoutPatch {
             ElementModel model = componentType.getModel();
 
             ComponentType converted = null;
-            if (LAYOUT == FeedCardLayout.DEFAULT) {
-                if (isTemplate(uri, CARD_TEMPLATE) && model.hasLockupModel()) {
-                    converted = convertServerCard(componentType, model);
-                    if (converted != null) {
-                        // The lists draw the cards of the newer A/B test from now on.
-                        newServerCardsShown = true;
-                    }
-                } else if (isTemplate(uri, SHELF_HEADER_TEMPLATE) && model.hasShelfHeaderModel()
-                        && !model.getShelfHeaderModel().getContext().getElementsExperiments()
-                        .getLockupExperiments().isEmpty()) {
-                    // The shelf headers of the newer A/B test keep their style, and are found in the lists
-                    // by their label, to move their buttons inside the spacing of the cards, see fitShelfHeaders().
-                    converted = markShelfHeader(componentType, model.getShelfHeaderModel());
-                } else if (isTemplate(uri, SHORTS_VIDEO_CELL_TEMPLATE) && model.hasShortsVideoCellModel()) {
-                    ShortsVideoCellModel cell = model.getShortsVideoCellModel();
-                    converted = markShortsCell(componentType, cell);
-                    if (cell.getGrid().getNoMargins()) {
-                        // The Shorts shelf of the newer A/B test can be above its first card, such as at the top
-                        // of the Home feed, and the lists draw the cards from now on.
-                        newServerCardsShown = true;
-                    }
-                }
-            } else if (CARD_LAYOUT) {
+            if (CARD_LAYOUT) {
                 if (isTemplate(uri, CLASSIC_TEMPLATE) && model.hasVideoWithContextModel()) {
                     VideoWithContextModel classic = model.getVideoWithContextModel();
                     toCard: {
@@ -1141,13 +1198,11 @@ public class FeedCardLayoutPatch {
                                         .build();
                             }
 
-                            String entityKey = Base64.encodeToString(LikeStatusEntityKey.newBuilder()
-                                            .setVideoId(contentId)
-                                            .setEntityType(LIKE_STATUS_ENTITY_TYPE)
-                                            .setVersion(1)
-                                            .build()
-                                            .toByteArray(),
-                                    Base64.URL_SAFE | Base64.NO_WRAP).replace("=", "%3D");
+                            String entityKey = videoEntityKey(contentId, LIKE_STATUS_ENTITY_TYPE);
+                            // The save button is filled while the video is saved, the same as the save button
+                            // of the watch page, and opens the playlists of the video once it's saved.
+                            String saveEntityKey = videoEntityKey(contentId, SAVE_TO_PLAYLIST_LIST_ENTITY_TYPE);
+                            FeedVideoActionsPatch.onCardSaveButton(contentId, saveEntityKey);
 
                             metadata.addActionButtons(ActionButton.newBuilder()
                                             .setLikeButtonViewModel(LikeButtonViewModel.newBuilder()
@@ -1170,7 +1225,8 @@ public class FeedCardLayoutPatch {
                                             .setAddToPlaylistButtonViewModel(AddToPlaylistButtonViewModel.newBuilder()
                                                     .setToggleButtonViewModel(toggleButton(
                                                             button(icons.save, "", saveOnTap),
-                                                            button(icons.saved, "", saveOnTap)))));
+                                                            button(icons.saved, "", saveOnTap)))
+                                                    .setAddToPlaylistEntityKey(saveEntityKey)));
                         }
 
                         // The template draws the background below the thumbnail only for the cards with inline
@@ -1495,7 +1551,7 @@ public class FeedCardLayoutPatch {
      */
     public static void onChildAdded(RecyclerView recyclerView, View child) {
         try {
-            if (!listsDrawCards() || child == null) {
+            if (!CARD_LAYOUT || child == null) {
                 return;
             }
 
@@ -1507,276 +1563,7 @@ public class FeedCardLayoutPatch {
             // The autoplay of a Short adds a player with its own rounded clip, while the list is not drawn again.
             // The clips of the Shorts and the padding of the horizontal shelves are checked before every frame of the window.
             // The listener is added when the list adds an item, so the items are checked before they are first drawn.
-            if (!listsWithShortsOutlineListener.containsKey(recyclerView)) {
-                listsWithShortsOutlineListener.put(recyclerView, Boolean.TRUE);
-                WeakReference<RecyclerView> listRef = new WeakReference<>(recyclerView);
-                recyclerView.getViewTreeObserver().addOnPreDrawListener(() -> {
-                    // If the padding of a shelf list changes, the frame is drawn again with the new padding,
-                    // so the shelf is never shown with the old padding.
-                    boolean shelfPaddingChanged = false;
-                    try {
-                        RecyclerView current = listRef.get();
-                        if (current != null) {
-                            // The color of the backgrounds of the items that were not mounted yet is looked up
-                            // again once the item is mounted, if the item is a bar of chips.
-                            if (!unmountedItemBackgrounds.isEmpty()) {
-                                for (Drawable background : new ArrayList<>(unmountedItemBackgrounds.keySet())) {
-                                    View view = getDrawableView(background);
-                                    while (view != null && !(view.getParent() instanceof RecyclerView)) {
-                                        view = view.getParent() instanceof View parent ? parent : null;
-                                    }
-                                    if (!(view instanceof ViewGroup item)) {
-                                        unmountedItemBackgrounds.remove(background);
-                                        continue;
-                                    }
-                                    if (item.getChildCount() == 0) {
-                                        continue;
-                                    }
-                                    unmountedItemBackgrounds.remove(background);
-                                    if (isChipBar(item)) {
-                                        // The color is looked up when the bounds change.
-                                        Rect bounds = background.copyBounds();
-                                        background.setBounds(0, 0, 0, 0);
-                                        background.setBounds(bounds);
-                                        background.invalidateSelf();
-                                        updateCardOutline(item);
-                                    }
-                                }
-                            }
-
-                            // The padding of a card, around the view with the label of the card, gives the density
-                            // that the app used to lay out the cards. It changes when the density of the display
-                            // changes and the list is laid out again.
-                            for (int i = 0, count = current.getChildCount(); i < count; i++) {
-                                if (!(current.getChildAt(i) instanceof ViewGroup item) || item.getChildCount() != 1) {
-                                    continue;
-                                }
-                                View card = item.getChildAt(0);
-                                final int left = card.getLeft();
-                                if (left <= 0 || !isCardLabel(card.getContentDescription())
-                                        || Math.abs(card.getTop() * CARD_HORIZONTAL_PADDING_DP
-                                        - left * CARD_VERTICAL_PADDING_DP) > CARD_HORIZONTAL_PADDING_DP) {
-                                    continue;
-                                }
-                                if (cardPx(CARD_HORIZONTAL_PADDING_DP) != left) {
-                                    cardLayoutDensity = (float) left / CARD_HORIZONTAL_PADDING_DP;
-                                    for (int j = 0; j < count; j++) {
-                                        invalidateCardOutlines(current.getChildAt(j), 0);
-                                    }
-                                    View container = cardInlinePlayerContainer == null
-                                            ? null
-                                            : cardInlinePlayerContainer.get();
-                                    if (container != null) {
-                                        container.invalidateOutline();
-                                    }
-                                    current.invalidate();
-                                }
-                                break;
-                            }
-
-                            // The label of a recycled card can be set after the card is laid out, so the card
-                            // keeps the outline of the item it replaced, without the spacing of the cards.
-                            // The label can be on a view inside the item.
-                            for (int i = 0, count = current.getChildCount(); i < count; i++) {
-                                View item = current.getChildAt(i);
-                                if (item.getOutlineProvider() != CARD_OUTLINE
-                                        && hasLabelMarker(item, CARD_LABEL_MARKER, 0)) {
-                                    updateCardOutline(item);
-                                }
-                            }
-
-                            // The card of a horizontal shelf clips its list, and the items of some shelves have
-                            // no padding, so their content is cut by the edges of the card. The padding of the list
-                            // moves the content of the first item, and of the last item at the end of the list,
-                            // inside the card.
-                            for (int i = 0, count = current.getChildCount(); i < count; i++) {
-                                View shelf = current.getChildAt(i);
-                                if (shelf.getHeight() <= 0
-                                        || !(shelfCardItems.containsKey(shelf) || isShelfHeader(shelf))
-                                        || !(findNestedList(shelf, 0) instanceof ViewGroup shelfList)) {
-                                    continue;
-                                }
-
-                                View first = null;
-                                View last = null;
-                                for (int j = 0, listCount = shelfList.getChildCount(); j < listCount; j++) {
-                                    View shelfChild = shelfList.getChildAt(j);
-                                    if (shelfChild.getWidth() <= 0) {
-                                        continue;
-                                    }
-                                    if (first == null || shelfChild.getLeft() < first.getLeft()) {
-                                        first = shelfChild;
-                                    }
-                                    if (last == null || shelfChild.getRight() > last.getRight()) {
-                                        last = shelfChild;
-                                    }
-                                }
-                                if (first == null) {
-                                    continue;
-                                }
-                                // The list keeps its scroll position when its padding changes, which moves the first
-                                // item before the padding, so the list is scrolled back to its start.
-                                if (shelfListsAtStart.remove(shelfList) != null
-                                        && first.getLeft() != shelfList.getPaddingLeft()) {
-                                    shelfList.scrollBy(first.getLeft() - shelfList.getPaddingLeft(), 0);
-                                    shelfPaddingChanged = true;
-                                    continue;
-                                }
-
-                                int[] shelfLocation = new int[2];
-                                shelf.getLocationOnScreen(shelfLocation);
-                                int[] listLocation = new int[2];
-                                shelfList.getLocationOnScreen(listLocation);
-                                final int cardInset = cardPx(CARD_HORIZONTAL_PADDING_DP + SHELF_LIST_PADDING_DP);
-                                int[] content = new int[2];
-                                int paddingLeft = shelfList.getPaddingLeft();
-                                int paddingRight = shelfList.getPaddingRight();
-
-                                // The first item is the leftmost one only while the list is scrolled to the start.
-                                if (!shelfList.canScrollHorizontally(-1) && getContentBounds(first, content)) {
-                                    paddingLeft += shelfLocation[0] + cardInset
-                                            - (listLocation[0] + first.getLeft() + content[0]);
-                                }
-                                // The last item is at the end of the list only if the items don't fit the list.
-                                if (shelfList.canScrollHorizontally(-1) && !shelfList.canScrollHorizontally(1)
-                                        && getContentBounds(last, content)) {
-                                    paddingRight += listLocation[0] + last.getLeft() + content[1]
-                                            - (shelfLocation[0] + shelf.getWidth() - cardInset);
-                                }
-
-                                paddingLeft = Math.max(0, paddingLeft);
-                                paddingRight = Math.max(0, paddingRight);
-                                if (paddingLeft == shelfList.getPaddingLeft()
-                                        && paddingRight == shelfList.getPaddingRight()) {
-                                    continue;
-                                }
-                                if (paddingLeft != shelfList.getPaddingLeft()) {
-                                    shelfListsAtStart.put(shelfList, Boolean.TRUE);
-                                }
-                                // The items are drawn in the padding while scrolling, up to the edges of the card.
-                                shelfList.setClipToPadding(false);
-                                shelfList.setPadding(paddingLeft, shelfList.getPaddingTop(), paddingRight,
-                                        shelfList.getPaddingBottom());
-                                shelfPaddingChanged = true;
-                            }
-
-                            // Updates the clips of the Shorts of the Shorts shelves, without drawing the shelves.
-                            shortsCellOutlines.clear();
-                            for (int i = 0, count = CARD_LAYOUT ? current.getChildCount() : 0; i < count; i++) {
-                                View item = current.getChildAt(i);
-                                if (item.getHeight() > 0 && isShortsRow(item)) {
-                                    View above = findItemAbove(current, item);
-                                    if (above == null || !isShortsRow(above)) {
-                                        drawShortsShelfCard(current, above, item, null);
-                                    }
-                                }
-                            }
-
-                            // The shelf headers of the newer A/B test of the cards have their buttons, such as the menu button,
-                            // near the edge of the list, outside the spacing of the cards below them. The buttons are moved
-                            // inside the spacing of the cards. The horizontal shelves, with their header and their videos
-                            // in the same list item, keep their layout.
-                            final int margin = cardPx(CARD_HORIZONTAL_PADDING_DP);
-                            List<View> moved = new ArrayList<>();
-                            for (int i = 0, count = current.getChildCount(); i < count; i++) {
-                                View item = current.getChildAt(i);
-                                if (item.getWidth() > 2 * margin && item.getHeight() > 0
-                                        && (isShelfHeader(item) || isVideoShelfHeader(item)) && !hasNestedList(item)) {
-                                    fitShelfHeaderViews(item, item, 0, margin, moved, 0);
-                                }
-                            }
-
-                            // The views that are no longer at the edge of a shelf header of the list are moved back.
-                            for (View view : movedShelfHeaderViews.keySet().toArray(new View[0])) {
-                                if (view == null || moved.contains(view)) {
-                                    continue;
-                                }
-                                for (ViewParent parent = view.getParent(); parent != null; parent = parent.getParent()) {
-                                    if (parent == current) {
-                                        movedShelfHeaderViews.remove(view);
-                                        view.removeOnAttachStateChangeListener(SHELF_HEADER_VIEW_DETACH_LISTENER);
-                                        view.setTranslationX(0);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            final boolean feed = current.getId() == getFeedId();
-                            if (feed) {
-                                // The autoplay of a Short shows the player in a container above the Short, outside
-                                // the list, which clips the player with its own rounded background. It has the clip
-                                // of the Short below it.
-                                View container = inlinePlayerContainer == null ? null : inlinePlayerContainer.get();
-                                if (container == null || !container.isAttachedToWindow()) {
-                                    final long now = System.currentTimeMillis();
-                                    if (shortsCellOutlines.isEmpty()
-                                            || now - inlinePlayerSearchTime < INLINE_PLAYER_SEARCH_INTERVAL_MILLIS) {
-                                        container = null;
-                                    } else {
-                                        inlinePlayerSearchTime = now;
-                                        container = findInlinePlayerContainer(current.getRootView(), current, 0);
-                                        inlinePlayerContainer = container == null
-                                                ? null
-                                                : new WeakReference<>(container);
-                                    }
-                                }
-
-                                if (container != null) {
-                                    ViewOutlineProvider outline = shortsCellOutlines.get(getScreenBounds(container));
-                                    if (outline != null) {
-                                        if (container.getOutlineProvider() != outline) {
-                                            container.setOutlineProvider(outline);
-                                        }
-                                    } else if (container.getOutlineProvider() instanceof ShortsCellOutlineProvider) {
-                                        container.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
-                                    }
-                                }
-                            }
-
-                            if (feed) {
-                                // The autoplay of a video shows the player in a container below the list, outside
-                                // the list, and the card shows it through its thumbnail. The container has square
-                                // corners, so it gets the rounded top corners of the card while it's over
-                                // the thumbnail of a card.
-                                View container = cardInlinePlayerContainer == null
-                                        ? null
-                                        : cardInlinePlayerContainer.get();
-                                if (container == null || !container.isAttachedToWindow()) {
-                                    final long now = System.currentTimeMillis();
-                                    if (now - cardInlinePlayerSearchTime < INLINE_PLAYER_SEARCH_INTERVAL_MILLIS) {
-                                        container = null;
-                                    } else {
-                                        cardInlinePlayerSearchTime = now;
-                                        container = findCardInlinePlayerContainer(current.getRootView(), current, 0);
-                                        cardInlinePlayerContainer = container == null
-                                                ? null
-                                                : new WeakReference<>(container);
-                                    }
-                                }
-
-                                if (container != null) {
-                                    if (isOverCardThumbnail(current, container)) {
-                                        if (container.getOutlineProvider() != CARD_INLINE_PLAYER_OUTLINE) {
-                                            cardInlinePlayerClipToOutline = container.getClipToOutline();
-                                            container.setOutlineProvider(CARD_INLINE_PLAYER_OUTLINE);
-                                            container.setClipToOutline(true);
-                                        }
-                                    } else if (container.getOutlineProvider() == CARD_INLINE_PLAYER_OUTLINE) {
-                                        container.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
-                                        // Over a Short, the container keeps its clip, which gets the outline of the
-                                        // Short.
-                                        container.setClipToOutline(cardInlinePlayerClipToOutline
-                                                || shortsCellOutlines.containsKey(getScreenBounds(container)));
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Exception ex) {
-                        Logger.printException(() -> "onPreDraw failure", ex);
-                    }
-                    return !shelfPaddingChanged;
-                });
-            }
+            addListPreDrawListener(recyclerView);
 
             // The cards are found by their label. The views are recycled while scrolling, also between lists,
             // and the label of the new item can be set after the view is added.
@@ -1794,7 +1581,7 @@ public class FeedCardLayoutPatch {
      */
     public static int getCardColor(Drawable drawable, int color) {
         try {
-            if (listsDrawCards() && Color.alpha(color) == 255) {
+            if (CARD_LAYOUT && Color.alpha(color) == 255) {
                 boolean inCard = false;
                 View view = getDrawableView(drawable);
                 while (view != null) {
@@ -1814,8 +1601,7 @@ public class FeedCardLayoutPatch {
                     }
                     ViewParent parent = view.getParent();
                     if (parent instanceof RecyclerView recyclerView) {
-                        // The other items of the feed are cards only with the card layout.
-                        if (CARD_LAYOUT && recyclerView.getId() == getFeedId()) {
+                        if (recyclerView.getId() == getFeedId()) {
                             // The background is mounted before the content of the item,
                             // so a bar of chips is found only after the item is mounted.
                             if (view instanceof ViewGroup group && group.getChildCount() == 0) {
@@ -1851,20 +1637,8 @@ public class FeedCardLayoutPatch {
      */
     public static Object getDividerItem(@Nullable Object item) {
         try {
-            if (listsDrawCards() && item instanceof ElementItemInterface element) {
-                byte[] bytes = element.patch_getElementBytes();
-                if (bytes != null) {
-                    Boolean card = cardElements.get(bytes);
-                    if (card == null) {
-                        card = CARD.search.matches(bytes) && isCardLabel(Element.parseFrom(bytes).getType()
-                                .getComponentType().getModel().getLockupModel().getViewModel().getLockupViewModel()
-                                .getRendererContext().getAccessibilityContext().getLabel());
-                        cardElements.put(bytes, card);
-                    }
-                    if (card) {
-                        return ITEM_WITHOUT_DIVIDER;
-                    }
-                }
+            if (CARD_LAYOUT && isCardItem(item)) {
+                return ITEM_WITHOUT_DIVIDER;
             }
         } catch (Exception ex) {
             Logger.printException(() -> "getDividerItem failure", ex);
@@ -1873,16 +1647,37 @@ public class FeedCardLayoutPatch {
     }
 
     /**
+     * @return If the item is a card with the spacing of the cards.
+     */
+    private static boolean isCardItem(@Nullable Object item) throws InvalidProtocolBufferException {
+        if (!(item instanceof ElementItemInterface element)) {
+            return false;
+        }
+        byte[] bytes = element.patch_getElementBytes();
+        if (bytes == null) {
+            return false;
+        }
+        Boolean card = cardElements.get(bytes);
+        if (card == null) {
+            card = CARD.search.matches(bytes) && isCardLabel(Element.parseFrom(bytes).getType()
+                    .getComponentType().getModel().getLockupModel().getViewModel().getLockupViewModel()
+                    .getRendererContext().getAccessibilityContext().getLabel());
+            cardElements.put(bytes, card);
+        }
+        return card;
+    }
+
+    /**
      * Injection point.
      * Called when the layout of a section of a list is made.
      *
      * @param columnCount Columns of the section.
      * @param rowGapDp    Gap between the rows of the section.
-     * @return The gap between the rows, which is removed from the sections of one column when the lists draw cards,
+     * @return The gap between the rows, which is removed from the sections of one column with the card layout,
      *         as the cards have their own spacing.
      */
     public static float getSectionRowGap(int columnCount, float rowGapDp) {
-        return listsDrawCards() && columnCount == 1 ? 0 : rowGapDp;
+        return CARD_LAYOUT && columnCount == 1 ? 0 : rowGapDp;
     }
 
     /**
@@ -1891,7 +1686,7 @@ public class FeedCardLayoutPatch {
      */
     public static void setDividerItemView(View view) {
         try {
-            if (!listsDrawCards()) {
+            if (!CARD_LAYOUT) {
                 return;
             }
 
@@ -1911,7 +1706,7 @@ public class FeedCardLayoutPatch {
      */
     public static void setDividerItem(@Nullable Object item) {
         try {
-            if (!listsDrawCards()) {
+            if (!CARD_LAYOUT) {
                 return;
             }
 
@@ -1961,15 +1756,6 @@ public class FeedCardLayoutPatch {
         }
     }
 
-    @Nullable
-    private static View getDrawableView(Drawable drawable) {
-        Drawable.Callback callback = drawable.getCallback();
-        while (callback instanceof Drawable parent) {
-            callback = parent.getCallback();
-        }
-        return callback instanceof View view ? view : null;
-    }
-
     private static void updateCardOutline(View child) {
         if (isCardRow(child)) {
             setCardOutline(child, null);
@@ -1995,9 +1781,8 @@ public class FeedCardLayoutPatch {
         if (outline == null && isShortsPivotRow(child)) {
             outline = FEED_ITEM_OUTLINE;
         }
-        // The items of the feed are cards, also the ones that YouTube sends as cards and are not converted,
-        // only with the card layout.
-        if (outline == null && CARD_LAYOUT && child.getParent() instanceof RecyclerView recyclerView
+        // The items of the feed are cards, also the ones that YouTube sends as cards and are not converted.
+        if (outline == null && child.getParent() instanceof RecyclerView recyclerView
                 && recyclerView.getId() == getFeedId() && !isChipBar(child)) {
             outline = (isShelfHeader(child) || isVideoShelfHeader(child)) && !hasNestedList(child)
                     ? SHELF_HEADER_OUTLINE
@@ -2060,6 +1845,257 @@ public class FeedCardLayoutPatch {
     }
 
     /**
+     * The autoplay of a Short adds a player with its own rounded clip, while the list is not drawn again.
+     * The clips of the Shorts and the padding of the horizontal shelves are checked before every frame of the window.
+     * The listener is added when the list adds an item, so the items are checked before they are first drawn.
+     */
+    private static void addListPreDrawListener(RecyclerView list) {
+        if (!listsWithShortsOutlineListener.containsKey(list)) {
+            listsWithShortsOutlineListener.put(list, Boolean.TRUE);
+            WeakReference<RecyclerView> listRef = new WeakReference<>(list);
+            list.getViewTreeObserver().addOnPreDrawListener(() -> {
+                // If the padding of a shelf list changes, the frame is drawn again with the new padding,
+                // so the shelf is never shown with the old padding.
+                boolean shelfPaddingChanged = false;
+                try {
+                    RecyclerView current = listRef.get();
+                    if (current != null) {
+                        // The color of the backgrounds of the items that were not mounted yet is looked up
+                        // again once the item is mounted, if the item is a bar of chips.
+                        if (!unmountedItemBackgrounds.isEmpty()) {
+                            for (Drawable background : new ArrayList<>(unmountedItemBackgrounds.keySet())) {
+                                View view = getDrawableView(background);
+                                while (view != null && !(view.getParent() instanceof RecyclerView)) {
+                                    view = view.getParent() instanceof View parent ? parent : null;
+                                }
+                                if (!(view instanceof ViewGroup item)) {
+                                    unmountedItemBackgrounds.remove(background);
+                                    continue;
+                                }
+                                if (item.getChildCount() == 0) {
+                                    continue;
+                                }
+                                unmountedItemBackgrounds.remove(background);
+                                if (isChipBar(item)) {
+                                    // The color is looked up when the bounds change.
+                                    Rect bounds = background.copyBounds();
+                                    background.setBounds(0, 0, 0, 0);
+                                    background.setBounds(bounds);
+                                    background.invalidateSelf();
+                                    updateCardOutline(item);
+                                }
+                            }
+                        }
+
+                        // The padding of a card, around the view with the label of the card, gives the density
+                        // that the app used to lay out the cards. It changes when the density of the display
+                        // changes and the list is laid out again.
+                        for (int i = 0, count = current.getChildCount(); i < count; i++) {
+                            if (!(current.getChildAt(i) instanceof ViewGroup item) || item.getChildCount() != 1) {
+                                continue;
+                            }
+                            View card = item.getChildAt(0);
+                            final int left = card.getLeft();
+                            if (left <= 0 || !isCardLabel(card.getContentDescription())
+                                    || Math.abs(card.getTop() * CARD_HORIZONTAL_PADDING_DP
+                                    - left * CARD_VERTICAL_PADDING_DP) > CARD_HORIZONTAL_PADDING_DP) {
+                                continue;
+                            }
+                            if (cardPx(CARD_HORIZONTAL_PADDING_DP) != left) {
+                                cardLayoutDensity = (float) left / CARD_HORIZONTAL_PADDING_DP;
+                                for (int j = 0; j < count; j++) {
+                                    invalidateCardOutlines(current.getChildAt(j), 0);
+                                }
+                                View container = cardInlinePlayerContainer == null
+                                        ? null
+                                        : cardInlinePlayerContainer.get();
+                                if (container != null) {
+                                    container.invalidateOutline();
+                                }
+                                current.invalidate();
+                            }
+                            break;
+                        }
+
+                        // The label of a recycled card can be set after the card is laid out, so the card
+                        // keeps the outline of the item it replaced, without the spacing of the cards.
+                        // The label can be on a view inside the item.
+                        for (int i = 0, count = current.getChildCount(); i < count; i++) {
+                            View item = current.getChildAt(i);
+                            if (item.getOutlineProvider() != CARD_OUTLINE
+                                    && hasLabelMarker(item, CARD_LABEL_MARKER, 0)) {
+                                updateCardOutline(item);
+                            }
+                        }
+
+                        // The card of a horizontal shelf clips its list, and the items of some shelves have
+                        // no padding, so their content is cut by the edges of the card. The padding of the list
+                        // moves the content of the first item, and of the last item at the end of the list,
+                        // inside the card.
+                        for (int i = 0, count = current.getChildCount(); i < count; i++) {
+                            View shelf = current.getChildAt(i);
+                            if (shelf.getHeight() <= 0
+                                    || !(shelfCardItems.containsKey(shelf) || isShelfHeader(shelf))
+                                    || !(findNestedList(shelf, 0) instanceof ViewGroup shelfList)) {
+                                continue;
+                            }
+
+                            View first = null;
+                            View last = null;
+                            for (int j = 0, listCount = shelfList.getChildCount(); j < listCount; j++) {
+                                View child = shelfList.getChildAt(j);
+                                if (child.getWidth() <= 0) {
+                                    continue;
+                                }
+                                if (first == null || child.getLeft() < first.getLeft()) {
+                                    first = child;
+                                }
+                                if (last == null || child.getRight() > last.getRight()) {
+                                    last = child;
+                                }
+                            }
+                            if (first == null) {
+                                continue;
+                            }
+                            // The list keeps its scroll position when its padding changes, which moves the first
+                            // item before the padding, so the list is scrolled back to its start.
+                            if (shelfListsAtStart.remove(shelfList) != null
+                                    && first.getLeft() != shelfList.getPaddingLeft()) {
+                                shelfList.scrollBy(first.getLeft() - shelfList.getPaddingLeft(), 0);
+                                shelfPaddingChanged = true;
+                                continue;
+                            }
+
+                            int[] shelfLocation = new int[2];
+                            shelf.getLocationOnScreen(shelfLocation);
+                            int[] listLocation = new int[2];
+                            shelfList.getLocationOnScreen(listLocation);
+                            final int cardInset = cardPx(CARD_HORIZONTAL_PADDING_DP + SHELF_LIST_PADDING_DP);
+                            int[] content = new int[2];
+                            int paddingLeft = shelfList.getPaddingLeft();
+                            int paddingRight = shelfList.getPaddingRight();
+
+                            // The first item is the leftmost one only while the list is scrolled to the start.
+                            if (!shelfList.canScrollHorizontally(-1) && getContentBounds(first, content)) {
+                                paddingLeft += shelfLocation[0] + cardInset
+                                        - (listLocation[0] + first.getLeft() + content[0]);
+                            }
+                            // The last item is at the end of the list only if the items don't fit the list.
+                            if (shelfList.canScrollHorizontally(-1) && !shelfList.canScrollHorizontally(1)
+                                    && getContentBounds(last, content)) {
+                                paddingRight += listLocation[0] + last.getLeft() + content[1]
+                                        - (shelfLocation[0] + shelf.getWidth() - cardInset);
+                            }
+
+                            paddingLeft = Math.max(0, paddingLeft);
+                            paddingRight = Math.max(0, paddingRight);
+                            if (paddingLeft == shelfList.getPaddingLeft()
+                                    && paddingRight == shelfList.getPaddingRight()) {
+                                continue;
+                            }
+                            if (paddingLeft != shelfList.getPaddingLeft()) {
+                                shelfListsAtStart.put(shelfList, Boolean.TRUE);
+                            }
+                            // The items are drawn in the padding while scrolling, up to the edges of the card.
+                            shelfList.setClipToPadding(false);
+                            shelfList.setPadding(paddingLeft, shelfList.getPaddingTop(), paddingRight,
+                                    shelfList.getPaddingBottom());
+                            shelfPaddingChanged = true;
+                        }
+
+                        // Updates the clips of the Shorts of the Shorts shelves, without drawing the shelves.
+                        shortsCellOutlines.clear();
+                        for (int i = 0, count = current.getChildCount(); i < count; i++) {
+                            View item = current.getChildAt(i);
+                            if (item.getHeight() > 0 && isShortsRow(item)) {
+                                View above = findItemAbove(current, item);
+                                if (above == null || !isShortsRow(above)) {
+                                    drawShortsShelfCard(current, above, item, null);
+                                }
+                            }
+                        }
+
+                        fitShelfHeaders(current);
+
+                        final boolean feed = current.getId() == getFeedId();
+                        if (feed) {
+                            // The autoplay of a Short shows the player in a container above the Short, outside
+                            // the list, which clips the player with its own rounded background. It has the clip
+                            // of the Short below it.
+                            View container = inlinePlayerContainer == null ? null : inlinePlayerContainer.get();
+                            if (container == null || !container.isAttachedToWindow()) {
+                                final long now = System.currentTimeMillis();
+                                if (shortsCellOutlines.isEmpty()
+                                        || now - inlinePlayerSearchTime < INLINE_PLAYER_SEARCH_INTERVAL_MILLIS) {
+                                    container = null;
+                                } else {
+                                    inlinePlayerSearchTime = now;
+                                    container = findInlinePlayerContainer(current.getRootView(), current, 0);
+                                    inlinePlayerContainer = container == null
+                                            ? null
+                                            : new WeakReference<>(container);
+                                }
+                            }
+
+                            if (container != null) {
+                                ViewOutlineProvider outline = shortsCellOutlines.get(getScreenBounds(container));
+                                if (outline != null) {
+                                    if (container.getOutlineProvider() != outline) {
+                                        container.setOutlineProvider(outline);
+                                    }
+                                } else if (container.getOutlineProvider() instanceof ShortsCellOutlineProvider) {
+                                    container.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+                                }
+                            }
+                        }
+
+                        if (feed) {
+                            // The autoplay of a video shows the player in a container below the list, outside
+                            // the list, and the card shows it through its thumbnail. The container has square
+                            // corners, so it gets the rounded top corners of the card while it's over
+                            // the thumbnail of a card.
+                            View container = cardInlinePlayerContainer == null
+                                    ? null
+                                    : cardInlinePlayerContainer.get();
+                            if (container == null || !container.isAttachedToWindow()) {
+                                final long now = System.currentTimeMillis();
+                                if (now - cardInlinePlayerSearchTime < INLINE_PLAYER_SEARCH_INTERVAL_MILLIS) {
+                                    container = null;
+                                } else {
+                                    cardInlinePlayerSearchTime = now;
+                                    container = findCardInlinePlayerContainer(current.getRootView(), current, 0);
+                                    cardInlinePlayerContainer = container == null
+                                            ? null
+                                            : new WeakReference<>(container);
+                                }
+                            }
+
+                            if (container != null) {
+                                if (isOverCardThumbnail(current, container)) {
+                                    if (container.getOutlineProvider() != CARD_INLINE_PLAYER_OUTLINE) {
+                                        cardInlinePlayerClipToOutline = container.getClipToOutline();
+                                        container.setOutlineProvider(CARD_INLINE_PLAYER_OUTLINE);
+                                        container.setClipToOutline(true);
+                                    }
+                                } else if (container.getOutlineProvider() == CARD_INLINE_PLAYER_OUTLINE) {
+                                    container.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+                                    // Over a Short, the container keeps its clip, which gets the outline of the
+                                    // Short.
+                                    container.setClipToOutline(cardInlinePlayerClipToOutline
+                                            || shortsCellOutlines.containsKey(getScreenBounds(container)));
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ex) {
+                    Logger.printException(() -> "onPreDraw failure", ex);
+                }
+                return !shelfPaddingChanged;
+            });
+        }
+    }
+
+    /**
      * Injection point.
      * Called when a RecyclerView draws below its items.
      * The header of the Shorts shelf has the background of the cards, with the rounded top corners,
@@ -2068,7 +2104,7 @@ public class FeedCardLayoutPatch {
      */
     public static void onListDraw(RecyclerView list, Canvas canvas) {
         try {
-            if (!listsDrawCards() || canvas == null) {
+            if (!CARD_LAYOUT || canvas == null) {
                 return;
             }
 
@@ -2140,11 +2176,10 @@ public class FeedCardLayoutPatch {
                     continue;
                 }
 
-                // First visible row of a Shorts shelf. The default layout changes only the margins of the Shorts
-                // of the newer A/B test, see markShortsCell().
+                // First visible row of a Shorts shelf.
                 if (isShortsRow(item)) {
                     View above = findItemAbove(list, item);
-                    if (CARD_LAYOUT && (above == null || !isShortsRow(above))) {
+                    if (above == null || !isShortsRow(above)) {
                         drawShortsShelfCard(list, above, item, canvas);
                     }
                     continue;
@@ -2213,7 +2248,6 @@ public class FeedCardLayoutPatch {
             }
 
             for (View row : scaledShelfRows.keySet().toArray(new View[0])) {
-                //noinspection EqualsBetweenInconvertibleTypes
                 if (row != null && row.getParent() == list && !scaledRows.contains(row)) {
                     scaledShelfRows.remove(row);
                     row.setScaleX(1);
@@ -2943,9 +2977,9 @@ public class FeedCardLayoutPatch {
     /**
      * The cards that YouTube sends to the accounts of a newer A/B test, such as the videos, the playlists,
      * the Shorts and the Premium promotion, have no padding and fill the width with the list.
-     * They get the padding and the labels of the converted cards, whatever their content type,
-     * also with the default layout, which shows them as YouTube sends them otherwise.
-     * The cards of an older A/B test already have their padding, and are not changed.
+     * They get the padding and the labels of the converted cards, whatever their content type.
+     * The cards of an older A/B test already have their padding. Every card gets the style
+     * of the converted cards, see withCardStyle().
      *
      * @return The converted card, or null if the card is not changed.
      */
@@ -2954,15 +2988,31 @@ public class FeedCardLayoutPatch {
             throws InvalidProtocolBufferException {
         ComponentType converted = null;
         LockupModel card = model.getLockupModel();
+        ComponentType withStyle = withCardStyle(componentType, card);
+        if (withStyle != null) {
+            componentType = withStyle;
+            model = withStyle.getModel();
+            card = model.getLockupModel();
+            converted = withStyle;
+        }
         LockupViewModel lockupViewModel = card.getViewModel().getLockupViewModel();
         RendererContext rendererContext = lockupViewModel.getRendererContext();
         String label = rendererContext.getAccessibilityContext().getLabel();
         LockupMetadataViewModel metadata = lockupViewModel.getMetadata().getLockupMetadataViewModel();
         final int contentType = lockupViewModel.getContentType();
+        if (ACTION_BUTTONS && contentType == LOCKUP_CONTENT_TYPE_VIDEO) {
+            // The save button shows only the videos saved in the app session, see onCardSaveButton().
+            for (ActionButton button : metadata.getActionButtonsList()) {
+                String saveEntityKey = button.getAddToPlaylistButtonViewModel().getAddToPlaylistEntityKey();
+                if (!saveEntityKey.isEmpty()) {
+                    FeedVideoActionsPatch.onCardSaveButton(lockupViewModel.getContentId(), saveEntityKey);
+                }
+            }
+        }
         // The card layout without buttons removes the buttons of the videos and the Shorts that YouTube
         // sends as cards with buttons. The other cards, such as the playlists and the promotions,
         // keep their buttons, as their menu may not have their actions.
-        if (LAYOUT == FeedCardLayout.CARDS && !isCardLabel(label) && metadata.getActionButtonsCount() > 0
+        if (CARD_LAYOUT && !ACTION_BUTTONS && !isCardLabel(label) && metadata.getActionButtonsCount() > 0
                 && (contentType == LOCKUP_CONTENT_TYPE_VIDEO || contentType == LOCKUP_CONTENT_TYPE_SHORT)) {
             boolean hasSaveButton = false;
             for (ActionButton button : metadata.getActionButtonsList()) {
@@ -3007,6 +3057,45 @@ public class FeedCardLayoutPatch {
                     .build();
         }
         return converted;
+    }
+
+    /**
+     * The style of the cards that YouTube sends changes with the A/B tests of the server, which add experiments
+     * to the cards and subscriptions to the elements. Some styles are not drawn as intended by Litho, such as
+     * the blurred background at the bottom of the cards of a newer A/B test, which is drawn as a panel with
+     * rounded corners that show light arcs on the card. With the card layouts, the cards get the style of the
+     * converted cards instead, such as the search results converted to cards: only the experiments of
+     * setCardExperiments() and the theme and capabilities subscriptions, so a new style of the server does not
+     * change the cards. The default layout keeps the style of the server, without the blurred background.
+     * The elements without the experiments of the cards, which YouTube does not show as cards, are not changed.
+     *
+     * @return The card with the style of the converted cards, or null if the card is not changed.
+     */
+    @Nullable
+    private static ComponentType withCardStyle(ComponentType componentType, LockupModel card) {
+        ElementContext context = card.getContext();
+        ElementsExperiments experiments = context.getElementsExperiments();
+        if (!experiments.hasCardLayoutExperiments() && !experiments.hasLockupExperiments()) {
+            return null;
+        }
+
+        ElementContext cardContext = setCardExperiments(context, true);
+        SubscriptionConfig config = componentType.getSubscriptionConfig();
+        SubscriptionConfig.Builder cardConfig = SubscriptionConfig.newBuilder();
+        if (config.hasThemeSubscriptionConfig()) {
+            cardConfig.setThemeSubscriptionConfig(config.getThemeSubscriptionConfig());
+        }
+        if (config.hasCapabilitiesSubscriptionConfig()) {
+            cardConfig.setCapabilitiesSubscriptionConfig(config.getCapabilitiesSubscriptionConfig());
+        }
+        if (cardContext.equals(context) && cardConfig.build().equals(config)) {
+            return null;
+        }
+        return componentType.toBuilder()
+                .setModel(componentType.getModel().toBuilder()
+                        .setLockupModel(card.toBuilder().setContext(cardContext)))
+                .setSubscriptionConfig(cardConfig)
+                .build();
     }
 
     /**
@@ -3099,6 +3188,19 @@ public class FeedCardLayoutPatch {
                 .build();
     }
 
+    /**
+     * @return The key of an entity of a video, such as its like status.
+     */
+    static String videoEntityKey(String videoId, int entityType) {
+        return Base64.encodeToString(LikeStatusEntityKey.newBuilder()
+                        .setVideoId(videoId)
+                        .setEntityType(entityType)
+                        .setVersion(1)
+                        .build()
+                        .toByteArray(),
+                Base64.URL_SAFE | Base64.NO_WRAP).replace("=", "%3D");
+    }
+
     private static InnertubeCommandHolder likeCommand(String videoId, int status) {
         return InnertubeCommandHolder.newBuilder()
                 .setInnertubeCommand(InnertubeCommand.newBuilder()
@@ -3165,15 +3267,25 @@ public class FeedCardLayoutPatch {
      * of the cards. The converted elements would get the experiments meant for the other layout, so they have
      * only the experiments of the style of the cards, which the cards turn on and the classic layout turns off.
      * Every other experiment of the cards is left out, also the ones that the server adds later.
+     * The cards have a gray background, or with the layouts with the avatar glow a background that fades
+     * from the colors of the avatar of the channel into the card.
      */
     private static ElementContext setCardExperiments(ElementContext context, boolean enabled) {
+        ElementsExperiments.Builder experiments = context.getElementsExperiments().toBuilder()
+                .clearCardLayoutExperiments()
+                .clearLockupExperiments()
+                .clearLockupMetadataExperiments();
+        if (enabled) {
+            if (AVATAR_GLOW) {
+                experiments.setCardLayoutExperiments(CardLayoutExperiments.newBuilder()
+                        .setEnableColorSampledBackground(true)
+                        .setEnableMetadataBackground(true));
+            } else {
+                experiments.setLockupExperiments(LockupExperiments.newBuilder().setEnableCardStyle(true));
+            }
+        }
         return context.toBuilder()
-                .setElementsExperiments(context.getElementsExperiments().toBuilder()
-                        .setCardLayoutExperiments(CardLayoutExperiments.newBuilder()
-                                .setEnableColorSampledBackground(enabled)
-                                .setEnableMetadataBackground(enabled))
-                        .clearLockupExperiments()
-                        .clearLockupMetadataExperiments())
+                .setElementsExperiments(experiments)
                 .build();
     }
 

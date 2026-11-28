@@ -13,11 +13,6 @@ import static app.morphe.extension.shared.StringRef.str;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.content.Context;
-import android.content.res.ColorStateList;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.ShapeDrawable;
@@ -29,24 +24,18 @@ import android.text.style.StyleSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.Menu;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewOutlineProvider;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 
-import java.io.InputStream;
 import java.lang.ref.WeakReference;
-import java.net.HttpURLConnection;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -59,13 +48,10 @@ import java.util.Set;
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.ResourceUtils;
 import app.morphe.extension.shared.Utils;
-import app.morphe.extension.shared.requests.Requester;
-import app.morphe.extension.shared.settings.search.BaseSearchViewController;
 import app.morphe.extension.shared.theme.ThemeUtils;
 import app.morphe.extension.shared.ui.Dim;
-import app.morphe.extension.shared.ui.SheetBottomDialog;
-import app.morphe.extension.youtube.patches.dearrow.DeArrowPatch;
-import app.morphe.extension.youtube.patches.originaltitles.RestoreOriginalTitlesPatch;
+import app.morphe.extension.youtube.patches.utils.SearchDialog;
+import app.morphe.extension.youtube.patches.utils.SearchResultsSheet;
 import app.morphe.extension.youtube.patches.utils.requests.ChannelPostsSearchRequest;
 import app.morphe.extension.youtube.patches.utils.requests.ChannelPostsSearchRequest.ChannelPostResult;
 import app.morphe.extension.youtube.patches.utils.requests.ChannelSearchRequest;
@@ -107,59 +93,7 @@ public final class ChannelSearchPatch {
             final long now = System.currentTimeMillis() / 1000;
             Map<String, Long> keys = new HashMap<>(2 * results.size());
             for (ChannelSearchResult result : results) {
-                // The value to sort by, or null if it is not known. The age of an upload is
-                // its place in the uploads, and uploads that are not listed are older than
-                // all listed ones, so they come after them by the age shown in the search.
-                Long sortKey;
-                sortKey: {
-                    switch (this) {
-                        case NEWEST, OLDEST -> {
-                            Integer position = uploads.positions.get(result.videoId);
-                            if (position != null) {
-                                sortKey = (long) position;
-                                break sortKey;
-                            }
-
-                            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                            final long ageSeconds = details != null
-                                    ? now - details.publishTimeSeconds
-                                    : result.publishedTimeSeconds;
-                            if (ageSeconds == Long.MAX_VALUE) {
-                                sortKey = null;
-                                break sortKey;
-                            }
-                            sortKey = uploads.positions.size() + Math.max(0, ageSeconds);
-                            break sortKey;
-                        }
-                        case MOST_VIEWED, LEAST_VIEWED -> {
-                            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                            if (details != null) {
-                                sortKey = details.viewCount;
-                                break sortKey;
-                            }
-                            if (result.viewCount >= 0) {
-                                sortKey = result.viewCount;
-                                break sortKey;
-                            }
-
-                            // The exact view count can be missing, such as when too many were fetched.
-                            sortKey = uploads.roundedViewCounts.get(result.videoId);
-                            break sortKey;
-                        }
-                        case SHORTEST, LONGEST -> {
-                            // Live streams, premieres and Shorts in the search results show no length.
-                            if (result.lengthSeconds > 0) {
-                                sortKey = result.lengthSeconds;
-                                break sortKey;
-                            }
-                            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                            sortKey = details != null && details.lengthSeconds > 0 ? details.lengthSeconds : null;
-                            break sortKey;
-                        }
-                    }
-                    sortKey = null;
-                }
-                keys.put(result.videoId, sortKey);
+                keys.put(result.videoId, sortKey(result, uploads, now));
             }
 
             final boolean ascending = this == NEWEST || this == LEAST_VIEWED || this == SHORTEST;
@@ -178,13 +112,49 @@ public final class ChannelSearchPatch {
             });
             return results;
         }
+
+        /**
+         * @return The value to sort by, or null if it is not known. The age of an upload is
+         *         its place in the uploads, and uploads that are not listed are older than
+         *         all listed ones, so they come after them by the age shown in the search.
+         */
+        @Nullable
+        private Long sortKey(ChannelSearchResult result, ChannelUploadsRequest.Uploads uploads, long now) {
+            switch (this) {
+                case NEWEST, OLDEST -> {
+                    Integer position = uploads.positions.get(result.videoId);
+                    if (position != null) return (long) position;
+
+                    VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                    final long ageSeconds = details != null
+                            ? now - details.publishTimeSeconds
+                            : result.publishedTimeSeconds;
+                    if (ageSeconds == Long.MAX_VALUE) return null;
+                    return uploads.positions.size() + Math.max(0, ageSeconds);
+                }
+                case MOST_VIEWED, LEAST_VIEWED -> {
+                    VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                    if (details != null) return details.viewCount;
+                    if (result.viewCount >= 0) return result.viewCount;
+                    // The exact view count can be missing, such as when too many were fetched.
+                    return uploads.roundedViewCounts.get(result.videoId);
+                }
+                case SHORTEST, LONGEST -> {
+                    // Live streams, premieres and Shorts in the search results show no length.
+                    if (result.lengthSeconds > 0) return result.lengthSeconds;
+                    VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+                    return details != null && details.lengthSeconds > 0 ? details.lengthSeconds : null;
+                }
+            }
+            return null;
+        }
     }
 
     /**
      * What the results list, which the user picks above them.
      */
     private enum ResultMode {
-        VIDEOS("morphe_channel_search_videos"),
+        VIDEOS("morphe_videos"),
         POSTS("morphe_channel_search_posts");
 
         /**
@@ -241,69 +211,32 @@ public final class ChannelSearchPatch {
      */
     private static final int POST_SNIPPET_LEAD_CHARACTERS = 40;
 
-    private static final int THUMBNAIL_WIDTH = Dim.dp(120);
-    private static final int THUMBNAIL_HEIGHT = Dim.dp(68);
-    private static final int THUMBNAIL_CORNER_RADIUS = Dim.dp(8);
-    private static final int THUMBNAIL_TIMEOUT_MILLISECONDS = 10 * 1000;
-
     private static final int TOOLBAR_ID = ResourceUtils.getIdIdentifier("toolbar");
-
-    private static final int DIALOG_ANIMATION_DURATION_MILLISECONDS = 300;
-
-    /**
-     * Share of the screen height the results take up at most.
-     */
-    private static final int LIST_MAX_HEIGHT_PERCENT = 60;
-
-    /**
-     * The app runs a submit through more than one code path, and only the first one counts.
-     */
-    private static final long DUPLICATE_SUBMIT_MILLISECONDS = 1000;
-
-    /**
-     * Bitmaps are large, so they are kept only while a result list is open.
-     */
-    private static final Map<String, Bitmap> thumbnailCache = Collections.synchronizedMap(
-            Utils.createSizeRestrictedMap(40));
 
     /**
      * Browse id of the page the user is on. Channel pages use the channel id as their browse id.
      */
     private static String currentBrowseId = "";
 
-    /** Channel selected by the dedicated toolbar button, retained while search opens. */
-    private static volatile String pendingChannelSearchBrowseId = "";
-
     private static WeakReference<View> searchButtonParentRef = new WeakReference<>(null);
     private static WeakReference<ImageView> searchButtonViewRef = new WeakReference<>(null);
     private static WeakReference<View> channelSearchButtonRef = new WeakReference<>(null);
-
-    private static String lastQuery = "";
-    private static long lastQueryTime;
-
-    private static WeakReference<SearchController> activeControllerRef = new WeakReference<>(null);
 
     /**
      * Injection point.
      * Called on main thread.
      */
     public static void setBrowseId(@Nullable String browseId) {
-        String nextBrowseId = browseId == null ? "" : browseId;
-        if (!nextBrowseId.equals(currentBrowseId)) {
-            pendingChannelSearchBrowseId = "";
-        }
-        currentBrowseId = nextBrowseId;
+        currentBrowseId = browseId == null ? "" : browseId;
         updateChannelSearchButton();
     }
 
     /**
      * Injection point.
      * The search feed is not a browse page, and returning to it from a channel sets no browse id.
-     * The channel is left too, so searching from the search feed again searches all of YouTube.
      */
     public static void clearBrowseId() {
         currentBrowseId = "";
-        pendingChannelSearchBrowseId = "";
         updateChannelSearchButton();
     }
 
@@ -315,14 +248,6 @@ public final class ChannelSearchPatch {
         }
         searchButtonParentRef = new WeakReference<>(parentView);
         searchButtonViewRef = new WeakReference<>(imageView);
-        //noinspection ClickableViewAccessibility
-        imageView.setOnTouchListener((view, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                // YouTube's original search icon always starts a global search.
-                pendingChannelSearchBrowseId = "";
-            }
-            return false;
-        });
         updateChannelSearchButton();
         parentView.post(ChannelSearchPatch::updateChannelSearchButton);
     }
@@ -364,27 +289,7 @@ public final class ChannelSearchPatch {
             }
             if (!visible || originalParent == null || originalIcon == null || toolbar == null) return;
 
-            ViewGroup.LayoutParams buttonParams;
-            copyLayoutParams: {
-                ViewGroup.LayoutParams original = toolbarItem.getLayoutParams();
-                if (original == null) {
-                    buttonParams = new ViewGroup.LayoutParams(Dim.dp48, Dim.dp48);
-                    break copyLayoutParams;
-                }
-                if (original instanceof LinearLayout.LayoutParams linear) {
-                    buttonParams = new LinearLayout.LayoutParams(linear);
-                    break copyLayoutParams;
-                }
-                if (original instanceof FrameLayout.LayoutParams frame) {
-                    buttonParams = new FrameLayout.LayoutParams(frame);
-                    break copyLayoutParams;
-                }
-                if (original instanceof ViewGroup.MarginLayoutParams margins) {
-                    buttonParams = new ViewGroup.MarginLayoutParams(margins);
-                    break copyLayoutParams;
-                }
-                buttonParams = new ViewGroup.LayoutParams(original);
-            }
+            ViewGroup.LayoutParams buttonParams = copyLayoutParams(toolbarItem.getLayoutParams());
             if (buttonParams instanceof LinearLayout.LayoutParams linearParams) {
                 linearParams.width = Dim.dp48;
                 linearParams.weight = 0;
@@ -406,9 +311,12 @@ public final class ChannelSearchPatch {
             icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
             channelButton.addView(icon, new FrameLayout.LayoutParams(Dim.dp24, Dim.dp24, Gravity.CENTER));
             channelButton.setOnClickListener(view -> {
-                pendingChannelSearchBrowseId = currentBrowseId;
-                ImageView searchButton = searchButtonViewRef.get();
-                if (searchButton != null) searchButton.callOnClick();
+                String channelId = currentBrowseId;
+                Activity activity = Utils.getActivity();
+                if (activity != null && isChannelId(channelId)) {
+                    SearchDialog.show(activity, str("morphe_channel_search_hint"),
+                            query -> searchInChannel(activity, channelId, query));
+                }
             });
 
             final int index = toolbar.indexOfChild(toolbarItem);
@@ -419,30 +327,27 @@ public final class ChannelSearchPatch {
         }
     }
 
-    /**
-     * Injection point.
-     * Called only for the default hint, not for the hint of Shorts or playlist search.
-     */
-    public static String getSearchHint(String original) {
-        try {
-            if (Settings.CHANNEL_SEARCH.get() && isChannelId(pendingChannelSearchBrowseId)) {
-                return str("morphe_channel_search_hint");
-            }
-        } catch (Exception ex) {
-            Logger.printException(() -> "getSearchHint failure", ex);
+    private static ViewGroup.LayoutParams copyLayoutParams(ViewGroup.LayoutParams original) {
+        if (original == null) {
+            return new ViewGroup.LayoutParams(Dim.dp48, Dim.dp48);
         }
-
-        return original;
+        if (original instanceof LinearLayout.LayoutParams linear) {
+            return new LinearLayout.LayoutParams(linear);
+        }
+        if (original instanceof FrameLayout.LayoutParams frame) {
+            return new FrameLayout.LayoutParams(frame);
+        }
+        if (original instanceof ViewGroup.MarginLayoutParams margins) {
+            return new ViewGroup.MarginLayoutParams(margins);
+        }
+        return new ViewGroup.LayoutParams(original);
     }
 
     private static final class SearchController implements ChannelSearchRequest.ChannelSearchCallback {
         private final Activity activity;
         private final String channelId;
         private final String query;
-        private final SheetBottomDialog.SlideDialog dialog;
-        private final TextView scopeView;
-        private final LinearLayout listContainer;
-        private final ScrollView scrollView;
+        private final SearchResultsSheet sheet;
         /** Shown while a sort other than relevance still completes its results. */
         private final ProgressBar sortLoadingView;
         @Nullable
@@ -453,7 +358,6 @@ public final class ChannelSearchPatch {
         private PostSortOption activePostSort = PostSortOption.NEWEST;
         private volatile boolean isCancelled;
         private boolean isSearchFailed;
-        private boolean isScopeSet;
         @Nullable
         private TextView sortButton;
 
@@ -481,73 +385,10 @@ public final class ChannelSearchPatch {
             this.channelId = channelId;
             this.query = query;
 
-            hideKeyboard(activity);
-
-            SheetBottomDialog.DraggableLinearLayout mainLayout = SheetBottomDialog
-                    .createMainLayout(activity, null);
-            scopeView = new TextView(activity);
-            // The query alone reads like a global search, so the channel it was scoped to is shown under it.
-            final int foregroundColor = ThemeUtils.getAppForegroundColor();
-
-            LinearLayout header = new LinearLayout(activity);
-            header.setOrientation(LinearLayout.HORIZONTAL);
-            header.setGravity(Gravity.CENTER_VERTICAL);
-            header.setPadding(Dim.dp16, Dim.dp8, Dim.dp16, Dim.dp12);
-
-            ImageView icon = new ImageView(activity);
-            icon.setImageDrawable(BaseSearchViewController.getSearchIconDrawable());
-            LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(Dim.dp24, Dim.dp24);
-            iconParams.setMarginEnd(Dim.dp16);
-            icon.setLayoutParams(iconParams);
-            header.addView(icon);
-
-            LinearLayout text = new LinearLayout(activity);
-            text.setOrientation(LinearLayout.VERTICAL);
-            text.setLayoutParams(new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-            TextView queryView = new TextView(activity);
-            queryView.setText(query);
-            queryView.setTextColor(foregroundColor);
-            queryView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-            queryView.setTypeface(Typeface.DEFAULT_BOLD);
-            queryView.setSingleLine();
-            queryView.setEllipsize(TextUtils.TruncateAt.END);
-            text.addView(queryView);
-
-            scopeView.setText(str("morphe_channel_search_results"));
-            scopeView.setTextColor(foregroundColor);
-            scopeView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            scopeView.setAlpha(0.7f);
-            scopeView.setSingleLine();
-            scopeView.setEllipsize(TextUtils.TruncateAt.END);
-            text.addView(scopeView);
-
-            header.addView(text);
-            mainLayout.addView(header);
-            mainLayout.addView(createDivider(activity));
-
-            sortLoadingView = createLoadingView(activity);
+            sortLoadingView = SearchResultsSheet.createLoadingView(activity);
             sortLoadingView.setVisibility(View.INVISIBLE);
-            mainLayout.addView(createSortBar(activity, this, sortLoadingView));
-
-            listContainer = new LinearLayout(activity);
-            listContainer.setOrientation(LinearLayout.VERTICAL);
-            listContainer.setPadding(0, 0, 0, Dim.dp16);
-
-            scrollView = SheetBottomDialog.createCappedScrollView(activity, LIST_MAX_HEIGHT_PERCENT);
-            scrollView.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
-            scrollView.addView(listContainer);
-            mainLayout.addView(scrollView);
-            showState(null);
-
-            dialog = SheetBottomDialog.createSlideDialog(activity, mainLayout, DIALOG_ANIMATION_DURATION_MILLISECONDS);
-            dialog.setOnDismissListener(dismissed -> {
-                cancel();
-                thumbnailCache.clear();
-            });
-            dialog.show();
+            sheet = new SearchResultsSheet(activity, query, str("morphe_channel_search_results"),
+                    createSortBar(activity, this, sortLoadingView), this::cancel);
 
             if (resultMode == ResultMode.POSTS) {
                 requestPostsTab();
@@ -556,7 +397,7 @@ public final class ChannelSearchPatch {
 
         @Override
         public boolean isCancelled() {
-            return isCancelled || !dialog.isShowing();
+            return isCancelled || !sheet.isShowing();
         }
 
         public void cancel() {
@@ -570,7 +411,7 @@ public final class ChannelSearchPatch {
                     return;
                 }
                 if (response != null && !response.results.isEmpty()) {
-                    setScope(response.channelName);
+                    sheet.setScopeName(response.channelName);
                     lastResponse = response;
                 } else if (!isComplete) {
                     return;
@@ -580,7 +421,7 @@ public final class ChannelSearchPatch {
                     if (resultMode == ResultMode.POSTS) {
                         refreshResults();
                     } else {
-                        showState(str(isSearchFailed
+                        sheet.showState(str(isSearchFailed
                                 ? "morphe_channel_search_failed"
                                 : "morphe_channel_search_no_results"));
                     }
@@ -662,17 +503,7 @@ public final class ChannelSearchPatch {
             if (results.isEmpty() && uploadsComplete) {
                 assert lastResponse != null;
                 for (ChannelSearchResult result : lastResponse.results) {
-                    boolean descriptionMatches;
-                    descriptionMatches: {
-                        VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
-                        if (details == null) {
-                            // Kept until the details tell, unless they could not be fetched.
-                            descriptionMatches = pendingDetailFetches > 0;
-                            break descriptionMatches;
-                        }
-                        descriptionMatches = ChannelUploadsRequest.matches(details.text, query);
-                    }
-                    if (descriptionMatches) {
+                    if (descriptionMatches(result)) {
                         results.add(result);
                     }
                 }
@@ -696,6 +527,15 @@ public final class ChannelSearchPatch {
             return results;
         }
 
+        private boolean descriptionMatches(ChannelSearchResult result) {
+            VideoDetailsRequest.VideoDetails details = VideoDetailsRequest.get(result.videoId);
+            if (details == null) {
+                // Kept until the details tell, unless they could not be fetched.
+                return pendingDetailFetches > 0;
+            }
+            return ChannelUploadsRequest.matches(details.text, query);
+        }
+
         /**
          * @return Whether the results of the active sort can still change.
          */
@@ -712,7 +552,7 @@ public final class ChannelSearchPatch {
             if (lastResponse == null) {
                 if (isSearchComplete) {
                     sortLoadingView.setVisibility(View.INVISIBLE);
-                    showState(str(isSearchFailed
+                    sheet.showState(str(isSearchFailed
                             ? "morphe_channel_search_failed"
                             : "morphe_channel_search_no_results"));
                 }
@@ -725,24 +565,11 @@ public final class ChannelSearchPatch {
 
             List<ChannelSearchResult> sorted = activeSort.sort(allResults(), uploads);
             if (sorted.isEmpty()) {
-                showState(loading ? null : str("morphe_channel_search_no_results"));
+                sheet.showState(loading ? null : str("morphe_channel_search_no_results"));
                 return;
             }
 
-            final int scrollY = scrollView.getScrollY();
-            populateList(activity, sorted, listContainer, dialog);
-            if (scrollY > 0) {
-                scrollView.scrollTo(0, scrollY);
-            }
-        }
-
-        @SuppressLint("SetTextI18n")
-        private void setScope(String channelName) {
-            if (isScopeSet || channelName.isEmpty()) {
-                return;
-            }
-            isScopeSet = true;
-            scopeView.setText(str("morphe_channel_search_results") + "  •  " + channelName);
+            sheet.showVideos(sorted, null, false);
         }
 
         private void setResultMode(ResultMode mode) {
@@ -752,15 +579,14 @@ public final class ChannelSearchPatch {
             resultMode = mode;
             lastResultMode = mode;
             updateSortButtonText();
-            scrollView.scrollTo(0, 0);
-            listContainer.removeAllViews();
+            sheet.clear();
             if (mode == ResultMode.POSTS) {
                 requestPostsTab();
             } else {
                 completeResults();
             }
             if (lastResponse == null && !isSearchComplete && mode == ResultMode.VIDEOS) {
-                showState(null);
+                sheet.showState(null);
             }
             refreshResults();
         }
@@ -777,7 +603,7 @@ public final class ChannelSearchPatch {
             ChannelPostsSearchRequest.fetchPostsTab(channelId, query, this::isCancelled,
                     (posts, channelName, isComplete) -> Utils.runOnMainThreadNowOrLater(() -> {
                         if (isCancelled()) return;
-                        setScope(channelName);
+                        sheet.setScopeName(channelName);
                         postsTabMatches = posts;
                         postsTabComplete = isComplete;
                         if (resultMode == ResultMode.POSTS) {
@@ -792,43 +618,12 @@ public final class ChannelSearchPatch {
             sortLoadingView.setVisibility(loading ? View.VISIBLE : View.INVISIBLE);
 
             if (postsTabMatches.isEmpty()) {
-                showState(loading ? null : str("morphe_channel_search_no_posts"));
+                sheet.showState(loading ? null : str("morphe_channel_search_no_posts"));
                 return;
             }
 
-            final int scrollY = scrollView.getScrollY();
             List<ChannelPostResult> posts = activePostSort.sort(new ArrayList<>(postsTabMatches));
-            final int count = listContainer.getChildCount();
-            Map<String, View> existingViews = new HashMap<>(2 * count);
-            for (int i = 0; i < count; i++) {
-                View child = listContainer.getChildAt(i);
-                if (child.getTag() instanceof String tag && tag.startsWith("post:")) {
-                    existingViews.put(tag, child);
-                }
-            }
-
-            listContainer.removeAllViews();
-
-            for (ChannelPostResult post : posts) {
-                String tag = "post:" + post.postId;
-                View row = existingViews.get(tag);
-                if (row == null) {
-                    row = createPostRow(activity, post, query);
-                    row.setTag(tag);
-                    String postId = post.postId;
-                    row.setOnClickListener(view -> {
-                        dialog.dismiss();
-                        Utils.runOnMainThreadDelayed(() -> {
-                            closeSearch(activity);
-                            LoadVideoPatch.openVideoIntent("https://www.youtube.com/post/" + postId, false);
-                        }, DIALOG_ANIMATION_DURATION_MILLISECONDS);
-                    });
-                }
-                listContainer.addView(row);
-            }
-            if (scrollY > 0) {
-                scrollView.scrollTo(0, scrollY);
-            }
+            sheet.showRows(createPostRows(activity, sheet, posts, query));
         }
 
         @SuppressLint("SetTextI18n")
@@ -870,100 +665,25 @@ public final class ChannelSearchPatch {
                     activeSort = selected;
                     completeResults();
                 }
-                scrollView.scrollTo(0, 0);
+                sheet.scrollToTop();
                 refreshResults();
                 updateSortButtonText();
                 return true;
             });
             popupMenu.show();
         }
-
-        /**
-         * Replaces the results with a loading animation, or with a message.
-         *
-         * @param message Null to show that the results are loading.
-         */
-        private void showState(@Nullable String message) {
-            listContainer.removeAllViews();
-
-            if (message == null) {
-                // Takes up the room of the results, so the dialog does not grow when they show.
-                FrameLayout loading = new FrameLayout(activity);
-                loading.addView(createLoadingView(activity), new FrameLayout.LayoutParams(
-                        Dim.dp36, Dim.dp36, Gravity.CENTER));
-                listContainer.addView(loading, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, Dim.pctHeight(LIST_MAX_HEIGHT_PERCENT)));
-                return;
-            }
-
-            TextView messageView = new TextView(activity);
-            messageView.setText(message);
-            messageView.setTextColor(ThemeUtils.getAppForegroundColor());
-            messageView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            messageView.setAlpha(0.7f);
-            messageView.setGravity(Gravity.CENTER);
-            messageView.setPadding(Dim.dp32, Dim.dp36, Dim.dp32, Dim.dp28);
-            listContainer.addView(messageView);
-        }
     }
 
-    /**
-     * Injection point.
-     * Called on main thread.
-     *
-     * @return Whether the global search was replaced with a search inside the current channel.
-     */
-    public static boolean searchInChannel(@Nullable String query) {
+    private static void searchInChannel(Activity activity, String channelId, String query) {
         try {
-            if (!Settings.CHANNEL_SEARCH.get() || query == null || query.isEmpty()) {
-                return false;
-            }
-
-            String channelId = pendingChannelSearchBrowseId;
-            if (!isChannelId(channelId)) {
-                return false;
-            }
-
-            Activity activity = Utils.getActivity();
-            if (activity == null) {
-                return false;
-            }
-
-            final long now = System.currentTimeMillis();
-            if (query.equals(lastQuery) && now - lastQueryTime < DUPLICATE_SUBMIT_MILLISECONDS) {
-                return true;
-            }
-            lastQuery = query;
-            lastQueryTime = now;
-
             Logger.printDebug(() -> "Searching channel: " + channelId + " for: " + query);
-
-            SearchController previousController = activeControllerRef.get();
-            if (previousController != null) {
-                previousController.cancel();
-                if (previousController.dialog.isShowing()) {
-                    previousController.dialog.dismiss();
-                }
-            }
 
             // The results show right away, and fill in as the search finds them.
             SearchController controller = new SearchController(activity, channelId, query);
-            activeControllerRef = new WeakReference<>(controller);
             ChannelSearchRequest.fetchProgressive(channelId, query, controller);
-
-            return true;
         } catch (Exception ex) {
             Logger.printException(() -> "searchInChannel failure", ex);
         }
-
-        return false;
-    }
-
-    private static ProgressBar createLoadingView(Activity activity) {
-        ProgressBar loadingView = new ProgressBar(activity);
-        loadingView.setIndeterminate(true);
-        loadingView.setIndeterminateTintList(ColorStateList.valueOf(ThemeUtils.getAppForegroundColor()));
-        return loadingView;
     }
 
     private static View createSortBar(Activity activity, SearchController controller, View loadingView) {
@@ -1037,8 +757,27 @@ public final class ChannelSearchPatch {
         }
     }
 
+    private static List<View> createPostRows(Activity activity, SearchResultsSheet sheet,
+                                             List<ChannelPostResult> posts, String query) {
+        Map<String, View> existingRows = sheet.getRows();
+        List<View> rows = new ArrayList<>(posts.size());
+
+        for (ChannelPostResult post : posts) {
+            String tag = "post:" + post.postId;
+            View row = existingRows.remove(tag);
+            if (row == null) {
+                row = createPostRow(activity, post, query);
+                row.setTag(tag);
+                String url = "https://www.youtube.com/post/" + post.postId;
+                row.setOnClickListener(view -> sheet.open(url));
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
     private static View createPostRow(Activity activity, ChannelPostResult post, String query) {
-        LinearLayout row = createResultRowContainer(activity);
+        LinearLayout row = SearchResultsSheet.createRowContainer(activity);
         row.setGravity(Gravity.TOP);
 
         if (!post.thumbnailUrl.isEmpty()) {
@@ -1049,19 +788,10 @@ public final class ChannelSearchPatch {
             frameParams.topMargin = Dim.dp2;
             thumbnailFrame.setLayoutParams(frameParams);
 
-            ImageView thumbnail = new ImageView(activity);
-            thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            thumbnail.setClipToOutline(true);
-            thumbnail.setOutlineProvider(new ViewOutlineProvider() {
-                @Override
-                public void getOutline(View view, Outline outline) {
-                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
-                            THUMBNAIL_CORNER_RADIUS);
-                }
-            });
+            ImageView thumbnail = SearchResultsSheet.createThumbnailView(activity);
             thumbnailFrame.addView(thumbnail, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            loadThumbnail(thumbnail, post.thumbnailUrl);
+            SearchResultsSheet.loadThumbnail(thumbnail, post.thumbnailUrl);
 
             if (post.imageCount > 1) {
                 TextView badge = new TextView(activity);
@@ -1089,58 +819,7 @@ public final class ChannelSearchPatch {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         TextView body = new TextView(activity);
-        // Text of the post from shortly before the first word of the search, with the words of
-        // the search in bold, so that a match deep in a long post is still shown.
-        CharSequence postSnippet;
-        postSnippet: {
-            String postText = post.text;
-            if (postText.isEmpty()) {
-                postSnippet = postText;
-                break postSnippet;
-            }
-
-            String foldedText = foldForHighlight(postText);
-            List<String> words = new ArrayList<>();
-            for (String word : foldForHighlight(query).split("\\s+")) {
-                if (!word.isEmpty()) words.add(word);
-            }
-
-            int firstMatch = -1;
-            for (String word : words) {
-                final int index = foldedText.indexOf(word);
-                if (index >= 0 && (firstMatch < 0 || index < firstMatch)) {
-                    firstMatch = index;
-                }
-            }
-
-            int start = 0;
-            if (firstMatch > POST_SNIPPET_LEAD_CHARACTERS) {
-                start = firstMatch - POST_SNIPPET_LEAD_CHARACTERS;
-                // Starts at a word, or at a line.
-                final int lineStart = postText.lastIndexOf('\n', firstMatch - 1);
-                if (lineStart >= start) {
-                    start = lineStart + 1;
-                } else {
-                    final int space = postText.indexOf(' ', start);
-                    if (space >= 0 && space < firstMatch) start = space + 1;
-                }
-            }
-
-            final String prefix = start > 0 ? "…" : "";
-            SpannableString snippet = new SpannableString(prefix + postText.substring(start));
-            String foldedSnippet = foldedText.substring(start);
-            for (String word : words) {
-                int index = foldedSnippet.indexOf(word);
-                while (index >= 0) {
-                    final int spanStart = prefix.length() + index;
-                    snippet.setSpan(new StyleSpan(Typeface.BOLD), spanStart, spanStart + word.length(),
-                            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    index = foldedSnippet.indexOf(word, index + word.length());
-                }
-            }
-            postSnippet = snippet;
-        }
-        body.setText(postSnippet);
+        body.setText(postSnippet(post.text, query));
         body.setTextColor(ThemeUtils.getAppForegroundColor());
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         body.setMaxLines(3);
@@ -1171,6 +850,62 @@ public final class ChannelSearchPatch {
     }
 
     /**
+     * Text of the post from shortly before the first word of the search, with the words of
+     * the search in bold, so that a match deep in a long post is still shown.
+     */
+    private static CharSequence postSnippet(String text, String query) {
+        if (text.isEmpty()) {
+            return text;
+        }
+
+        String foldedText = foldForHighlight(text);
+        List<String> words = new ArrayList<>();
+        for (String word : foldForHighlight(query).split("\\s+")) {
+            if (!word.isEmpty()) words.add(word);
+        }
+
+        int start = getStart(text, words, foldedText);
+
+        final String prefix = start > 0 ? "…" : "";
+        SpannableString snippet = new SpannableString(prefix + text.substring(start));
+        String foldedSnippet = foldedText.substring(start);
+        for (String word : words) {
+            int index = foldedSnippet.indexOf(word);
+            while (index >= 0) {
+                final int spanStart = prefix.length() + index;
+                snippet.setSpan(new StyleSpan(Typeface.BOLD), spanStart, spanStart + word.length(),
+                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                index = foldedSnippet.indexOf(word, index + word.length());
+            }
+        }
+        return snippet;
+    }
+
+    private static int getStart(String text, List<String> words, String foldedText) {
+        int firstMatch = -1;
+        for (String word : words) {
+            final int index = foldedText.indexOf(word);
+            if (index >= 0 && (firstMatch < 0 || index < firstMatch)) {
+                firstMatch = index;
+            }
+        }
+
+        int start = 0;
+        if (firstMatch > POST_SNIPPET_LEAD_CHARACTERS) {
+            start = firstMatch - POST_SNIPPET_LEAD_CHARACTERS;
+            // Starts at a word, or at a line.
+            final int lineStart = text.lastIndexOf('\n', firstMatch - 1);
+            if (lineStart >= start) {
+                start = lineStart + 1;
+            } else {
+                final int space = text.indexOf(' ', start);
+                if (space >= 0 && space < firstMatch) start = space + 1;
+            }
+        }
+        return start;
+    }
+
+    /**
      * Lowercase with each character replaced by one character, so positions in the text stay the same.
      */
     private static String foldForHighlight(String text) {
@@ -1180,196 +915,6 @@ public final class ChannelSearchPatch {
             builder.append(Character.toLowerCase(folded.charAt(i)));
         }
         return builder.toString();
-    }
-
-    private static void populateList(Activity activity, List<ChannelSearchResult> results,
-                                     LinearLayout listContainer, SheetBottomDialog.SlideDialog dialog) {
-        final int count = listContainer.getChildCount();
-        Map<String, View> existingViews = new HashMap<>(2 * count);
-        for (int i = 0; i < count; i++) {
-            View child = listContainer.getChildAt(i);
-            Object tag = child.getTag();
-            if (tag instanceof String videoId && !videoId.startsWith("post:")) {
-                existingViews.put(videoId, child);
-            }
-        }
-
-        listContainer.removeAllViews();
-
-        for (ChannelSearchResult result : results) {
-            View row = existingViews.get(result.videoId);
-            if (row == null) {
-                LinearLayout resultRow = createResultRowContainer(activity);
-                ImageView thumbnail = new ImageView(activity);
-                thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                thumbnail.setClipToOutline(true);
-                thumbnail.setOutlineProvider(new ViewOutlineProvider() {
-                    @Override
-                    public void getOutline(View view, Outline outline) {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
-                                THUMBNAIL_CORNER_RADIUS);
-                    }
-                });
-                LinearLayout.LayoutParams thumbnailParams =
-                        new LinearLayout.LayoutParams(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
-                thumbnailParams.setMarginEnd(Dim.dp12);
-                thumbnail.setLayoutParams(thumbnailParams);
-                loadThumbnail(thumbnail, result.thumbnailUrl);
-                resultRow.addView(thumbnail);
-                LinearLayout text = new LinearLayout(activity);
-                text.setOrientation(LinearLayout.VERTICAL);
-                text.setLayoutParams(new LinearLayout.LayoutParams(
-                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-                TextView title = new TextView(activity);
-                title.setText(result.title);
-                RestoreOriginalTitlesPatch.restoreSearchResultTitle(title, result.videoId);
-                title.setTextColor(ThemeUtils.getAppForegroundColor());
-                title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                title.setMaxLines(2);
-                text.addView(title);
-
-                if (!result.metadata.isEmpty()) {
-                    TextView metadata = new TextView(activity);
-                    metadata.setText(result.metadata);
-                    metadata.setTextColor(ThemeUtils.getAppForegroundColor());
-                    metadata.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                    metadata.setAlpha(0.7f);
-                    metadata.setSingleLine();
-                    text.addView(metadata);
-                }
-                resultRow.addView(text);
-                row = resultRow;
-                row.setTag(result.videoId);
-                String videoId = result.videoId;
-                row.setOnClickListener(view -> {
-                    dialog.dismiss();
-                    Utils.runOnMainThreadDelayed(() -> {
-                        closeSearch(activity);
-                        LoadVideoPatch.openVideoIntent("https://www.youtube.com/watch?v=" + videoId, false);
-                    }, DIALOG_ANIMATION_DURATION_MILLISECONDS);
-                });
-            }
-            listContainer.addView(row);
-        }
-    }
-
-    private static View createDivider(Activity activity) {
-        View divider = new View(activity);
-        divider.setBackgroundColor(ThemeUtils.getAppForegroundColor());
-        divider.setAlpha(0.12f);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Dim.dp1);
-        params.setMargins(0, 0, 0, Dim.dp4);
-        divider.setLayoutParams(params);
-        return divider;
-    }
-
-    private static LinearLayout createResultRowContainer(Activity activity) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(Dim.dp16, Dim.dp8, Dim.dp16, Dim.dp8);
-        row.setClickable(true);
-        row.setFocusable(true);
-
-        row.setBackgroundResource(ThemeUtils.getThemeResourceId(
-                activity, android.R.attr.selectableItemBackground));
-
-        return row;
-    }
-
-    private static void loadThumbnail(ImageView view, String url) {
-        if (url.isEmpty()) {
-            return;
-        }
-
-        Bitmap cached = thumbnailCache.get(url);
-        if (cached != null) {
-            view.setAlpha(1.0f);
-            view.setImageBitmap(cached);
-            return;
-        }
-
-        WeakReference<ImageView> viewRef = new WeakReference<>(view);
-        Utils.runOnBackgroundThread(() -> {
-            try {
-                // The thumbnail can be replaced by DeArrow, which can wait for DeArrow off the main thread.
-                String replacementUrl = DeArrowPatch.getSearchResultThumbnailURL(url);
-                Bitmap downloaded = downloadThumbnail(replacementUrl);
-                if (downloaded == null && !replacementUrl.equals(url)) {
-                    // The replacement can be not available, such as a still capture of a live stream.
-                    downloaded = downloadThumbnail(url);
-                }
-                if (downloaded == null) {
-                    return;
-                }
-                Bitmap bitmap = downloaded;
-
-                thumbnailCache.put(url, bitmap);
-                Utils.runOnMainThread(() -> {
-                    ImageView target = viewRef.get();
-                    if (target != null) {
-                        target.setAlpha(0.0f);
-                        target.setImageBitmap(bitmap);
-                        target.animate().alpha(1.0f).setDuration(200).start();
-                    }
-                });
-            } catch (Exception ex) {
-                Logger.printException(() -> "loadThumbnail failure", ex);
-            }
-        });
-    }
-
-    /**
-     * @return The thumbnail, or null if it could not be loaded.
-     */
-    @Nullable
-    private static Bitmap downloadThumbnail(String url) {
-        try {
-            HttpURLConnection connection = Requester.openConnection(url);
-            connection.setConnectTimeout(THUMBNAIL_TIMEOUT_MILLISECONDS);
-            connection.setReadTimeout(THUMBNAIL_TIMEOUT_MILLISECONDS);
-            // A response without an image, such as no content, is not decoded.
-            if (connection.getResponseCode() != Requester.HTTP_STATUS_CODE_SUCCESS) {
-                return null;
-            }
-            try (InputStream stream = connection.getInputStream()) {
-                return BitmapFactory.decodeStream(stream);
-            }
-        } catch (Exception ex) {
-            Logger.printInfo(() -> "Could not load thumbnail: " + url, ex);
-            return null;
-        }
-    }
-
-    /**
-     * The search box keeps focus, since to submit it would have handled was taken over here.
-     */
-    private static void hideKeyboard(Activity activity) {
-        View focused = activity.getCurrentFocus();
-        if (focused == null) {
-            return;
-        }
-
-        InputMethodManager manager = (InputMethodManager)
-                activity.getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (manager != null) {
-            manager.hideSoftInputFromWindow(focused.getWindowToken(), 0);
-        }
-    }
-
-    /**
-     * Leaves the search the result was picked from, the same way the user would. Hiding the
-     * keyboard is not enough, because the search box takes focus back and raises it again.
-     */
-    @SuppressWarnings("deprecation")
-    private static void closeSearch(Activity activity) {
-        try {
-            activity.onBackPressed();
-        } catch (Exception ex) {
-            Logger.printException(() -> "closeSearch failure", ex);
-        }
     }
 
     private static boolean isChannelId(String browseId) {

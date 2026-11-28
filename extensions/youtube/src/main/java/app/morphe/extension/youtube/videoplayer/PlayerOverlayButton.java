@@ -70,20 +70,24 @@ public class PlayerOverlayButton {
                 animated.registerAnimationCallback(new Animatable2.AnimationCallback() {
                     @Override
                     public void onAnimationEnd(Drawable drawable) {
-                        // Showing the whole shadow in one frame reads as a flicker.
-                        if (shadowFade != null) {
-                            shadowFade.cancel();
-                        }
-                        shadowFade = ValueAnimator.ofInt(0, 255);
-                        shadowFade.setDuration(SHADOW_FADE_IN_DURATION);
-                        shadowFade.addUpdateListener(animation -> {
-                            shadowPaint.setAlpha((int) animation.getAnimatedValue());
-                            invalidateSelf();
-                        });
-                        shadowFade.start();
+                        fadeInShadow();
                     }
                 });
             }
+        }
+
+        // Showing the whole shadow in one frame reads as a flicker.
+        private void fadeInShadow() {
+            if (shadowFade != null) {
+                shadowFade.cancel();
+            }
+            shadowFade = ValueAnimator.ofInt(0, 255);
+            shadowFade.setDuration(SHADOW_FADE_IN_DURATION);
+            shadowFade.addUpdateListener(animation -> {
+                shadowPaint.setAlpha((int) animation.getAnimatedValue());
+                invalidateSelf();
+            });
+            shadowFade.start();
         }
 
         @Override
@@ -98,13 +102,7 @@ public class PlayerOverlayButton {
             final boolean animating = getDrawable() instanceof Animatable animated && animated.isRunning();
             if (!animating) {
                 if (shadow == null) {
-                    buildShadow: {
-                        Drawable icon = getDrawable();
-                        Rect bounds = getBounds();
-                        if (icon == null || bounds.isEmpty()) break buildShadow;
-
-                        shadow = IconShadow.build(icon, bounds.width(), bounds.height());
-                    }
+                    buildShadow();
                 }
                 if (shadow != null) {
                     Rect bounds = getBounds();
@@ -113,6 +111,27 @@ public class PlayerOverlayButton {
             }
 
             super.draw(canvas);
+        }
+
+        private void buildShadow() {
+            Drawable icon = getDrawable();
+            Rect bounds = getBounds();
+            if (icon == null || bounds.isEmpty()) return;
+
+            shadow = IconShadow.build(icon, bounds.width(), bounds.height());
+        }
+    }
+
+    /**
+     * Wraps the current icon so it keeps the shadow after a button swaps its own drawable,
+     * which the mute and video scale buttons do when their state changes.
+     */
+    private static void applyIconShadow(View button) {
+        if (!IconShadow.isAvailable() || !(button instanceof ImageView imageView)) return;
+
+        Drawable icon = imageView.getDrawable();
+        if (icon != null && !(icon instanceof ShadowedIconDrawable)) {
+            imageView.setImageDrawable(new ShadowedIconDrawable(icon));
         }
     }
 
@@ -236,6 +255,19 @@ public class PlayerOverlayButton {
             return isEnabled == null || isEnabled.isButtonCurrentlyEnabled();
         }
 
+        private int getEnabledButtonIndex() {
+            int count = 0;
+            for (PlayerOverlayButtonController controller : buttonControllers) {
+                if (controller == this) {
+                    return count;
+                }
+                if (controller.isEnabled()) {
+                    count++;
+                }
+            }
+            return count;
+        }
+
         private void updateLayoutFromSourceButton() {
             View source = ytSourceButtonRef.get();
             View button = buttonRef.get();
@@ -289,29 +321,20 @@ public class PlayerOverlayButton {
                 );
             }
 
+            // The mute button of YouTube is to the left of the fullscreen button, so it takes a slot too.
+            View muteButton = getShownMuteButton();
             final int effectiveCustomButtons = Math.max(0, getNumberOfEnabledButtons()
-                    - (HIDE_FULLSCREEN_BUTTON_ENABLED ? 1 : 0));
+                    - (HIDE_FULLSCREEN_BUTTON_ENABLED ? 1 : 0)) + (muteButton != null ? 1 : 0);
             final float spacingPercentage = getButtonWidthPercentage(effectiveCustomButtons, source);
 
             // Convert from 0 indexing to 1 indexing.
-            int enabledButtonIndex;
-            getEnabledButtonIndex: {
-                int count = 0;
-                for (PlayerOverlayButtonController controller : buttonControllers) {
-                    if (controller == this) {
-                        enabledButtonIndex = count;
-                        break getEnabledButtonIndex;
-                    }
-                    if (controller.isEnabled()) {
-                        count++;
-                    }
-                }
-                enabledButtonIndex = count;
-            }
-
-            final int buttonNumber = enabledButtonIndex + (HIDE_FULLSCREEN_BUTTON_ENABLED ? 0 : 1);
-            final float xOffset = (int) (source.getX()
-                    - (buttonNumber * (spacingPercentage * source.getWidth())));
+            final int buttonNumber = getEnabledButtonIndex() + (HIDE_FULLSCREEN_BUTTON_ENABLED ? 0 : 1);
+            final float buttonSpacing = spacingPercentage * source.getWidth();
+            // The buttons after the mute button continue from its left, and a button in the place
+            // of the hidden fullscreen button stays there.
+            final float xOffset = muteButton != null && buttonNumber > 0
+                    ? (int) (muteButton.getX() - buttonNumber * buttonSpacing)
+                    : (int) (source.getX() - buttonNumber * buttonSpacing);
 
             if (button.getX() != xOffset) {
                 button.setX(xOffset);
@@ -343,14 +366,7 @@ public class PlayerOverlayButton {
                 sourceBackgroundSnapshot = newConstantState;
             }
 
-            // Wraps the current icon so it keeps the shadow after a button swaps its own drawable,
-            // which the mute and video scale buttons do when their state changes.
-            if (!(!IconShadow.isAvailable() || !(button instanceof ImageView imageView))) {
-                Drawable icon = imageView.getDrawable();
-                if (icon != null && !(icon instanceof ShadowedIconDrawable)) {
-                    imageView.setImageDrawable(new ShadowedIconDrawable(icon));
-                }
-            }
+            applyIconShadow(button);
 
             final float sourceButtonAlpha = source.getAlpha();
             if (button.getAlpha() != sourceButtonAlpha) {
@@ -377,11 +393,38 @@ public class PlayerOverlayButton {
             new MarginAdjustableContainer("time_bar_chapter_title_container");
 
     private static WeakReference<View> ytSourceButtonRef = new WeakReference<>(null);
+
+    /**
+     * Mute button of YouTube, to the left of the fullscreen button. Only some versions and accounts have it.
+     */
+    private static final int MUTE_TOGGLE_BUTTON_ID =
+            ResourceUtils.getIdentifier(ResourceType.ID, "mute_toggle_button");
+    private static WeakReference<View> ytMuteButtonRef = new WeakReference<>(null);
+
     private static final List<PlayerOverlayButtonController> buttonControllers = new ArrayList<>();
 
     /** ConstantState of the fullscreen button background the opacity was last applied to. */
     @Nullable
     private static Drawable.ConstantState sourceButtonBackgroundSnapshot;
+
+    /**
+     * The app assigns the circle background after the view exists, so this re-checks on every
+     * pre-draw pass and only does work when the drawable is actually replaced.
+     */
+    private static void styleSourceButtonBackground(View sourceButton) {
+        Drawable background = sourceButton.getBackground();
+        if (background == null) return;
+
+        // A null state cannot be tracked, so fall through and rely on mutate() being idempotent.
+        Drawable.ConstantState state = background.getConstantState();
+        if (state != null && state == sourceButtonBackgroundSnapshot) return;
+
+        Drawable styled = HidePlayerOverlayButtonsPatch.applyControlButtonsBackgroundOpacity(background);
+        if (styled != background) {
+            sourceButton.setBackground(styled);
+        }
+        sourceButtonBackgroundSnapshot = styled.getConstantState();
+    }
 
     /**
      * Returns the button width percentage based on the number of extra button slots needed,
@@ -620,6 +663,29 @@ public class PlayerOverlayButton {
         });
     }
 
+    /**
+     * @return The mute button of YouTube beside the fullscreen button, or null if it is not shown.
+     */
+    @Nullable
+    static View getShownMuteButton() {
+        View source = ytSourceButtonRef.get();
+        if (MUTE_TOGGLE_BUTTON_ID == 0 || source == null
+                || !(source.getParent() instanceof ViewGroup sourceParent)) {
+            return null;
+        }
+
+        View muteButton = ytMuteButtonRef.get();
+        if (muteButton == null || muteButton.getParent() != sourceParent) {
+            muteButton = sourceParent.findViewById(MUTE_TOGGLE_BUTTON_ID);
+            if (muteButton == null) {
+                return null;
+            }
+            ytMuteButtonRef = new WeakReference<>(muteButton);
+        }
+
+        return muteButton.getVisibility() == View.VISIBLE ? muteButton : null;
+    }
+
     private static int getNumberOfEnabledButtons() {
         return (int) buttonControllers.stream().filter(PlayerOverlayButtonController::isEnabled).count();
     }
@@ -635,25 +701,11 @@ public class PlayerOverlayButton {
             chapterTitleContainer.updateContainerRef(controlsViewGroup);
             controlsViewGroup.getViewTreeObserver().addOnPreDrawListener(() -> {
                 try {
-                    // The app assigns the circle background after the view exists, so this re-checks on every
-                    // pre-draw pass and only does work when the drawable is actually replaced.
-                    styleSourceButtonBackground: {
-                        Drawable background = controlsViewGroup.getBackground();
-                        if (background == null) break styleSourceButtonBackground;
-
-                        // A null state cannot be tracked, so fall through and rely on mutate() being idempotent.
-                        Drawable.ConstantState state = background.getConstantState();
-                        if (state != null && state == sourceButtonBackgroundSnapshot) break styleSourceButtonBackground;
-
-                        Drawable styled = HidePlayerOverlayButtonsPatch.applyControlButtonsBackgroundOpacity(background);
-                        if (styled != background) {
-                            controlsViewGroup.setBackground(styled);
-                        }
-                        sourceButtonBackgroundSnapshot = styled.getConstantState();
-                    }
+                    styleSourceButtonBackground(controlsViewGroup);
 
                     final int effectiveCustomButtons = Math.max(0, getNumberOfEnabledButtons()
-                            - (Settings.HIDE_FULLSCREEN_BUTTON.get() ? 1 : 0));
+                            - (Settings.HIDE_FULLSCREEN_BUTTON.get() ? 1 : 0))
+                            + (getShownMuteButton() != null ? 1 : 0);
 
                     int buttonWidth = BUTTON_WIDTH;
                     View ytSource = ytSourceButtonRef.get();

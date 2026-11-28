@@ -97,11 +97,6 @@ internal object AutoHideNavigationBarOnFeedScrollingFingerprint : Fingerprint(
 )
 
 /**
- * Moves the navigation bar out of the screen while the miniplayer is dragged to be dismissed.
- * Other listeners of the same drag cancel autoplay, so only the navigation bar listener is hooked.
- * Before 21.23 the method of the navigation bar for this drag is empty.
- */
-/**
  * Called by any list when it scrolls, before its scroll listeners are called.
  */
 internal object ListScrolledFingerprint : Fingerprint(
@@ -142,6 +137,35 @@ internal object SearchResultsAutoHideNavigationBarFingerprint : Fingerprint(
     )
 )
 
+/**
+ * Enum of the views at the bottom of the screen, such as the navigation bar and the miniplayer.
+ * The app keeps the height of each of them, and places the other views above these heights.
+ */
+internal object BottomUiEnumFingerprint : Fingerprint(
+    name = "<clinit>",
+    filters = listOf(
+        string("PIVOT_BAR"),
+        string("BOTTOM_UI"),
+        string("MINI_PLAYER")
+    )
+)
+
+/**
+ * Sets the height of one of the views at the bottom of the screen ([BottomUiEnumFingerprint]).
+ */
+internal object SetBottomUiHeightFingerprint : Fingerprint(
+    returnType = "V",
+    parameters = { listOf(BottomUiEnumFingerprint.originalClassDef.type, "I") },
+    filters = listOf(
+        methodCall(smali = "Ljava/util/EnumMap;->put(Ljava/lang/Enum;Ljava/lang/Object;)Ljava/lang/Object;")
+    )
+)
+
+/**
+ * Moves the navigation bar out of the screen while the miniplayer is dragged to be dismissed.
+ * Other listeners of the same drag cancel autoplay, so only the navigation bar listener is hooked.
+ * Before 21.23 the method of the navigation bar for this drag is empty.
+ */
 internal object AutoHideNavigationBarOnDismissMiniplayerFingerprint : Fingerprint(
     accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.FINAL),
     returnType = "V",
@@ -771,4 +795,25 @@ internal object ParseWithRegistryFingerprint : Fingerprint(
     accessFlags = listOf(AccessFlags.PRIVATE, AccessFlags.STATIC),
     returnType = "Lcom/google/protobuf/MessageLite;",
     parameters = listOf("Lcom/google/protobuf/MessageLite;", "[B", "Lcom/google/protobuf/ExtensionRegistryLite;")
+)
+
+/**
+ * Builds a proto list from a collection.
+ * It returns the type of the list that [PivotBarRendererListFingerprint] sets.
+ */
+internal object ProtoListFromCollectionFingerprint : Fingerprint(
+    accessFlags = listOf(AccessFlags.PUBLIC, AccessFlags.STATIC),
+    returnType = { PivotBarRendererListFingerprint.instructionMatches[2].fieldReference.type },
+    parameters = listOf("Ljava/util/Collection;")
+)
+
+/**
+ * Enum constant names are obfuscated, so the icon type is found by its value.
+ * The icon type is the third parameter of [PivotBarItemProtoFactoryFingerprint].
+ */
+internal object IconTypeFromValueFingerprint : Fingerprint(
+    definingClass = { PivotBarItemProtoFactoryFingerprint.originalMethod.parameterTypes[2] },
+    isStatic = true,
+    returnType = { PivotBarItemProtoFactoryFingerprint.originalMethod.parameterTypes[2] },
+    parameters = { listOf("I") }
 )

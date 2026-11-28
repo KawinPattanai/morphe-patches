@@ -87,6 +87,69 @@
         <item>PLAY_BLACK</item>
         <item>CUSTOM</item>
     </string-array>
+    <!-- 21.47+ has more launcher icons of its own. -->
+    <string-array name="morphe_custom_branding_icon_21_47_entries">
+        <item>@string/morphe_custom_branding_icon_entry_1</item>
+        <item>@string/morphe_custom_branding_icon_entry_8</item>
+        <item>@string/morphe_custom_branding_icon_entry_9</item>
+        <item>@string/morphe_custom_branding_icon_entry_10</item>
+        <item>@string/morphe_custom_branding_icon_entry_11</item>
+        <item>@string/morphe_custom_branding_icon_entry_12</item>
+        <item>@string/morphe_custom_branding_icon_entry_13</item>
+        <item>@string/morphe_custom_branding_icon_entry_14</item>
+        <item>@string/morphe_custom_branding_icon_entry_2</item>
+        <item>@string/morphe_custom_branding_icon_entry_3</item>
+        <item>@string/morphe_custom_branding_icon_entry_4</item>
+        <item>@string/morphe_custom_branding_icon_entry_5</item>
+        <item>@string/morphe_custom_branding_icon_entry_6</item>
+    </string-array>
+    <string-array name="morphe_custom_branding_icon_21_47_entry_values">
+        <item>ORIGINAL</item>
+        <item>YOUTUBE_ICON1</item>
+        <item>YOUTUBE_ICON2</item>
+        <item>YOUTUBE_ICON3</item>
+        <item>YOUTUBE_ICON4</item>
+        <item>YOUTUBE_ICON5</item>
+        <item>YOUTUBE_ICON6</item>
+        <item>YOUTUBE_ICON7</item>
+        <item>BLACK</item>
+        <item>DARK</item>
+        <item>LIGHT</item>
+        <item>PLAY</item>
+        <item>PLAY_BLACK</item>
+    </string-array>
+    <string-array name="morphe_custom_branding_icon_21_47_custom_entries">
+        <item>@string/morphe_custom_branding_icon_entry_1</item>
+        <item>@string/morphe_custom_branding_icon_entry_8</item>
+        <item>@string/morphe_custom_branding_icon_entry_9</item>
+        <item>@string/morphe_custom_branding_icon_entry_10</item>
+        <item>@string/morphe_custom_branding_icon_entry_11</item>
+        <item>@string/morphe_custom_branding_icon_entry_12</item>
+        <item>@string/morphe_custom_branding_icon_entry_13</item>
+        <item>@string/morphe_custom_branding_icon_entry_14</item>
+        <item>@string/morphe_custom_branding_icon_entry_2</item>
+        <item>@string/morphe_custom_branding_icon_entry_3</item>
+        <item>@string/morphe_custom_branding_icon_entry_4</item>
+        <item>@string/morphe_custom_branding_icon_entry_5</item>
+        <item>@string/morphe_custom_branding_icon_entry_6</item>
+        <item>@string/morphe_custom_branding_icon_entry_7</item>
+    </string-array>
+    <string-array name="morphe_custom_branding_icon_21_47_custom_entry_values">
+        <item>ORIGINAL</item>
+        <item>YOUTUBE_ICON1</item>
+        <item>YOUTUBE_ICON2</item>
+        <item>YOUTUBE_ICON3</item>
+        <item>YOUTUBE_ICON4</item>
+        <item>YOUTUBE_ICON5</item>
+        <item>YOUTUBE_ICON6</item>
+        <item>YOUTUBE_ICON7</item>
+        <item>BLACK</item>
+        <item>DARK</item>
+        <item>LIGHT</item>
+        <item>PLAY</item>
+        <item>PLAY_BLACK</item>
+        <item>CUSTOM</item>
+    </string-array>
 
     <!-- interaction.continuewatching.disableContinueWatchingPromptPatch -->
     <string-array name="morphe_continue_watching_prompt_entries">
@@ -157,6 +220,7 @@
         <item>TV Simply</item>
         <item>visionOS</item>
         <item>visionOS Experimental</item>
+        <item>Web</item>
     </string-array>
     <string-array name="morphe_spoof_video_streams_client_type_entry_values">
         <item>ANDROID_CREATOR</item>
@@ -168,6 +232,7 @@
         <item>TV_SIMPLY</item>
         <item>VISIONOS_1_02</item>
         <item>VISIONOS_1_06</item>
+        <item>WEB</item>
     </string-array>
     <string-array name="morphe_spoof_video_streams_player_js_variant_entries">
         <item>House Brand</item>
@@ -269,6 +334,30 @@
         <item>NORMAL</item>
         <item>HIGH</item>
     </string-array>
+    <string-array name="morphe_hold_gesture_launcher_slot_count_entries">
+        <item>3</item>
+        <item>4</item>
+        <item>5</item>
+    </string-array>
+    <string-array name="morphe_hold_gesture_launcher_slot_count_entry_values">
+        <item>3</item>
+        <item>4</item>
+        <item>5</item>
+    </string-array>
+    <string-array name="morphe_hold_gesture_launcher_action_entries">
+        <item>@string/morphe_hold_gesture_launcher_action_screen_lock</item>
+        <item>@string/morphe_hold_gesture_launcher_action_loop</item>
+        <item>@string/morphe_hold_gesture_launcher_action_screenshot</item>
+        <item>@string/morphe_save_to_watch_later_title</item>
+        <item>@string/morphe_hold_gesture_launcher_action_timestamp_url</item>
+    </string-array>
+    <string-array name="morphe_hold_gesture_launcher_action_entry_values">
+        <item>SCREEN_LOCK</item>
+        <item>LOOP</item>
+        <item>SCREENSHOT</item>
+        <item>WATCH_LATER</item>
+        <item>TIMESTAMP_URL</item>
+    </string-array>
 
     <!-- misc.spoof.appversion.spoofAppVersionPatch -->
     <string-array name="morphe_spoof_app_version_target_entries">
@@ -311,7 +400,7 @@
     <string-array name="morphe_change_form_factor_entries">
         <item>@string/morphe_change_form_factor_entry_1</item>
         <item>@string/morphe_change_form_factor_entry_2</item>
-        <item>@string/morphe_change_form_factor_entry_3</item>
+        <item>@string/morphe_tablet</item>
         <item>@string/morphe_change_form_factor_entry_4</item>
     </string-array>
     <string-array name="morphe_change_form_factor_entry_values">
@@ -429,6 +518,18 @@
         <item>ENFORCED</item>
     </string-array>
 
+    <!-- layout.returnyoutubeusername.returnYouTubeUsernamePatch -->
+    <string-array name="morphe_return_youtube_username_display_format_entries">
+        <item>@string/morphe_return_youtube_username_display_format_entry_1</item>
+        <item>@string/morphe_return_youtube_username_display_format_entry_2</item>
+        <item>@string/morphe_return_youtube_username_display_format_entry_3</item>
+    </string-array>
+    <string-array name="morphe_return_youtube_username_display_format_entry_values">
+        <item>CHANNEL_NAME</item>
+        <item>CHANNEL_NAME_AND_HANDLE</item>
+        <item>HANDLE_AND_CHANNEL_NAME</item>
+    </string-array>
+
     <!-- layout.returnyoutubedislike.returnYouTubeDislikePatch -->
     <string-array name="morphe_ryd_feed_counts_position_entries">
         <item>@string/morphe_ryd_feed_counts_position_entry_1</item>
@@ -447,12 +548,16 @@
         <item>@string/morphe_feed_card_layout_entry_1</item>
         <item>@string/morphe_feed_card_layout_entry_2</item>
         <item>@string/morphe_feed_card_layout_entry_3</item>
+        <item>@string/morphe_feed_card_layout_entry_4</item>
+        <item>@string/morphe_feed_card_layout_entry_5</item>
     </string-array>
     <string-array name="morphe_feed_card_layout_entry_values">
         <item>DEFAULT</item>
         <item>CLASSIC</item>
         <item>CARDS</item>
         <item>CARDS_WITH_ACTION_BUTTONS</item>
+        <item>CARDS_WITH_AVATAR_GLOW</item>
+        <item>CARDS_WITH_ACTION_BUTTONS_AND_AVATAR_GLOW</item>
     </string-array>
 
     <!-- misc.fix.videoactionbar.restoreOldVideoActionBarPatch -->
@@ -496,12 +601,14 @@
 
     <!-- layout.captions.autoCaptionsPatch -->
     <string-array name="morphe_auto_captions_style_entries">
+        <item>@string/morphe_auto_captions_style_entry_default</item>
         <item>@string/morphe_auto_captions_style_entry_1</item>
         <item>@string/morphe_auto_captions_style_entry_2</item>
         <item>@string/morphe_auto_captions_style_entry_3</item>
         <item>@string/morphe_auto_captions_style_entry_4</item>
     </string-array>
     <string-array name="morphe_auto_captions_style_entry_values">
+        <item>DEFAULT</item>
         <item>BOTH_ENABLED</item>
         <item>BOTH_DISABLED</item>
         <item>WITH_VOLUME_ONLY</item>
@@ -686,7 +793,7 @@
     <!-- layout.player.fullscreen.openVideosFullscreenPatch -->
     <string-array name="morphe_open_videos_fullscreen_entries">
         <item>@string/morphe_open_videos_fullscreen_entry_1</item>
-        <item>@string/morphe_open_videos_fullscreen_entry_2</item>
+        <item>@string/morphe_portrait</item>
         <item>@string/morphe_open_videos_fullscreen_entry_3</item>
     </string-array>
     <string-array name="morphe_open_videos_fullscreen_entry_values">
@@ -705,6 +812,16 @@
         <item>DEFAULT</item>
         <item>STRETCH</item>
         <item>ZOOM</item>
+    </string-array>
+    <string-array name="morphe_fullscreen_video_alignment_entries">
+        <item>@string/morphe_fullscreen_video_alignment_entry_top</item>
+        <item>@string/morphe_fullscreen_video_alignment_entry_center</item>
+        <item>@string/morphe_fullscreen_video_alignment_entry_bottom</item>
+    </string-array>
+    <string-array name="morphe_fullscreen_video_alignment_entry_values">
+        <item>TOP</item>
+        <item>CENTER</item>
+        <item>BOTTOM</item>
     </string-array>
 
     <!-- layout.player.fullscreen.exitFullscreenPatch -->
@@ -773,7 +890,7 @@
         <item>@string/morphe_miniplayer_type_entry_1</item>
         <item>@string/morphe_miniplayer_type_entry_2</item>
         <item>@string/morphe_miniplayer_type_entry_3</item>
-        <item>@string/morphe_miniplayer_type_entry_4</item>
+        <item>@string/morphe_tablet</item>
         <item>@string/morphe_miniplayer_type_entry_5</item>
         <item>@string/morphe_miniplayer_type_entry_6</item>
         <item>@string/morphe_miniplayer_type_entry_7</item>
@@ -838,11 +955,11 @@
         <item>@string/morphe_change_start_page_entry_playlists</item>
         <item>@string/morphe_change_start_page_entry_search</item>
         <item>@string/morphe_change_start_page_entry_shopping</item>
-        <item>@string/morphe_change_start_page_entry_shorts</item>
+        <item>@string/morphe_shorts_title</item>
         <item>@string/morphe_change_start_page_entry_sports</item>
         <item>@string/morphe_change_start_page_entry_subscriptions</item>
         <item>@string/morphe_change_start_page_entry_virtual_reality</item>
-        <item>@string/morphe_change_start_page_entry_watch_later</item>
+        <item>@string/morphe_watch_later</item>
         <item>@string/morphe_change_start_page_entry_your_clips</item>
     </string-array>
     <string-array name="morphe_change_start_page_entry_values">
@@ -1250,7 +1367,7 @@
         <item>DEEPL</item>
     </string-array>
     <string-array name="morphe_live_chat_translate_style_entries">
-        <item>@string/morphe_live_chat_translate_style_translated_only</item>
+        <item>@string/morphe_translated_only</item>
         <item>@string/morphe_live_chat_translate_style_original_and_translated</item>
         <item>@string/morphe_live_chat_translate_style_translated_and_original</item>
     </string-array>
@@ -1288,5 +1405,19 @@
     <string-array name="morphe_custom_seekbar_thumb_scale_type_entry_values" translatable="false">
         <item>FIT_SEEKBAR</item>
         <item>ORIGINAL</item>
+    </string-array>
+
+    <!-- misc.privacy.ghostplay.ghostPlayPatch -->
+    <string-array name="morphe_ghost_play_history_limit_entries">
+        <item>@string/morphe_ghost_play_history_limit_100</item>
+        <item>@string/morphe_ghost_play_history_limit_500</item>
+        <item>@string/morphe_ghost_play_history_limit_2000</item>
+        <item>@string/morphe_ghost_play_history_limit_unlimited</item>
+    </string-array>
+    <string-array name="morphe_ghost_play_history_limit_entry_values" translatable="false">
+        <item>100</item>
+        <item>500</item>
+        <item>2000</item>
+        <item>0</item>
     </string-array>
 </resources>

@@ -80,7 +80,7 @@ public final class ChannelWhitelistDialog {
                     context,
                     currentChannelName.isEmpty() ? currentChannelId : currentChannelName,
                     isWhitelisted
-                            ? str("morphe_channel_whitelist_remove")
+                            ? str("morphe_settings_remove")
                             : str("morphe_channel_whitelist_add"),
                     !isWhitelisted,
                     () -> {
@@ -105,34 +105,40 @@ public final class ChannelWhitelistDialog {
             emptyView.setGravity(Gravity.CENTER_HORIZONTAL);
             container.addView(emptyView);
         } else {
-            LinearLayout listContainer = new LinearLayout(context);
-            listContainer.setOrientation(LinearLayout.VERTICAL);
-
-            for (Map.Entry<String, String> entry : channels.entrySet()) {
-                String channelId = entry.getKey();
-                String channelName = entry.getValue();
-                listContainer.addView(createChannelRow(
-                        context,
-                        channelName.isEmpty() ? channelId : channelName,
-                        str("morphe_channel_whitelist_remove"),
-                        false,
-                        () -> {
-                            ChannelWhitelist.removeChannel(type, channelId);
-                            Utils.showSnackbarShort(str("morphe_channel_whitelist_channel_removed"));
-                            buildContent(context, type, container);
-                        }
-                ));
-            }
-
-            ScrollView scrollView = new ScrollView(context);
-            scrollView.setVerticalScrollBarEnabled(false);
-            scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-            scrollView.setLayoutParams(new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    Math.min(Dim.pctHeight(40), channels.size() * Dim.dp(44))));
-            scrollView.addView(listContainer);
-            container.addView(scrollView);
+            container.addView(createChannelList(context, type, container, channels));
         }
+    }
+
+    private static ScrollView createChannelList(Context context, WhitelistType type,
+                                                LinearLayout container, Map<String, String> channels) {
+        LinearLayout listContainer = new LinearLayout(context);
+        listContainer.setOrientation(LinearLayout.VERTICAL);
+
+        for (Map.Entry<String, String> entry : channels.entrySet()) {
+            String channelId = entry.getKey();
+            String channelName = entry.getValue();
+            listContainer.addView(createChannelRow(
+                    context,
+                    channelName.isEmpty() ? channelId : channelName,
+                    str("morphe_settings_remove"),
+                    false,
+                    () -> {
+                        ChannelWhitelist.removeChannel(type, channelId);
+                        Utils.showSnackbarShort(str("morphe_channel_whitelist_channel_removed"));
+                        buildContent(context, type, container);
+                    }
+            ));
+        }
+
+        ScrollView scrollView = new ScrollView(context);
+        scrollView.setVerticalScrollBarEnabled(false);
+        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        scrollView.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                Math.min(Dim.pctHeight(40), channels.size() * Dim.dp(44))));
+        scrollView.addView(listContainer);
+
+        return scrollView;
     }
 
     private static LinearLayout createChannelRow(Context context, String displayName,

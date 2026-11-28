@@ -9,8 +9,11 @@
 
 package app.morphe.extension.shared.patches;
 
+import static app.morphe.extension.shared.patches.AppCheckPatch.IS_YOUTUBE_MUSIC;
+
 import androidx.annotation.Nullable;
 
+import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
 
 import java.util.ArrayList;
@@ -42,6 +45,7 @@ import app.morphe.extension.shared.innertube.Offline.OfflineVideoEndpoint;
 import app.morphe.extension.shared.innertube.Offline.OfflineabilityContainer;
 import app.morphe.extension.shared.innertube.Offline.OfflineabilityRenderer;
 import app.morphe.extension.shared.innertube.PlayerResponseOuterClass.PlayerGestureConfig;
+import app.morphe.extension.shared.innertube.PlayerResponseOuterClass.VideoDetails;
 import app.morphe.extension.shared.innertube.SavedVideo.OfflineState;
 import app.morphe.extension.shared.innertube.SavedVideo.OfflineStateAction;
 import app.morphe.extension.shared.settings.SharedYouTubeSettings;
@@ -90,7 +94,11 @@ public class BaseInAppDownloadsPatch {
     protected static final int OFFLINE_POLICY_LIFETIME_SECONDS = (int) TimeUnit.DAYS.toSeconds(365);
 
     /**
-     * Opus audio is not saved, the other audio and all video formats are.
+     * MIME prefix of the WebM audio formats, which contain Opus.
+     * <p>
+     * YouTube does not save them and keeps the AAC audio. The app selects the audio with an itag
+     * whitelist from the player response, and the download client responses only whitelist the AAC
+     * itags. See {@link #savableStreamingData} for how YouTube Music saves Opus audio instead.
      */
     protected static final String UNSAVABLE_AUDIO_MIME_TYPE_PREFIX = "audio/webm";
 
@@ -165,6 +173,12 @@ public class BaseInAppDownloadsPatch {
     public interface FormatStreamInterface {
         int patch_getItag();
 
+        /**
+         * @return The ID of the video of the stream.
+         */
+        @Nullable
+        String patch_getVideoId();
+
         int patch_getWidth();
 
         int patch_getHeight();
@@ -220,7 +234,7 @@ public class BaseInAppDownloadsPatch {
      * @return The constants of the format type enum of the app, in the order of the types.
      */
     protected static List<Object> appFormatTypes(Enum<?> formatType, OfflineFormatType[] types) {
-        Object[] constants = formatType.getDeclaringClass().getEnumConstants();
+        Object[] constants = Objects.requireNonNull(formatType.getDeclaringClass().getEnumConstants());
         List<Object> formatTypes = new ArrayList<>(types.length);
         for (OfflineFormatType type : types) {
             // The constant of the format type enum of the app, which has the name without the prefix.
@@ -541,13 +555,16 @@ public class BaseInAppDownloadsPatch {
      * Injection point.
      * <p>
      * Called off the main thread with the player response the app saves a video with.
-     * If the server declines to save the video, the streams are fetched with another client.
+     * If the server declines to save the video, or allows it but has no formats the app can save,
+     * the streams are fetched with another client.
      *
      * @param playerResponse Player response proto of the video.
+     * @param saveStoryboards If the saved video needs the storyboards, which the seekbar thumbnails are made of.
      * @return A player response that can be saved, or null to keep the original.
      */
     @Nullable
-    public static byte[] replaceDeclinedOfflinePlayerResponse(@Nullable Object playerResponse) {
+    public static byte[] replaceDeclinedOfflinePlayerResponse(@Nullable Object playerResponse,
+                                                               boolean saveStoryboards) {
         try {
             if (!isInAppDownloadMode()
                     || !(playerResponse instanceof MessageLite message)) {
@@ -565,11 +582,16 @@ public class BaseInAppDownloadsPatch {
 
             final boolean allowed = original.getOfflineState().getActionValue()
                     == OfflineStateAction.OFFLINE_STATE_ACTION_OK_VALUE;
-            if (allowed && original.getStreamingData().getAdaptiveFormatsCount() > 0) {
+            final int adaptiveFormatsCount = original.getStreamingData().getAdaptiveFormatsCount();
+            final int savableFormatsCount = countSavableFormats(original.getStreamingData());
+            if (allowed && adaptiveFormatsCount > 0 && savableFormatsCount > 0) {
                 if (!videoId.isEmpty()) {
                     SponsorBlockOfflineStorage.fetchAndSaveSegments(videoId);
                 }
                 return null;
+            }
+            if (allowed && adaptiveFormatsCount > 0) {
+                Logger.printDebug(() -> "Allowed offline player response has no savable formats, replacing: " + videoId);
             }
 
             if (videoId.isEmpty()) {
@@ -586,30 +608,31 @@ public class BaseInAppDownloadsPatch {
 
             // The declined response lacks the parts the app needs to select the streams to save,
             // such as the player config. The response of the other client is used instead,
-            // and only the offline state token and player config are kept from the declined response.
+            // and only the offline state token, video details and player config are kept from the declined response.
             OfflinePlayerResponse.Builder builder = OfflinePlayerResponse.parseFrom(streams.streamingData()).toBuilder();
-            OfflineStreamingData declinedStreamingData = builder.getStreamingData();
-            OfflineStreamingData.Builder streamingDataBuilder = declinedStreamingData.toBuilder();
-            for (int i = 0, count = streamingDataBuilder.getAdaptiveFormatsCount(); i < count; i++) {
-                OfflineStreamFormat format = streamingDataBuilder.getAdaptiveFormats(i);
-                String mimeType = format.getMimeType();
-                if (!mimeType.isEmpty() && !mimeType.startsWith(UNSAVABLE_AUDIO_MIME_TYPE_PREFIX)) {
-                    streamingDataBuilder.setAdaptiveFormats(i, format.toBuilder().setOfflineEligible(true));
-                }
-            }
-            OfflineStreamingData savableStreamingData = streamingDataBuilder.build();
-            builder.setStreamingData(savableStreamingData)
+            builder.setStreamingData(savableStreamingData(builder.getStreamingData()))
                     .setOfflineState(playableOfflineState(original.getOfflineState().getToken()));
+
+            // The video details of other clients lack the music video type, and YouTube Music
+            // then shows a black player background instead of the colors of the album artwork.
+            // The video details of the app's own response are kept, including the fields the proto does not declare.
+            // YouTube Music declines with only the video id, and fills in the rest of the video details itself.
+            VideoDetails details = original.getVideoDetails();
+            final int replacementLength = builder.getVideoDetails().getLengthSeconds();
+            if (details.getLengthSeconds() <= 0 && replacementLength > 0) {
+                details = details.toBuilder().setLengthSeconds(replacementLength).build();
+            }
+            builder.setVideoDetails(details);
             if (builder.hasCaptions()) {
-                OfflineCaptions captions = builder.getCaptions();
-                OfflineCaptionTracklist.Builder tracklist = captions.getPlayerCaptionsTracklistRenderer().toBuilder();
-                for (int i = 0, count = tracklist.getCaptionTracksCount(); i < count; i++) {
-                    OfflineCaptionTrack track = tracklist.getCaptionTracks(i);
-                    String baseUrl = track.getBaseUrl().replaceAll("&fmt=[^&]*", "") + CAPTION_URL_FORMAT;
-                    tracklist.setCaptionTracks(i, track.toBuilder().setBaseUrl(baseUrl));
+                builder.setCaptions(srv3Captions(builder.getCaptions()));
+            }
+
+            // Without storyboards the saved video has no seekbar thumbnails, so they are taken from another client.
+            if (saveStoryboards && !builder.hasStoryboards()) {
+                ByteString storyboards = fetchStoryboards(videoId, streams.client());
+                if (storyboards != null) {
+                    builder.setStoryboards(storyboards);
                 }
-                OfflineCaptions srv3Captions = captions.toBuilder().setPlayerCaptionsTracklistRenderer(tracklist).build();
-                builder.setCaptions(srv3Captions);
             }
 
             // Without the ExoPlayer config the app only looks at the progressive formats, which are not savable,
@@ -633,17 +656,9 @@ public class BaseInAppDownloadsPatch {
 
             SponsorBlockOfflineStorage.fetchAndSaveSegments(videoId);
 
-            Logger.printDebug(() -> {
-                int savableFormats = 0;
-                for (OfflineStreamFormat format : builder.getStreamingData().getAdaptiveFormatsList()) {
-                    if (format.getOfflineEligible()) {
-                        savableFormats++;
-                    }
-                }
-                return "Replaced declined offline player response of: " + videoId
-                        + " savable formats: " + savableFormats
-                        + " of: " + builder.getStreamingData().getAdaptiveFormatsCount();
-            });
+            Logger.printDebug(() -> "Replaced declined offline player response of: " + videoId
+                    + " savable formats: " + countSavableFormats(builder.getStreamingData())
+                    + " of: " + builder.getStreamingData().getAdaptiveFormatsCount());
             return builder.build().toByteArray();
         } catch (Exception ex) {
             Logger.printException(() -> "replaceDeclinedOfflinePlayerResponse failure", ex);
@@ -694,6 +709,38 @@ public class BaseInAppDownloadsPatch {
         if (playerResponseModel == null) {
             Logger.printException(() -> "Could not create the player response model of the replaced player response");
         }
+    }
+
+    /**
+     * @return Storyboards of the first download client that answers with them, other than the client
+     *         whose streams are saved, or null if none does.
+     */
+    @Nullable
+    private static ByteString fetchStoryboards(String videoId, ClientType savedClient) {
+        for (ClientType client : DOWNLOAD_CLIENTS) {
+            if (client == savedClient) {
+                continue;
+            }
+
+            try {
+                StreamingDataRequest.StreamData streams = StreamingDataRequest.fetchRequestForDownload(
+                        videoId, List.of(client), client).getStream();
+                if (streams == null) {
+                    continue;
+                }
+
+                OfflinePlayerResponse response = OfflinePlayerResponse.parseFrom(streams.streamingData());
+                if (response.hasStoryboards()) {
+                    Logger.printDebug(() -> "Using the storyboards of: " + client + " for: " + videoId);
+                    return response.getStoryboards();
+                }
+            } catch (Exception ex) {
+                Logger.printException(() -> "fetchStoryboards failure: " + client, ex);
+            }
+        }
+
+        Logger.printDebug(() -> "No storyboards for: " + videoId);
+        return null;
     }
 
     /**
@@ -826,5 +873,69 @@ public class BaseInAppDownloadsPatch {
 
     protected static boolean isLocked(OfflineFormat format) {
         return format.getAvailability() == OfflineFormatAvailability.OFFLINE_FORMAT_AVAILABILITY_PREMIUM_LOCKED;
+    }
+
+    protected static int countSavableFormats(OfflineStreamingData streamingData) {
+        int count = 0;
+        for (OfflineStreamFormat format : streamingData.getAdaptiveFormatsList()) {
+            if (format.getOfflineEligible()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Marks the formats the app can save.
+     * <p>
+     * YouTube Music saves songs with Opus audio like the stock app. When the response has WebM
+     * audio, the AAC formats are removed so the app falls back to the Opus format of the chosen
+     * download quality. Responses without WebM audio keep their AAC formats.
+     */
+    protected static OfflineStreamingData savableStreamingData(OfflineStreamingData streamingData) {
+        OfflineStreamingData.Builder builder = streamingData.toBuilder();
+
+        boolean saveOpusAudio = false;
+        if (IS_YOUTUBE_MUSIC) {
+            for (OfflineStreamFormat format : builder.getAdaptiveFormatsList()) {
+                if (format.getMimeType().startsWith(UNSAVABLE_AUDIO_MIME_TYPE_PREFIX)) {
+                    saveOpusAudio = true;
+                    break;
+                }
+            }
+        }
+
+        int removedCount = 0;
+        for (int i = builder.getAdaptiveFormatsCount() - 1; i >= 0; i--) {
+            OfflineStreamFormat format = builder.getAdaptiveFormats(i);
+            String mimeType = format.getMimeType();
+            if (saveOpusAudio && mimeType.startsWith("audio/")
+                    && !mimeType.startsWith(UNSAVABLE_AUDIO_MIME_TYPE_PREFIX)) {
+                builder.removeAdaptiveFormats(i);
+                removedCount++;
+                continue;
+            }
+            if (!mimeType.isEmpty()
+                    && (saveOpusAudio || !mimeType.startsWith(UNSAVABLE_AUDIO_MIME_TYPE_PREFIX))) {
+                builder.setAdaptiveFormats(i, format.toBuilder().setOfflineEligible(true));
+            }
+        }
+
+        if (removedCount > 0) {
+            final int removedCountFinal = removedCount;
+            Logger.printDebug(() -> "Saving Opus audio, removed: " + removedCountFinal
+                    + " non-WebM audio formats");
+        }
+        return builder.build();
+    }
+
+    protected static OfflineCaptions srv3Captions(OfflineCaptions captions) {
+        OfflineCaptionTracklist.Builder tracklist = captions.getPlayerCaptionsTracklistRenderer().toBuilder();
+        for (int i = 0, count = tracklist.getCaptionTracksCount(); i < count; i++) {
+            OfflineCaptionTrack track = tracklist.getCaptionTracks(i);
+            String baseUrl = track.getBaseUrl().replaceAll("&fmt=[^&]*", "") + CAPTION_URL_FORMAT;
+            tracklist.setCaptionTracks(i, track.toBuilder().setBaseUrl(baseUrl));
+        }
+        return captions.toBuilder().setPlayerCaptionsTracklistRenderer(tracklist).build();
     }
 }

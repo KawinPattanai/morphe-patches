@@ -9,24 +9,15 @@ package app.morphe.extension.youtube.patches.voiceovertranslation;
 
 import androidx.annotation.Nullable;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.Utils;
-import app.morphe.extension.shared.innertube.utils.AuthUtils;
-import app.morphe.extension.shared.requests.Requester;
-import app.morphe.extension.youtube.patches.CaptionCookiesPatch;
+import app.morphe.extension.youtube.patches.utils.requests.CaptionTrackRequest;
 
 /**
  * Pulls the video's caption track (Innertube preferred, direct timedtext as fallback),
@@ -35,11 +26,6 @@ import app.morphe.extension.youtube.patches.CaptionCookiesPatch;
  * when the source language differs from the user's target.
  */
 final class TranscriptFetcher {
-
-    private static final int CONNECT_TIMEOUT_MS = 10_000;
-    private static final int READ_TIMEOUT_MS = 15_000;
-    private static final String INNERTUBE_PLAYER_URL =
-            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 
     /** Language code detected from the video's own caption track. Updated on every successful fetch. */
     static volatile String lastSourceLang = "en";
@@ -53,133 +39,7 @@ final class TranscriptFetcher {
      */
     static List<TranscriptSegment> fetch(String videoId, Consumer<List<TranscriptSegment>> onUpdate,
                                          BooleanSupplier cancelled) {
-        List<TranscriptSegment> segments;
-        fetchEnglishSegments: {
-            String captionUrl = null;
-            String poToken    = null;
-            try {
-                Utils.verifyOffMainThread();
-
-                String body = "{\"context\":{\"client\":{\"clientName\":\"ANDROID\","
-                        + "\"clientVersion\":\"20.10.38\"}},"
-                        + "\"videoId\":\"" + videoId + "\"}";
-
-                HttpURLConnection conn = Requester.openConnection(INNERTUBE_PLAYER_URL);
-                conn.setRequestMethod("POST");
-                conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-                conn.setReadTimeout(READ_TIMEOUT_MS);
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("User-Agent",
-                        "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip");
-                conn.setRequestProperty("X-YouTube-Client-Name", "3");
-                conn.setRequestProperty("X-YouTube-Client-Version", "20.10.38");
-                conn.setDoOutput(true);
-
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.getBytes(StandardCharsets.UTF_8));
-                }
-
-                final int code = conn.getResponseCode();
-                if (code != 200) throw new Exception("Unexpected response status: " + code);
-
-                String response = Requester.parseString(conn);
-                // The best caption URL from the captionTracks list.
-                // Prefers a non-gemini track in the target language; falls back to a non-gemini
-                // English track, then the first non-gemini track, then the first available.
-                String bestCaptionUrl;
-                findBestCaptionUrl: {
-                    final int tracksIdx = response.indexOf("\"captionTracks\":[");
-                    if (tracksIdx < 0) {
-                        bestCaptionUrl = null;
-                        break findBestCaptionUrl;
-                    }
-
-                    String targetLang = VoiceCatalog.getIso639(VoiceOverTranslationPatch.resolveTargetLang());
-                    String firstUrl = null;
-                    String firstNonGemini = null;
-                    String targetLangUrl = null;
-                    String englishUrl = null;
-                    int searchFrom = tracksIdx;
-
-                    while (true) {
-                        int baseUrlIdx = response.indexOf("\"baseUrl\":\"", searchFrom);
-                        if (baseUrlIdx < 0 || baseUrlIdx > tracksIdx + 50_000) break;
-                        baseUrlIdx += "\"baseUrl\":\"".length();
-
-                        final int endIdx = response.indexOf('"', baseUrlIdx);
-                        if (endIdx < 0) break;
-
-                        String url = response.substring(baseUrlIdx, endIdx)
-                                .replace("\\u0026", "&")
-                                .replace("\\u003d", "=")
-                                .replace("\\u003e", ">")
-                                .replace("\\u003c", "<");
-
-                        if (firstUrl == null) firstUrl = url;
-                        final boolean nonGemini = !url.contains("variant=gemini");
-                        if (firstNonGemini == null && nonGemini) firstNonGemini = url;
-
-                        String urlLang = extractLangFromUrl(url).split("-")[0];
-                        if (targetLangUrl == null && nonGemini && targetLang.equals(urlLang)) targetLangUrl = url;
-                        if (englishUrl == null && nonGemini && "en".equals(urlLang)) englishUrl = url;
-
-                        searchFrom = endIdx + 1;
-                    }
-
-                    if (targetLangUrl != null) {
-                        bestCaptionUrl = targetLangUrl;
-                    } else if (englishUrl != null) {
-                        bestCaptionUrl = englishUrl;
-                    } else {
-                        bestCaptionUrl = firstNonGemini != null ? firstNonGemini : firstUrl;
-                    }
-                }
-                String innertubePoToken = extractPoToken(response);
-                captionUrl = bestCaptionUrl;
-                poToken = innertubePoToken;
-            } catch (Exception ex) {
-                Logger.printDebug(() -> "Innertube player failed", ex);
-            }
-
-            if (captionUrl != null) {
-                try {
-                    String baseUrl = captionUrl.replaceAll("&fmt=[^&]*", "") + "&fmt=json3";
-                    if (poToken != null) baseUrl += "&pot=" + poToken;
-
-                    String json = fetchUrl(baseUrl);
-                    String detectedLang = extractLangFromUrl(captionUrl).split("-")[0];
-                    List<TranscriptSegment> englishSegments = parseJson3(json, detectedLang);
-                    if (!englishSegments.isEmpty()) {
-                        lastSourceLang = detectedLang;
-                        segments = englishSegments;
-                        break fetchEnglishSegments;
-                    }
-                } catch (Exception ex) {
-                    Logger.printDebug(() -> "Caption fetch failed, trying direct", ex);
-                }
-            }
-
-            for (String srcLang : List.of("en", "en-US", "en-GB")) {
-                try {
-                    String urlStr = "https://www.youtube.com/api/timedtext?v=" + videoId
-                            + "&lang=" + srcLang + "&kind=asr&fmt=json3";
-                    String json = fetchUrl(urlStr);
-                    if (!json.isEmpty()) {
-                        List<TranscriptSegment> englishSegments = parseJson3(json, "en");
-                        if (!englishSegments.isEmpty()) {
-                            lastSourceLang = "en";
-                            segments = englishSegments;
-                            break fetchEnglishSegments;
-                        }
-                    }
-                } catch (Exception ex) {
-                    final String langFinal = srcLang;
-                    Logger.printDebug(() -> "Direct caption fetch failed lang: " + langFinal, ex);
-                }
-            }
-            Logger.printDebug(() -> "No captions available for video: " + videoId);
-            segments = new ArrayList<>();
-        }
+        List<TranscriptSegment> segments = fetchEnglishSegments(videoId);
 
         if (!segments.isEmpty()) {
             String targetLangCode = VoiceOverTranslationPatch.resolveTargetLang();
@@ -202,25 +62,67 @@ final class TranscriptFetcher {
         return !VoiceCatalog.getIso639(target).equalsIgnoreCase(VoiceCatalog.getIso639(source));
     }
 
-    @Nullable
-    private static String extractPoToken(String json) {
-        int idx = json.indexOf("\"poToken\":\"");
-        if (idx < 0) return null;
-        idx += "\"poToken\":\"".length();
-        final int end = json.indexOf('"', idx);
-        return end < 0 ? null : json.substring(idx, end);
+    private static List<TranscriptSegment> fetchEnglishSegments(String videoId) {
+        try {
+            CaptionTrackRequest.Track track = findBestTrack(CaptionTrackRequest.fetchCaptions(videoId).tracks());
+            if (track != null) {
+                String detectedLang = track.languageCode().split("-")[0];
+                List<TranscriptSegment> segments = toSegments(
+                        CaptionTrackRequest.fetchLines(track.url()), detectedLang);
+                if (!segments.isEmpty()) {
+                    lastSourceLang = detectedLang;
+                    return segments;
+                }
+            }
+        } catch (Exception ex) {
+            Logger.printDebug(() -> "Caption fetch failed, trying direct", ex);
+        }
+
+        return fetchDirect(videoId);
     }
 
-    private static String extractLangFromUrl(String url) {
-        for (String prefix : List.of("&lang=", "?lang=")) {
-            int idx = url.indexOf(prefix);
-            if (idx >= 0) {
-                idx += prefix.length();
-                final int end = url.indexOf('&', idx);
-                return end < 0 ? url.substring(idx) : url.substring(idx, end);
+    /**
+     * Returns the best caption track.
+     * Prefers a non-gemini track in the target language; falls back to a non-gemini
+     * English track, then the first non-gemini track, then the first available.
+     */
+    @Nullable
+    private static CaptionTrackRequest.Track findBestTrack(List<CaptionTrackRequest.Track> tracks) {
+        String targetLang = VoiceCatalog.getIso639(VoiceOverTranslationPatch.resolveTargetLang());
+        CaptionTrackRequest.Track firstNonGemini = null;
+        CaptionTrackRequest.Track englishTrack = null;
+
+        for (CaptionTrackRequest.Track track : tracks) {
+            if (track.gemini()) continue;
+
+            String trackLang = track.languageCode().split("-")[0];
+            if (targetLang.equals(trackLang)) return track;
+            if (englishTrack == null && "en".equals(trackLang)) englishTrack = track;
+            if (firstNonGemini == null) firstNonGemini = track;
+        }
+
+        if (englishTrack != null) return englishTrack;
+        if (firstNonGemini != null) return firstNonGemini;
+        return tracks.isEmpty() ? null : tracks.get(0);
+    }
+
+    private static List<TranscriptSegment> fetchDirect(String videoId) {
+        for (String srcLang : List.of("en", "en-US", "en-GB")) {
+            try {
+                String url = "https://www.youtube.com/api/timedtext?v=" + videoId
+                        + "&lang=" + srcLang + "&kind=asr";
+                List<TranscriptSegment> segments = toSegments(CaptionTrackRequest.fetchLines(url), "en");
+                if (!segments.isEmpty()) {
+                    lastSourceLang = "en";
+                    return segments;
+                }
+            } catch (Exception ex) {
+                final String langFinal = srcLang;
+                Logger.printDebug(() -> "Direct caption fetch failed lang: " + langFinal, ex);
             }
         }
-        return "en";
+        Logger.printDebug(() -> "No captions available for video: " + videoId);
+        return new ArrayList<>();
     }
 
     // Flush a merged sentence when it grows past this size, to keep TTS utterances manageable.
@@ -243,36 +145,14 @@ final class TranscriptFetcher {
     // Tighter length cap so unpunctuated chunks stay short and re-sync with the video often.
     private static final int MAX_UNPUNCTUATED_CHARS = 200;
 
-    private static List<TranscriptSegment> parseJson3(String json, String sourceLang) throws Exception {
+    private static List<TranscriptSegment> toSegments(List<CaptionTrackRequest.Line> captionLines,
+                                                      String sourceLang) {
         List<TranscriptSegment> lines = new ArrayList<>();
-        JSONObject root = new JSONObject(json);
-        JSONArray events = root.optJSONArray("events");
-        if (events == null) return lines;
-
-        for (int i = 0, eventsLength = events.length(); i < eventsLength; i++) {
-            JSONObject event = events.getJSONObject(i);
-            // ASR streams emit append events that only carry a "\n" to scroll the
-            // 2-line caption window. They duplicate timing of real lines - skip them.
-            if (event.optInt("aAppend", 0) == 1) continue;
-
-            JSONArray segs = event.optJSONArray("segs");
-            if (segs == null) continue;
-
-            final long startMs = event.optLong("tStartMs", -1);
-            if (startMs < 0) continue;
-            final long durationMs = event.optLong("dDurationMs", 2000);
-
-            StringBuilder text = new StringBuilder();
-            for (int j = 0, segsLength = segs.length(); j < segsLength; j++) {
-                text.append(segs.getJSONObject(j).optString("utf8", ""));
-            }
-
-            String textStr = text.toString()
-                    .replace('\n', ' ')
+        for (CaptionTrackRequest.Line line : captionLines) {
+            String textStr = line.text()
                     .replace(">>", "")
                     .replace("♪", "")
-                    .replace("♫", "")
-                    .trim();
+                    .replace("♫", "");
 
             // Drop sound effect markers such as [Applause] or (music) - they should not be spoken.
             textStr = BRACKETS_PATTERN.matcher(textStr).replaceAll("");
@@ -280,8 +160,8 @@ final class TranscriptFetcher {
             textStr = textStr.trim();
 
             if (!textStr.isEmpty()) {
-                lines.add(new TranscriptSegment(startMs,
-                        startMs + durationMs, textStr, sourceLang));
+                lines.add(new TranscriptSegment(line.startMs(),
+                        line.startMs() + line.durationMs(), textStr, sourceLang));
             }
         }
 
@@ -304,27 +184,17 @@ final class TranscriptFetcher {
             }
         }
 
-        // Merges caption lines into sentence-sized segments so TTS speaks whole sentences
-        // without pauses at line breaks. For punctuated transcripts a sentence ends on
-        // terminal punctuation; old ASR tracks have no punctuation at all, so boundaries
-        // are approximated from speech pauses and capitalization instead.
-        // Returns true when a meaningful share of lines contains terminal punctuation.
-        // Old auto-generated tracks contain none, so punctuation can't be trusted there
-        // as a sentence boundary signal.
-        int punctuatedLines = 0;
-        for (TranscriptSegment line : lines) {
-            String t = line.text;
-            for (int i = 0, len = t.length(); i < len; i++) {
-                final char c = t.charAt(i);
-                if (c == '.' || c == '!' || c == '?') {
-                    punctuatedLines++;
-                    break;
-                }
-            }
-        }
-        // At least ~10% of lines must carry punctuation - the occasional "$5.99"
-        // in an otherwise unpunctuated track should not flip the mode.
-        final boolean punctuated = punctuatedLines * 10 >= lines.size();
+        return mergeIntoSentences(lines);
+    }
+
+    /**
+     * Merges caption lines into sentence-sized segments so TTS speaks whole sentences
+     * without pauses at line breaks. For punctuated transcripts a sentence ends on
+     * terminal punctuation; old ASR tracks have no punctuation at all, so boundaries
+     * are approximated from speech pauses and capitalization instead.
+     */
+    private static List<TranscriptSegment> mergeIntoSentences(List<TranscriptSegment> lines) {
+        final boolean punctuated = detectPunctuation(lines);
         List<TranscriptSegment> sentences = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         long startMs = 0;
@@ -352,18 +222,10 @@ final class TranscriptFetcher {
                             || text.length() >= MAX_SENTENCE_CHARS
                             || (gap > MAX_SENTENCE_GAP_MS && text.length() > 80);
                 } else {
-                    flush = gap > UNPUNCTUATED_GAP_MS || text.length() >= MAX_UNPUNCTUATED_CHARS;
-                    if (!flush && gap > UNPUNCTUATED_SOFT_GAP_MS) {
-                        // A shorter gap ends the segment if the next line starts with an upper case letter.
-                        String nextText = lines.get(i + 1).text;
-                        for (int j = 0, len = nextText.length(); j < len; j++) {
-                            final char letter = nextText.charAt(j);
-                            if (Character.isLetter(letter)) {
-                                flush = Character.isUpperCase(letter);
-                                break;
-                            }
-                        }
-                    }
+                    flush = gap > UNPUNCTUATED_GAP_MS
+                            || (gap > UNPUNCTUATED_SOFT_GAP_MS
+                            && startsWithUpperCase(lines.get(i + 1).text))
+                            || text.length() >= MAX_UNPUNCTUATED_CHARS;
                 }
 
                 if (flush && endMs - startMs < MIN_SEGMENT_DURATION_MS && gap <= 0) {
@@ -374,19 +236,7 @@ final class TranscriptFetcher {
             if (flush) {
                 String fullText = text.toString();
                 if (i < size - 1) {
-                    int lastEnd;
-                    findLastSentenceEnd: {
-                        for (int charIndex = fullText.length() - 1; charIndex >= 0; charIndex--) {
-                            char c = fullText.charAt(charIndex);
-                            if (c == '.' || c == '!' || c == '?' || c == '…') {
-                                if (endsSentence(fullText.substring(0, charIndex + 1))) {
-                                    lastEnd = charIndex;
-                                    break findLastSentenceEnd;
-                                }
-                            }
-                        }
-                        lastEnd = -1;
-                    }
+                    final int lastEnd = findLastSentenceEnd(fullText);
                     final int fullTextLength = fullText.length();
                     if (lastEnd != -1 && lastEnd < fullTextLength - 1) {
                         String head = fullText.substring(0, lastEnd + 1).trim();
@@ -407,6 +257,36 @@ final class TranscriptFetcher {
             }
         }
         return sentences;
+    }
+
+    /**
+     * Returns true when a meaningful share of lines contains terminal punctuation.
+     * Old auto-generated tracks contain none, so punctuation can't be trusted there
+     * as a sentence boundary signal.
+     */
+    private static boolean detectPunctuation(List<TranscriptSegment> lines) {
+        int punctuatedLines = 0;
+        for (TranscriptSegment line : lines) {
+            String t = line.text;
+            for (int i = 0, len = t.length(); i < len; i++) {
+                final char c = t.charAt(i);
+                if (c == '.' || c == '!' || c == '?') {
+                    punctuatedLines++;
+                    break;
+                }
+            }
+        }
+        // At least ~10% of lines must carry punctuation - the occasional "$5.99"
+        // in an otherwise unpunctuated track should not flip the mode.
+        return punctuatedLines * 10 >= lines.size();
+    }
+
+    private static boolean startsWithUpperCase(String text) {
+        for (int i = 0, len = text.length(); i < len; i++) {
+            final char c = text.charAt(i);
+            if (Character.isLetter(c)) return Character.isUpperCase(c);
+        }
+        return false;
     }
 
     private static boolean endsSentence(CharSequence text) {
@@ -430,26 +310,15 @@ final class TranscriptFetcher {
         return true;
     }
 
-    private static String fetchUrl(String urlStr) throws Exception {
-        HttpURLConnection conn = Requester.openConnection(urlStr);
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setRequestProperty("User-Agent", CaptionCookiesPatch.getUserAgent());
-        String cookies = CaptionCookiesPatch.getCookies();
-        if (!cookies.isEmpty()) {
-            conn.setRequestProperty("Cookie", cookies);
-        }
-        Map<String, String> authHeaders = AuthUtils.getRequestHeader();
-        for (Map.Entry<String, String> entry : authHeaders.entrySet()) {
-            if (!entry.getValue().isEmpty()) {
-                conn.setRequestProperty(entry.getKey(), entry.getValue());
+    private static int findLastSentenceEnd(String text) {
+        for (int i = text.length() - 1; i >= 0; i--) {
+            char c = text.charAt(i);
+            if (c == '.' || c == '!' || c == '?' || c == '…') {
+                if (endsSentence(text.substring(0, i + 1))) {
+                    return i;
+                }
             }
         }
-
-        final int responseCode = conn.getResponseCode();
-        if (responseCode != 200) {
-            throw new Exception("HTTP response code: " + responseCode + " url: " + urlStr);
-        }
-        return Requester.parseString(conn);
+        return -1;
     }
 }

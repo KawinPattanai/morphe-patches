@@ -105,16 +105,16 @@
         <item>@string/morphe_crossfade_duration_250ms</item>
         <item>@string/morphe_crossfade_duration_500ms</item>
         <item>@string/morphe_crossfade_duration_750ms</item>
-        <item>@string/morphe_crossfade_duration_1000ms</item>
-        <item>@string/morphe_crossfade_duration_2000ms</item>
-        <item>@string/morphe_crossfade_duration_3000ms</item>
-        <item>@string/morphe_crossfade_duration_4000ms</item>
-        <item>@string/morphe_crossfade_duration_5000ms</item>
-        <item>@string/morphe_crossfade_duration_6000ms</item>
-        <item>@string/morphe_crossfade_duration_7000ms</item>
-        <item>@string/morphe_crossfade_duration_8000ms</item>
-        <item>@string/morphe_crossfade_duration_9000ms</item>
-        <item>@string/morphe_crossfade_duration_10000ms</item>
+        <item>@string/morphe_duration_1s</item>
+        <item>@string/morphe_duration_2s</item>
+        <item>@string/morphe_duration_3s</item>
+        <item>@string/morphe_duration_4s</item>
+        <item>@string/morphe_duration_5s</item>
+        <item>@string/morphe_duration_6s</item>
+        <item>@string/morphe_duration_7s</item>
+        <item>@string/morphe_duration_8s</item>
+        <item>@string/morphe_duration_9s</item>
+        <item>@string/morphe_duration_10s</item>
         <item>@string/morphe_crossfade_duration_11000ms</item>
         <item>@string/morphe_crossfade_duration_12000ms</item>
     </string-array>
@@ -291,6 +291,17 @@
         <item>ZH</item>
         <item>YUE</item>
     </string-array>
+    <string-array name="morphe_music_lyrics_alignment_mode_entries">
+        <item>@string/morphe_music_lyrics_alignment_default</item>
+        <item>@string/morphe_music_lyrics_alignment_same_side</item>
+        <item>@string/morphe_music_lyrics_alignment_center</item>
+    </string-array>
+    <string-array name="morphe_music_lyrics_alignment_mode_entry_values">
+        <item>default</item>
+        <item>same_side</item>
+        <item>center</item>
+    </string-array>
+
     <!-- The character tables a custom Rime word list may fall back to. A build offering another
          reading adds one row beside its token in the values array; nothing else changes. -->
     <string-array name="morphe_music_lyrics_rime_char_source_entries">
